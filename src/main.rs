@@ -1,6 +1,7 @@
 mod backend;
 mod compositor;
 mod config;
+mod focus;
 mod input;
 mod input_router;
 mod interaction;

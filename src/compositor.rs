@@ -46,6 +46,7 @@ use std::collections::HashMap;
 
 use cgmath::Matrix4;
 
+use crate::focus::FocusManager;
 use crate::input::Camera;
 use crate::input_router::{self, InputSink, KeyboardEvent, PointerEventKind};
 use crate::interaction::InteractionController;
@@ -154,6 +155,7 @@ pub struct LookingGlass {
     pub last_dy: f64,
     pub nav_button: u32,
     pub auto_orbit: bool,
+    pub focus_manager: FocusManager,
     pub interaction: InteractionController,
     input_sinks: HashMap<VisualId, Box<dyn InputSink>>,
     /// Track Wayland WlSurface per VisualId for direct seat input.
@@ -233,6 +235,7 @@ impl LookingGlass {
             last_dy: 0.0,
             nav_button: 0,
             auto_orbit: true,
+            focus_manager: FocusManager::new(),
             interaction: InteractionController::new(),
             input_sinks: HashMap::new(),
             wayland_surfaces: HashMap::new(),
@@ -533,13 +536,14 @@ impl LookingGlass {
             self.camera.yaw = 0.0;
             self.camera.pitch = 0.0;
         } else if self.auto_orbit {
-            // Auto-orbit: disabled on any mouse/keyboard interaction
             let t = (self.perf.frame_count as f32) * 0.003;
             self.camera.yaw = t.cos() * 0.8;
             self.camera.pitch = (t * 0.5).sin() * 0.3 + 0.2;
         }
+        // Focus mode interpolates the camera toward the focused visual
+        let render_camera = self.focus_manager.interpolated_camera(&self.camera, &self.scene);
         let (w, h) = self.window_size;
-        let view = self.camera.view_matrix();
+        let view = render_camera.view_matrix();
         let proj = if self.spatial_mode {
             cgmath::perspective(cgmath::Deg(45.0), w / h, 1.0, 10000.0)
         } else {
@@ -813,6 +817,23 @@ impl LookingGlass {
         result
     }
 
+    /// Toggle focus mode: enter or exit camera framing of the focused visual.
+    pub fn toggle_focus_mode(&mut self) {
+        if self.focus_manager.focus_mode {
+            // Exit focus mode — restore previous camera
+            self.focus_manager.exit(&mut self.camera, &self.scene);
+            info!("focus mode off");
+        } else {
+            // Enter focus mode — save camera, target focused visual
+            let Some(vid) = self.scene.focused_id else {
+                info!("no focused visual to focus on");
+                return;
+            };
+            self.focus_manager.enter(&self.camera, vid);
+            info!(?vid, "focus mode on");
+        }
+    }
+
     /// Orbit camera (right-drag).
     pub fn handle_orbit(&mut self, dx: f64, dy: f64) {
         self.camera.handle_orbit(dx, dy);
@@ -899,6 +920,11 @@ impl LookingGlass {
             if linux_key == 23 || linux_key == 71 {
                 self.spatial_mode = !self.spatial_mode;
                 tracing::info!(spatial_mode = self.spatial_mode, "mode toggled by key {}", linux_key);
+                return;
+            }
+            // F6 (72) — toggle focus mode
+            if linux_key == 72 {
+                self.toggle_focus_mode();
                 return;
             }
             // F — frame selected visual
