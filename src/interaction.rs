@@ -7,6 +7,16 @@ use cgmath::Vector4;
 use crate::scene::Scene;
 use crate::input::Camera;
 
+/// Which mode the interaction controller is in.
+/// This decides how pointer events are interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractionMode {
+    /// No special mode — events go to content or camera.
+    Normal,
+    /// Dragging a visual through the scene.
+    Drag,
+}
+
 /// Modes of manipulation active on the selected visual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManipMode {

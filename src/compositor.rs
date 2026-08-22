@@ -761,6 +761,13 @@ impl LookingGlass {
 
         // Pick the visual under cursor via 3D ray cast
         let picked = self.scene.pick(&pv, ndc_x, ndc_y);
+        if let Some((vid, _)) = picked {
+            // Update hovered visual (including non-Wayland visuals)
+            self.scene.hovered_id = Some(vid);
+        } else {
+            self.scene.hovered_id = None;
+        }
+
         let (vid, wl_surface, pos) = match picked {
             Some((vid, _)) if self.scene.is_active(vid) => {
                 if let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() {
@@ -772,7 +779,10 @@ impl LookingGlass {
                             &pv, ndc_x, ndc_y, &transform, total_w, total_h,
                         ) {
                             let title_frac = 0.06f64 / 1.06f64;
-                            if uv < title_frac { return; } // title bar
+                            if uv < title_frac {
+                                self.scene.hovered_id = None;
+                                return;
+                            } // title bar
                             let content_v = (uv - title_frac) / (1.0 - title_frac);
                             let px = u.clamp(0.0, 1.0) * v.geometry.size.w as f64;
                             let py = content_v.clamp(0.0, 1.0) * v.geometry.size.h as f64;
