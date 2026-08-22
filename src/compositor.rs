@@ -731,7 +731,19 @@ impl LookingGlass {
         self.interaction.window_size = self.window_size;
         let was_dragging = self.interaction.is_dragging();
         self.interaction.handle_pointer_move(x, y, &mut self.scene, &self.camera, self.spatial_mode);
-        // If not dragging, route hover events to Wayland surfaces
+        // If left button is held and we're not already dragging,
+        // start a content-area spatial drag on the selected visual.
+        if !was_dragging && !self.interaction.is_dragging() && self.nav_button == 1 {
+            if let Some(vid) = self.scene.selected_id {
+                if self.scene.is_active(vid) {
+                    let threshold = 5.0;
+                    if (x - self.last_mouse.0).abs() > threshold || (y - self.last_mouse.1).abs() > threshold {
+                        self.interaction.force_translate(x, y, &mut self.scene, &self.camera, self.spatial_mode);
+                    }
+                }
+            }
+        }
+        // If still not dragging after all checks, route hover events
         if !was_dragging && !self.interaction.is_dragging() {
             self.route_hover(x, y);
         }
