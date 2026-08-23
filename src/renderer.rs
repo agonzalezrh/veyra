@@ -267,6 +267,7 @@ pub fn render_scene(
     view: &Matrix4<f32>,
     proj: &Matrix4<f32>,
     perf: &mut PerfStats,
+    visible_ids: Option<&[crate::scene::VisualId]>,
 ) -> Result<(), SwapBuffersError> {
     use crate::perf::PipelineStage;
 
@@ -307,6 +308,9 @@ pub fn render_scene(
     let t_draw = std::time::Instant::now();
     for visual in scene.iter() {
         if visual.window_state == crate::scene::WindowState::Minimized { continue; }
+        if let Some(ids) = visible_ids {
+            if !ids.contains(&visual.id) { continue; }
+        }
         let Some(texture) = visual.texture() else { continue };
         let tex_id = texture.tex_id();
         let gw = visual.total_width();

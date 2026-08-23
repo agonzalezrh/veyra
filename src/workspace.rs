@@ -2,14 +2,27 @@ use cgmath::Point3;
 
 use crate::input::Camera;
 use crate::layout::LayoutMode;
+use crate::scene::VisualId;
 
-/// A workspace saves the camera view and layout mode for a specific
-/// presentation of the global Scene. Workspaces share the same Visuals
-/// but can arrange and view them differently.
+/// A workspace is a spatial presentation of a subset of the global Scene.
+///
+/// Each workspace has:
+/// - Its own camera (position, yaw, pitch) — switching restores the view
+/// - Its own set of visible visuals (visual_ids)
+/// - Its own layout mode and detached set
+/// - Its own focused visual
+///
+/// Wayland surfaces are compositor-global; Visuals have workspace membership.
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub camera: Camera,
     pub layout_mode: LayoutMode,
+    /// Which visuals are members of this workspace.
+    pub visual_ids: Vec<VisualId>,
+    /// Per-workspace detached tracking (user-manipulated visuals).
+    pub detached_set: Vec<VisualId>,
+    /// The focused visual in this workspace.
+    pub focused_id: Option<VisualId>,
 }
 
 impl Workspace {
@@ -17,7 +30,32 @@ impl Workspace {
         Workspace {
             camera: Camera::new(),
             layout_mode: LayoutMode::Freeform,
+            visual_ids: Vec::new(),
+            detached_set: Vec::new(),
+            focused_id: None,
         }
+    }
+
+    pub fn add(&mut self, id: VisualId) {
+        if !self.visual_ids.contains(&id) {
+            self.visual_ids.push(id);
+        }
+    }
+
+    pub fn remove(&mut self, id: VisualId) {
+        self.visual_ids.retain(|v| *v != id);
+        self.detached_set.retain(|v| *v != id);
+        if self.focused_id == Some(id) {
+            self.focused_id = None;
+        }
+    }
+
+    pub fn contains(&self, id: VisualId) -> bool {
+        self.visual_ids.contains(&id)
+    }
+
+    pub fn focus(&mut self, id: Option<VisualId>) {
+        self.focused_id = id;
     }
 }
 
@@ -68,5 +106,47 @@ mod tests {
         assert_eq!(cam2.position, Point3::new(400.0, 500.0, 600.0));
         assert_eq!(lay1, LayoutMode::Flat);
         assert_eq!(lay2, LayoutMode::Grid { columns: 2 });
+    }
+
+    #[test]
+    fn add_visual_sets_membership() {
+        let mut ws = Workspace::new();
+        let vid = VisualId(42);
+        ws.add(vid);
+        assert!(ws.contains(vid));
+        assert_eq!(ws.visual_ids.len(), 1);
+    }
+
+    #[test]
+    fn remove_visual_cleans_state() {
+        let mut ws = Workspace::new();
+        let vid = VisualId(42);
+        ws.add(vid);
+        ws.detached_set.push(vid);
+        ws.focus(Some(vid));
+        ws.remove(vid);
+        assert!(!ws.contains(vid));
+        assert!(!ws.detached_set.contains(&vid));
+        assert_eq!(ws.focused_id, None);
+    }
+
+    #[test]
+    fn focus_isolation_between_workspaces() {
+        let mut ws1 = Workspace::new();
+        let mut ws2 = Workspace::new();
+        ws1.focus(Some(VisualId(10)));
+        ws2.focus(Some(VisualId(20)));
+        assert_eq!(ws1.focused_id, Some(VisualId(10)));
+        assert_eq!(ws2.focused_id, Some(VisualId(20)));
+    }
+
+    #[test]
+    fn detached_isolation_between_workspaces() {
+        let mut ws1 = Workspace::new();
+        let mut ws2 = Workspace::new();
+        ws1.detached_set.push(VisualId(1));
+        ws2.detached_set.push(VisualId(2));
+        assert!(ws1.detached_set.contains(&VisualId(1)));
+        assert!(!ws2.detached_set.contains(&VisualId(1)));
     }
 }

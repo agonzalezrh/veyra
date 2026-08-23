@@ -397,6 +397,7 @@ impl LookingGlass {
                         self.toplevels[idx].visual_id = Some(visual_id);
                         self.wayland_surfaces.insert(visual_id, surface.clone());
                         self.scene.add(visual);
+                        self.workspaces[self.active_workspace].add(visual_id);
                         info!(?visual_id, app_id = %self.toplevels[idx].app_id, "surface mapped");
                     } else if let Some(vid) = existing_vid {
                         if let Some(visual) = self.scene.get_mut(vid) {
@@ -511,6 +512,7 @@ impl LookingGlass {
         }
 
         self.scene.add(visual);
+        self.workspaces[self.active_workspace].add(vid);
         self.producers.push((vid, producer));
         info!(visual_id = ?vid, width = w, height = h, "frame producer registered");
         Some(vid)
@@ -618,7 +620,8 @@ impl LookingGlass {
         } else {
             cgmath::ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -1000.0, 1000.0)
         };
-        if let Err(SwapBuffersError::ContextLost(e)) = renderer::render_scene(backend, &self.scene, &view, &proj, &mut self.perf) {
+        let ws_visible = self.workspaces.get(self.active_workspace).map(|ws| ws.visual_ids.as_slice());
+        if let Err(SwapBuffersError::ContextLost(e)) = renderer::render_scene(backend, &self.scene, &view, &proj, &mut self.perf, ws_visible) {
             error!(?e, "Context lost");
             self.backend = None;
         }
@@ -1006,6 +1009,8 @@ impl LookingGlass {
         if let Some(ws) = self.workspaces.get_mut(self.active_workspace) {
             ws.camera = self.camera.clone();
             ws.layout_mode = self.layout_mode;
+            ws.focused_id = self.scene.focused_id;
+            ws.detached_set = self.scene.detached_set.clone();
         }
     }
 
@@ -1018,6 +1023,8 @@ impl LookingGlass {
         if let Some(ws) = self.workspaces.get(idx) {
             self.camera = ws.camera.clone();
             self.layout_mode = ws.layout_mode;
+            self.scene.focused_id = ws.focused_id;
+            self.scene.detached_set = ws.detached_set.clone();
         }
         self.active_workspace = idx;
     }
