@@ -329,7 +329,12 @@ impl LookingGlass {
                         );
                         use cgmath::Deg;
                         use cgmath::Rotation3;
-                        visual.transform.position = cgmath::Vector3::new(x, 0.0, z);
+                        let pos = layout::place_new_visual(
+                            tex_size.w as f32 * visual.transform.scale.x,
+                            tex_size.h as f32 * visual.transform.scale.y,
+                            &self.scene,
+                        );
+                        visual.transform.position = pos;
                         visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
                         let visual_id = visual.id;
                         self.toplevels[idx].visual_id = Some(visual_id);
@@ -439,7 +444,7 @@ impl LookingGlass {
                 smithay::utils::Size::new(w as i32, h as i32),
             ),
         );
-        visual.transform.position = cgmath::Vector3::new(0.0, 200.0, 0.0);
+        visual.transform.position = layout::place_new_visual(w as f32, h as f32, &self.scene);
         let vid = visual.id;
 
         // Try to create an InputSink from the producer before moving it

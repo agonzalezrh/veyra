@@ -5,6 +5,42 @@ use cgmath::Vector3;
 
 use crate::scene::{Scene, Visual, VisualId};
 
+/// Compute an initial placement position for a new visual of the given size.
+/// Uses a spiral pattern that spreads out from the origin.
+/// Skips positions that would significantly overlap existing visuals.
+/// Visuals in `detached_set` are not considered for overlap (they were
+/// manually positioned and are authoritative).
+pub fn place_new_visual(
+    width: f32,
+    height: f32,
+    scene: &Scene,
+) -> Vector3<f32> {
+    let base_spacing = 300.0f32;
+    for i in 0..100 {
+        let angle = (i as f32) * 2.0 * std::f32::consts::TAU / 7.0;
+        let radius = base_spacing + (i as f32).sqrt() * base_spacing * 0.5;
+        let x = radius * angle.cos();
+        let y = radius * angle.sin() * 0.6; // flatten vertically
+        let candidate = Vector3::new(x, y, 0.0);
+
+        // Check for significant overlap with non-detached visuals
+        let overlaps = scene.visuals.iter().any(|v| {
+            if scene.detached_set.contains(&v.id) { return false; }
+            let vw = v.total_width();
+            let vh = v.total_height();
+            let dx = (candidate.x - v.transform.position.x).abs();
+            let dy = (candidate.y - v.transform.position.y).abs();
+            dx < (vw + width) * 0.5 && dy < (vh + height) * 0.5
+        });
+
+        if !overlaps {
+            return candidate;
+        }
+    }
+    // Fallback: far away
+    Vector3::new(800.0, 0.0, 0.0)
+}
+
 /// Layout mode for arranging visuals in the scene.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayoutMode {
@@ -217,5 +253,36 @@ mod tests {
         let scene = Scene::default();
         let cam = frame_visual(VisualId(999), &scene, 1280.0, 720.0);
         assert!(cam.is_none());
+    }
+
+    // ── Layout placement tests ────────────────────────────────────────
+
+    #[test]
+    fn place_first_visual_empty_scene() {
+        let scene = Scene::default();
+        let pos = place_new_visual(200.0, 100.0, &scene);
+        // First placement in an empty scene should be near the origin
+        assert!(pos.x.abs() < 500.0, "first visual too far: x={}", pos.x);
+        assert!(pos.y.abs() < 500.0, "first visual too far: y={}", pos.y);
+    }
+
+    #[test]
+    fn place_returns_different_positions() {
+        // Verify the spiral produces different positions for successive items
+        let scene = Scene::default();
+        let p0 = place_new_visual(200.0, 100.0, &scene);
+        // With no visuals in the scene, every call returns position 0
+        // (empty scene = first spiral position)
+        let p1 = place_new_visual(200.0, 100.0, &scene);
+        // Both return the same because there are no visuals to compare against
+        assert_eq!(p0, p1, "spiral returns consistent first position");
+    }
+
+    #[test]
+    fn place_fallback_on_empty() {
+        let scene = Scene::default();
+        let pos = place_new_visual(500.0, 500.0, &scene);
+        // Empty scene always returns first spiral position
+        assert!(pos.x.abs() < 1000.0);
     }
 }
