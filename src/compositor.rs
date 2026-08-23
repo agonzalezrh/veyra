@@ -920,6 +920,14 @@ impl LookingGlass {
         let mode = self.interaction.handle_pointer_down(
             x, y, &mut self.scene, &self.camera, self.spatial_mode, shift, ctrl, alt,
         );
+        // In overview mode, clicking a visual should focus it
+        if matches!(self.focus_manager.camera_mode, CameraMode::Overview) {
+            if let Some(vid) = self.scene.selected_id {
+                self.focus_manager.enter(&self.camera, vid, &self.scene);
+                info!(?vid, "overview click -> focus");
+            }
+            return;
+        }
         // If the clicked visual doesn't belong to the active workspace, deselect it
         if let Some(vid) = self.scene.selected_id {
             let in_workspace = self.workspace_manager.active().contains(vid);
@@ -1336,6 +1344,19 @@ impl LookingGlass {
             // F6 (72) — toggle focus mode
             if linux_key == 72 {
                 self.toggle_focus_mode();
+                return;
+            }
+            // O (24) — toggle overview mode
+            if linux_key == 24 {
+                match self.focus_manager.camera_mode {
+                    CameraMode::Overview | CameraMode::WorkspaceOverview => {
+                        self.focus_manager.exit_overview(&mut self.camera);
+                        info!("overview mode off");
+                    }
+                    _ => {
+                        self.enter_overview();
+                    }
+                }
                 return;
             }
             // M (58) — toggle de-emphasis on selected visual

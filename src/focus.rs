@@ -472,4 +472,54 @@ mod tests {
         fm.exit_overview(&mut Camera::new());
         assert!(!fm.is_active());
     }
+
+    #[test]
+    fn overview_with_zero_visuals() {
+        let scene = Scene::default();
+        let cam = overview_camera(&scene, &[]);
+        assert!(cam.is_none(), "overview with zero visuals should return None");
+    }
+
+    #[test]
+    fn overview_with_one_visual() {
+        let scene = Scene::default();
+        let cam = overview_camera(&scene, &[VisualId(1)]);
+        assert!(cam.is_none(), "overview with non-existent visual should return None");
+    }
+
+    #[test]
+    fn click_in_overview_sets_focus_mode() {
+        let mut fm = FocusManager::new();
+        let cam = Camera::new();
+        let overview_cam = Camera {
+            position: cgmath::Point3::new(0.0, 0.0, 2000.0),
+            ..Camera::new()
+        };
+        fm.enter_overview(&cam, overview_cam);
+        assert!(matches!(fm.camera_mode, CameraMode::Overview));
+
+        // Simulate clicking a visual: enters focus mode
+        let scene = Scene::default();
+        fm.enter(&cam, VisualId(1), &scene);
+        assert!(matches!(fm.camera_mode, CameraMode::Focus(_)));
+        assert_eq!(fm.focus_target, Some(VisualId(1)));
+    }
+
+    #[test]
+    fn escape_during_overview_returns_normal() {
+        let mut fm = FocusManager::new();
+        let mut cam = Camera::new();
+        cam.position = cgmath::Point3::new(100.0, 200.0, 300.0);
+
+        let overview_cam = Camera {
+            position: cgmath::Point3::new(0.0, 0.0, 2000.0),
+            ..Camera::new()
+        };
+        fm.enter_overview(&cam, overview_cam);
+        fm.exit_overview(&mut cam);
+
+        assert!(matches!(fm.camera_mode, CameraMode::Normal));
+        assert_eq!(cam.position.x, 100.0);
+        assert_eq!(cam.position.y, 200.0);
+    }
 }
