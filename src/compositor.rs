@@ -770,6 +770,28 @@ impl LookingGlass {
         self.interaction.window_size = self.window_size;
         let was_dragging = self.interaction.is_dragging();
         self.interaction.handle_pointer_move(x, y, &mut self.scene, &self.camera, self.spatial_mode);
+
+        // Snap correction: if currently dragging, snap dragged visual to nearby edges
+        if self.interaction.is_dragging() {
+            if let Some(vid) = self.scene.selected_id {
+                if let Some(visual) = self.scene.visuals.iter().find(|v| v.id == vid) {
+                    let mpos = visual.transform.position;
+                    let mw = visual.total_width();
+                    let mh = visual.total_height();
+                    // Build anchor list from non-selected, non-detached visuals
+                    let anchors: Vec<_> = self.scene.visuals.iter()
+                        .filter(|v| v.id != vid && !self.scene.detached_set.contains(&v.id))
+                        .map(|v| (v.transform.position, v.total_width(), v.total_height()))
+                        .collect();
+                    if let Some(snap) = crate::snap::snap_position(mpos, mw, mh, &anchors, &Default::default()) {
+                        if let Some(v) = self.scene.get_mut(vid) {
+                            v.transform.position = snap.position;
+                        }
+                    }
+                }
+            }
+        }
+
         // If left button is held and we're not already dragging,
         // start a content-area spatial drag on the selected visual.
         if !was_dragging && !self.interaction.is_dragging() && self.nav_button == 1 {

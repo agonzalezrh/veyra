@@ -11,6 +11,7 @@ mod perf;
 mod producer;
 mod renderer;
 mod scene;
+mod snap;
 #[cfg(test)]
 mod stress_tests;
 mod window;
