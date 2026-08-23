@@ -1036,6 +1036,69 @@ impl LookingGlass {
         true
     }
 
+    /// Create a new workspace and return its ID.
+    pub fn create_workspace(&mut self) -> usize {
+        let id = self.workspace_manager.add();
+        info!(workspace = id, "workspace created");
+        id
+    }
+
+    /// Destroy a workspace by ID.
+    /// Fails if it's the last workspace.
+    /// Wayland surfaces survive — only their workspace membership is cleaned up.
+    pub fn destroy_workspace(&mut self, id: usize) -> Result<(), String> {
+        if self.workspace_manager.len() <= 1 {
+            return Err("cannot destroy the last workspace".into());
+        }
+        // If destroying the active workspace, save current state and switch to 0 first
+        if id == self.workspace_manager.active_id() {
+            {
+                let ws = self.workspace_manager.active_mut();
+                ws.camera = self.camera.clone();
+                ws.focused_id = self.scene.focused_id;
+                ws.detached_set = self.scene.detached_set.clone();
+                ws.focus_manager_state = self.focus_manager.clone();
+            }
+            self.switch_workspace(0);
+        }
+        // Remove all Visual references from the workspace (but DON'T destroy Wayland surfaces)
+        // The workspace_manager.remove() handles visual state cleanup via save_transforms
+        self.workspace_manager.remove(id, &mut self.scene)?;
+        info!(workspace = id, "workspace destroyed");
+        Ok(())
+    }
+
+    /// Returns the number of workspaces.
+    pub fn workspace_count(&self) -> usize {
+        self.workspace_manager.len()
+    }
+
+    /// Cycle to the next workspace (wraps around).
+    pub fn next_workspace(&mut self) -> bool {
+        let current = self.workspace_manager.active_id();
+        let next = (current + 1) % self.workspace_manager.len();
+        self.switch_workspace(next)
+    }
+
+    /// Cycle to the previous workspace (wraps around).
+    pub fn previous_workspace(&mut self) -> bool {
+        let current = self.workspace_manager.active_id();
+        let prev = if current == 0 {
+            self.workspace_manager.len() - 1
+        } else {
+            current - 1
+        };
+        self.switch_workspace(prev)
+    }
+
+    /// Activate a specific workspace by ID. No-op if the ID is invalid.
+    pub fn activate_workspace(&mut self, id: usize) -> bool {
+        if id >= self.workspace_manager.len() {
+            return false;
+        }
+        self.switch_workspace(id)
+    }
+
     /// Public entry point for keyboard events.
     /// Routes to the focused visual's InputSink.
     /// Tab key (23) is always consumed by the compositor for spatial mode toggle.
