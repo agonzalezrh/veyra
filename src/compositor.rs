@@ -168,6 +168,9 @@ pub struct LookingGlass {
     /// Track the last Wayland surface that received pointer focus
     /// for proper enter/leave event sequencing.
     last_wayland_focus: Option<WlSurface>,
+    /// Modifier key state for keyboard shortcuts.
+    ctrl_pressed: bool,
+    shift_pressed: bool,
 }
 
 /// Result of routing a pointer event to the selected visual's content.
@@ -254,6 +257,8 @@ impl LookingGlass {
             pointer_handle,
             keyboard_handle,
             last_wayland_focus: None,
+            ctrl_pressed: false,
+            shift_pressed: false,
         }
     }
 
@@ -1103,27 +1108,38 @@ impl LookingGlass {
     /// Routes to the focused visual's InputSink.
     /// Tab key (23) is always consumed by the compositor for spatial mode toggle.
     pub fn handle_key(&mut self, linux_key: u32, pressed: bool) {
+        // Track modifier keys (Linux keycodes: 29=Left Ctrl, 97=Right Ctrl, 42=Left Shift, 54=Right Shift)
+        match linux_key {
+            29 | 97 => { self.ctrl_pressed = pressed; }
+            42 | 54 => { self.shift_pressed = pressed; }
+            _ => {}
+        }
+
         if pressed {
             self.workspace_manager.active_mut().auto_orbit = false;
         }
-        tracing::info!(?linux_key, pressed, "KEY EVENT received");
-
-        // Camera keyboard controls only when no visual has focus
-        if self.scene.focused_id.is_none() {
-            self.camera.handle_key(linux_key, pressed, 1.0);
-        }
+        tracing::debug!(?linux_key, pressed, ctrl = self.ctrl_pressed, shift = self.shift_pressed, "KEY EVENT");
 
         if pressed {
+            // Ctrl+Tab -> next workspace, Ctrl+Shift+Tab -> previous workspace
+            if linux_key == 23 && self.ctrl_pressed {
+                if self.shift_pressed {
+                    self.previous_workspace();
+                } else {
+                    self.next_workspace();
+                }
+                return;
+            }
             // F1/F2/F3 -> switch workspaces 0/1/2 (X11 keycodes 67=F1, 68=F2, 69=F3)
             match linux_key {
-                67 => { self.switch_workspace(0); return; }
-                68 => { self.switch_workspace(1); return; }
-                69 => { self.switch_workspace(2); return; }
+                67 => { self.activate_workspace(0); return; }
+                68 => { self.activate_workspace(1); return; }
+                69 => { self.activate_workspace(2); return; }
                 _ => {}
             }
-            // Tab (23) or F5 (71) — spatial mode toggle
+            // Tab (23) or F5 (71) — spatial mode toggle (but not with Ctrl)
             // F5 is used because TigerVNC intercepts Tab for internal focus switching
-            if linux_key == 23 || linux_key == 71 {
+            if (linux_key == 23 || linux_key == 71) && !self.ctrl_pressed {
                 self.spatial_mode = !self.spatial_mode;
                 tracing::info!(spatial_mode = self.spatial_mode, "mode toggled by key {}", linux_key);
                 return;
@@ -1143,6 +1159,14 @@ impl LookingGlass {
                 self.frame_all();
                 return;
             }
+        }
+
+        // Camera keyboard controls only when no visual has focus
+        if self.scene.focused_id.is_none() {
+            self.camera.handle_key(linux_key, pressed, 1.0);
+        }
+
+        if pressed {
             // 1-9 — save bookmark; 0 — save slot 9
             if linux_key >= 2 && linux_key <= 10 {
                 let slot = (linux_key - 2) as usize;
