@@ -44,6 +44,7 @@ use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use smithay::wayland::shm::ShmHandler;
 use smithay::wayland::shm::ShmState;
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 use cgmath::Matrix4;
 
@@ -173,6 +174,14 @@ pub struct LookingGlass {
 
 /// Result of routing a pointer event to the selected visual's content.
 enum ContentRouting { Routed, TitleBarHit, NoTarget }
+
+/// Monotonic milliseconds timestamp for input events.
+fn now_ms() -> u32 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u32
+}
 
 impl LookingGlass {
     pub fn new(
@@ -627,9 +636,11 @@ impl LookingGlass {
                     let px = content_u * gw;
                     let py = content_v * geom_h;
                     let pos: smithay::utils::Point<f64, smithay::utils::Logical> = (px, py).into();
+                    let serial = self.next_serial();
+                    let time = now_ms();
                     let btn_ev = ButtonEvent {
-                        serial: smithay::utils::Serial::from(0),
-                        time: 0,
+                        serial,
+                        time,
                         button: 0x110,
                         state: match kind {
                             PointerEventKind::Down => smithay::backend::input::ButtonState::Pressed,
@@ -639,8 +650,8 @@ impl LookingGlass {
                     };
                     let mot_ev = MotionEvent {
                         location: pos,
-                        serial: smithay::utils::Serial::from(0),
-                        time: 0,
+                        serial,
+                        time,
                     };
                     match kind {
                         PointerEventKind::Motion => {
@@ -674,15 +685,16 @@ impl LookingGlass {
         let wl_focus = self.wayland_surfaces.get(&vid).cloned();
         let kh = self.keyboard_handle.clone();
         if let (Some(wl_surface), Some(ref kh_handle)) = (wl_focus, kh) {
+            let serial = self.next_serial();
+            let time = now_ms();
             let state = if pressed { KeyState::Pressed } else { KeyState::Released };
-            // Set focus first, then deliver the key event via input_forward
-            kh_handle.set_focus(self, Some(wl_surface), smithay::utils::Serial::from(0));
+            kh_handle.set_focus(self, Some(wl_surface), serial);
             let _ = kh_handle.input::<(), _>(
                 self,
                 Keycode::new(key as u32),
                 state,
-                smithay::utils::Serial::from(0),
-                0,
+                serial,
+                time,
                 |_, _, _| FilterResult::Forward,
             );
             return;
@@ -841,8 +853,8 @@ impl LookingGlass {
         self.last_wayland_focus = Some(wl_surface.clone());
         let mot_ev = MotionEvent {
             location: pos,
-            serial: smithay::utils::Serial::from(0),
-            time: 0,
+            serial: self.next_serial(),
+            time: now_ms(),
         };
         ph.motion(self, Some((wl_surface, pos)), &mot_ev);
     }
@@ -881,6 +893,12 @@ impl LookingGlass {
             self.focus_manager.enter(&self.camera, vid);
             info!(?vid, "focus mode on");
         }
+    }
+
+    /// Get the next serial number for input events.
+    fn next_serial(&mut self) -> smithay::utils::Serial {
+        self.event_serial = self.event_serial.wrapping_add(1);
+        smithay::utils::Serial::from(self.event_serial)
     }
 
     /// Orbit camera (right-drag).
