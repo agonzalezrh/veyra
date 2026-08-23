@@ -389,8 +389,9 @@ fn lifecycle_destroy_in_focus_mode() {
     // This is tested via FocusManager
     let mut fm = crate::focus::FocusManager::new();
     let cam = crate::input::Camera::new();
-    fm.enter(&cam, VisualId(900));
-    assert!(fm.focus_mode);
+    let scene = crate::scene::Scene::default();
+    fm.enter(&cam, VisualId(900), &scene);
+    assert!(matches!(fm.camera_mode, crate::focus::CameraMode::Focus(_)));
     assert_eq!(fm.focus_target, Some(VisualId(900)));
 
     // The visual being destroyed is handled by interpolated_camera returning

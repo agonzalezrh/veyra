@@ -47,7 +47,7 @@ use std::time::SystemTime;
 
 use cgmath::Matrix4;
 
-use crate::focus::FocusManager;
+use crate::focus::{CameraMode, FocusManager};
 use crate::input::Camera;
 use crate::input_router::{self, InputSink, KeyboardEvent, PointerEventKind};
 use crate::interaction::InteractionController;
@@ -734,7 +734,7 @@ impl LookingGlass {
             self.camera.yaw = t.cos() * 0.8;
             self.camera.pitch = (t * 0.5).sin() * 0.3 + 0.2;
         }
-        // Focus mode interpolates the camera toward the focused visual
+        // Focus/overview mode interpolates the camera toward the target
         let render_camera = self.focus_manager.interpolated_camera(&self.camera, &self.scene);
         let (w, h) = self.window_size;
         let view = render_camera.view_matrix();
@@ -743,7 +743,11 @@ impl LookingGlass {
         } else {
             cgmath::ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -1000.0, 1000.0)
         };
-        let ws_visible = Some(self.workspace_manager.active().visual_ids.as_slice());
+        // In workspace overview mode, show all workspaces' visuals
+        let ws_visible = match self.focus_manager.camera_mode {
+            CameraMode::WorkspaceOverview => None, // show all
+            _ => Some(self.workspace_manager.active().visual_ids.as_slice()),
+        };
         if let Err(SwapBuffersError::ContextLost(e)) = renderer::render_scene(backend, &self.scene, &view, &proj, &mut self.perf, ws_visible) {
             error!(?e, "Context lost");
             self.backend = None;
@@ -1108,19 +1112,48 @@ impl LookingGlass {
 
     /// Toggle focus mode: enter or exit camera framing of the focused visual.
     pub fn toggle_focus_mode(&mut self) {
-        if self.focus_manager.focus_mode {
-            // Exit focus mode — restore previous camera
-            self.focus_manager.exit(&mut self.camera, &self.scene);
-            info!("focus mode off");
-        } else {
-            // Enter focus mode — save camera, target focused visual
-            let Some(vid) = self.scene.focused_id else {
-                info!("no focused visual to focus on");
-                return;
-            };
-            self.focus_manager.enter(&self.camera, vid);
-            info!(?vid, "focus mode on");
+        match self.focus_manager.camera_mode {
+            CameraMode::Focus(_) | CameraMode::Overview | CameraMode::WorkspaceOverview => {
+                // Exit — restore previous camera
+                match self.focus_manager.camera_mode {
+                    CameraMode::Focus(_) => self.focus_manager.exit(&mut self.camera, &self.scene),
+                    _ => self.focus_manager.exit_overview(&mut self.camera),
+                }
+                info!("focus mode off");
+            }
+            CameraMode::Normal => {
+                // Enter focus mode — save camera, target focused visual
+                let Some(vid) = self.scene.focused_id else {
+                    info!("no focused visual to focus on");
+                    return;
+                };
+                self.focus_manager.enter(&self.camera, vid, &self.scene);
+                info!(?vid, "focus mode on");
+            }
         }
+    }
+
+    /// Enter overview mode: show all visuals in the active workspace.
+    pub fn enter_overview(&mut self) {
+        let ws = self.workspace_manager.active();
+        if let Some(overview_cam) = crate::focus::overview_camera(&self.scene, &ws.visual_ids) {
+            self.focus_manager.enter_overview(&self.camera, overview_cam);
+            info!("overview mode on");
+        }
+    }
+
+    /// Enter workspace overview: show all workspaces.
+    pub fn enter_workspace_overview(&mut self) {
+        // Compute a camera that shows all workspace cameras' positions
+        // Simplified: pull way back to show all 3 workspaces
+        let overview_cam = Camera {
+            position: cgmath::Point3::new(0.0, 0.0, 3000.0),
+            yaw: 0.0,
+            pitch: -0.3,
+            ..Camera::new()
+        };
+        self.focus_manager.enter_workspace_overview(&self.camera, overview_cam);
+        info!("workspace overview mode on");
     }
 
     /// Get the next serial number for input events.
@@ -1187,6 +1220,10 @@ impl LookingGlass {
         self.scene.detached_set = ws.detached_set.clone();
         // Sync focus manager state
         self.focus_manager = ws.focus_manager_state.clone();
+        // Reset camera mode on workspace switch (each workspace has its own view)
+        self.focus_manager.camera_mode = CameraMode::Normal;
+        self.focus_manager.transition = None;
+        self.focus_manager.saved_camera = None;
         // Use authoritative focus setter for Wayland keyboard focus sync
         self.set_keyboard_focus(ws.focused_id);
         info!(workspace = idx, old = old_id, "switched workspace");
@@ -1563,6 +1600,11 @@ fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
         std::mem::swap(&mut saved, &mut state.camera);
         state.focus_manager.exit(&mut saved, &state.scene);
         std::mem::swap(&mut saved, &mut state.camera);
+    }
+    // Clean up overview if focused on that visual
+    if matches!(state.focus_manager.camera_mode, CameraMode::Focus(t) if t == vid) {
+        state.focus_manager.camera_mode = CameraMode::Normal;
+        state.focus_manager.transition = None;
     }
     // Remove from all groups
     state.scene.remove_from_all_groups(vid);
