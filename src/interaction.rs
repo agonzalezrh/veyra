@@ -1,6 +1,5 @@
 use cgmath::InnerSpace;
 use cgmath::Matrix4;
-use cgmath::Rad;
 use cgmath::SquareMatrix;
 use cgmath::Vector3;
 use cgmath::Vector4;
@@ -44,7 +43,6 @@ struct ActiveManip {
     /// Original transform values for relative manipulation.
     start_position: Vector3<f32>,
     start_rotation: cgmath::Quaternion<f32>,
-    start_scale: Vector3<f32>,
 }
 
 /// Translates raw pointer events into scene/camera operations.
@@ -197,7 +195,6 @@ impl InteractionController {
                     plane_normal,
                     start_position: pos,
                     start_rotation: visual.transform.rotation,
-                    start_scale: visual.transform.scale,
                 });
                 return Some(mode);
             }
@@ -247,7 +244,6 @@ impl InteractionController {
                     plane_normal,
                     start_position: pos,
                     start_rotation: visual.transform.rotation,
-                    start_scale: visual.transform.scale,
                 });
             }
         }

@@ -829,11 +829,11 @@ impl LookingGlass {
             _ => return, // no visual, no Wayland surface, or inactive
         };
 
-        // Debounce: only emit when the surface actually changes
-        let current_focus = Some(wl_surface.clone());
-        if current_focus != self.last_wayland_focus {
-            self.last_wayland_focus = current_focus;
-        }
+        // Track last surface for later reference. PointerHandle::motion
+        // handles enter/leave internally — same surface = motion;
+        // different surface = leave old + enter new. We always call
+        // motion to update cursor position within the current surface.
+        self.last_wayland_focus = Some(wl_surface.clone());
         let mot_ev = MotionEvent {
             location: pos,
             serial: smithay::utils::Serial::from(0),
