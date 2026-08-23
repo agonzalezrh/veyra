@@ -84,6 +84,17 @@ pub enum SurfaceLifecycle {
     Destroyed,
 }
 
+/// Track a popup surface with its parent relationship.
+#[derive(Debug, Clone)]
+pub struct PopupInfo {
+    pub popup: smithay::wayland::shell::xdg::PopupSurface,
+    pub wl_surface: WlSurface,
+    pub parent_toplevel_vid: Option<VisualId>,
+    pub visual_id: Option<VisualId>,
+    pub lifecycle: SurfaceLifecycle,
+    pub size: Option<(i32, i32)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ToplevelInfo {
     pub toplevel: ToplevelSurface,
@@ -142,6 +153,7 @@ pub struct LookingGlass {
     pub data_device_state: DataDeviceState,
     pub backend: Option<WinitGraphicsBackend<GlesRenderer>>,
     pub toplevels: Vec<ToplevelInfo>,
+    pub popups: Vec<PopupInfo>,
     pub scene: Scene,
     pub camera: Camera,
     pub spatial_mode: bool,
@@ -236,6 +248,7 @@ impl LookingGlass {
             data_device_state,
             backend: Some(backend),
             toplevels: Vec::new(),
+            popups: Vec::new(),
             scene: Scene::default(),
             camera: Camera::new(),
             spatial_mode: true,
@@ -307,38 +320,47 @@ impl LookingGlass {
             .find(|t| t.toplevel.wl_surface() == surface)
     }
 
-    fn handle_commit(&mut self, surface: &WlSurface) {
-        // Extract visual_id BEFORE borrowing self mutably
-        let existing_vid = self.toplevels.iter()
-            .find(|t| t.toplevel.wl_surface() == surface)
-            .and_then(|t| t.visual_id);
-        let idx = self.toplevels.iter()
-            .position(|t| t.toplevel.wl_surface() == surface);
-        let Some(idx) = idx else { return };
+    fn find_surface_visual_id(&self, surface: &WlSurface) -> Option<VisualId> {
+        // Check toplevels
+        for t in &self.toplevels {
+            if t.toplevel.wl_surface() == surface {
+                return t.visual_id;
+            }
+        }
+        // Check popups
+        for p in &self.popups {
+            if p.wl_surface == *surface {
+                return p.visual_id;
+            }
+        }
+        None
+    }
 
-        // Ignore commits on destroyed toplevels
-        if self.toplevels[idx].lifecycle == SurfaceLifecycle::Destroyed {
+    fn handle_commit(&mut self, surface: &WlSurface) {
+        // Determine if this is a toplevel or popup commit
+        let is_popup = self.popups.iter().any(|p| p.wl_surface == *surface);
+
+        let existing_vid = self.find_surface_visual_id(surface);
+
+        // Find the lifecycle state for this surface
+        let lifecycle = if is_popup {
+            self.popups.iter().find(|p| p.wl_surface == *surface)
+                .map(|p| p.lifecycle)
+                .unwrap_or(SurfaceLifecycle::Destroyed)
+        } else {
+            self.toplevels.iter().find(|t| t.toplevel.wl_surface() == surface)
+                .map(|t| t.lifecycle)
+                .unwrap_or(SurfaceLifecycle::Destroyed)
+        };
+
+        if lifecycle == SurfaceLifecycle::Destroyed {
             return;
         }
 
-        // Determine if this is a first-map or remap commit
-        let is_first_map = self.toplevels[idx].lifecycle != SurfaceLifecycle::Mapped;
-        // If the visual already existed and we're remapping, use existing position
+        let is_first_map = lifecycle != SurfaceLifecycle::Mapped;
         let is_remap = is_first_map && existing_vid.is_some();
 
-        let pos_data = if is_first_map && !is_remap {
-            let z_off = [-200.0, 0.0, 200.0];
-            let y_ang = [5.0, 0.0, -5.0];
-            let n = self.toplevels.len();
-            let z = if idx < z_off.len() { z_off[idx] } else { idx as f32 * 50.0 };
-            let ay = if idx < y_ang.len() { y_ang[idx] } else { 0.0 };
-            let x = idx as f32 * 20.0 - (n as f32 - 1.0) * 10.0;
-            Some((x, z, ay))
-        } else {
-            None
-        };
-
-        // Extract buffer + damage
+        // Extract buffer + damage (shared path for toplevels and popups)
         let (wl_buffer, damage): (Option<_>, Vec<_>) = with_states(surface, |states| {
             let mut cached = states.cached_state.get::<SurfaceAttributes>();
             let attrs = cached.current();
@@ -369,75 +391,138 @@ impl LookingGlass {
                 Ok(texture) => {
                     if is_first_map {
                         let tex_size = texture.size();
-                        self.toplevels[idx].lifecycle = SurfaceLifecycle::Mapped;
-                        self.toplevels[idx].size = Some((tex_size.w, tex_size.h));
 
-                        if is_remap {
-                            // Remap: use existing visual — just update its texture
-                            if let Some(vid) = existing_vid {
-                                if let Some(visual) = self.scene.get_mut(vid) {
-                                    if let Some(dst) = visual.texture_mut() {
-                                        *dst = texture;
+                        if is_popup {
+                            // ── Popup commit ──
+                            let popup_idx = self.popups.iter()
+                                .position(|p| p.wl_surface == *surface)
+                                .unwrap();
+                            self.popups[popup_idx].lifecycle = SurfaceLifecycle::Mapped;
+                            self.popups[popup_idx].size = Some((tex_size.w, tex_size.h));
+
+                            if is_remap {
+                                if let Some(vid) = existing_vid {
+                                    if let Some(visual) = self.scene.get_mut(vid) {
+                                        if let Some(dst) = visual.texture_mut() {
+                                            *dst = texture;
+                                        }
+                                        visual.geometry = smithay::utils::Rectangle::new(
+                                            smithay::utils::Point::new(0, 0),
+                                            smithay::utils::Size::new(tex_size.w, tex_size.h),
+                                        );
+                                        self.workspace_manager.active_mut().add(vid);
+                                        info!(?vid, "popup remapped");
                                     }
-                                    visual.geometry = smithay::utils::Rectangle::new(
+                                }
+                            } else {
+                                let parent_vid = self.popups[popup_idx].parent_toplevel_vid;
+                                let mut visual = Visual::new(
+                                    VisualContent::WaylandSurface(texture),
+                                    smithay::utils::Rectangle::new(
                                         smithay::utils::Point::new(0, 0),
                                         smithay::utils::Size::new(tex_size.w, tex_size.h),
-                                    );
-                                    // Re-add to active workspace
-                                    self.workspace_manager.active_mut().add(vid);
-                                    info!(?vid, app_id = %self.toplevels[idx].app_id, "surface remapped");
+                                    ),
+                                );
+                                // Position popup relative to parent with a simple offset
+                                if let Some(pvid) = parent_vid {
+                                    if let Some(parent) = self.scene.visuals.iter().find(|v| v.id == pvid) {
+                                        visual.transform.position = parent.transform.position
+                                            + cgmath::Vector3::new(100.0, -50.0, 10.0); // offset right and slightly down, in front
+                                        visual.parent = Some(pvid);
+                                    }
                                 }
+                                let visual_id = visual.id;
+                                self.popups[popup_idx].visual_id = Some(visual_id);
+                                self.wayland_surfaces.insert(visual_id, surface.clone());
+                                self.scene.add(visual);
+                                // Add to the same workspace as the parent (or active workspace)
+                                if let Some(pvid) = parent_vid {
+                                    for i in 0..self.workspace_manager.len() {
+                                        if let Some(ws) = self.workspace_manager.get_mut(i) {
+                                            if ws.visual_ids.contains(&pvid) {
+                                                ws.add(visual_id);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    self.workspace_manager.active_mut().add(visual_id);
+                                }
+                                info!(?visual_id, ?parent_vid, "popup mapped");
                             }
                         } else {
-                            let (_x, _z, angle_y) = pos_data.unwrap();
-                            let mut visual = Visual::new(
-                                VisualContent::WaylandSurface(texture),
-                                smithay::utils::Rectangle::new(
-                                    smithay::utils::Point::new(0, 0),
-                                    smithay::utils::Size::new(tex_size.w, tex_size.h),
-                                ),
-                            );
-                            use cgmath::Deg;
-                            use cgmath::Rotation3;
-                            // Set chrome from toplevel metadata
-                            visual.chrome.title = self.toplevels[idx].title.clone();
-                            visual.chrome.app_id = self.toplevels[idx].app_id.clone();
-                            // Try restoring from saved state, fall back to layout
-                            let app_id = &self.toplevels[idx].app_id;
-                            let restored = self.saved_state.as_ref().and_then(|s| {
-                                s.find_visual(app_id).map(|(_, vs)| {
-                                    visual.transform.position.x = vs.x;
-                                    visual.transform.position.y = vs.y;
-                                    visual.transform.position.z = vs.z;
-                                    visual.transform.rotation.s = vs.rotation[0];
-                                    visual.transform.rotation.v.x = vs.rotation[1];
-                                    visual.transform.rotation.v.y = vs.rotation[2];
-                                    visual.transform.rotation.v.z = vs.rotation[3];
-                                    visual.transform.scale.x = vs.scale[0];
-                                    visual.transform.scale.y = vs.scale[1];
-                                    visual.transform.scale.z = vs.scale[2];
-                                    if vs.detached {
-                                        self.scene.detached_set.push(visual.id);
+                            // ── Toplevel commit ──
+                            let idx = self.toplevels.iter()
+                                .position(|t| t.toplevel.wl_surface() == surface)
+                                .unwrap();
+                            self.toplevels[idx].lifecycle = SurfaceLifecycle::Mapped;
+                            self.toplevels[idx].size = Some((tex_size.w, tex_size.h));
+
+                            if is_remap {
+                                if let Some(vid) = existing_vid {
+                                    if let Some(visual) = self.scene.get_mut(vid) {
+                                        if let Some(dst) = visual.texture_mut() {
+                                            *dst = texture;
+                                        }
+                                        visual.geometry = smithay::utils::Rectangle::new(
+                                            smithay::utils::Point::new(0, 0),
+                                            smithay::utils::Size::new(tex_size.w, tex_size.h),
+                                        );
+                                        self.workspace_manager.active_mut().add(vid);
+                                        info!(?vid, app_id = %self.toplevels[idx].app_id, "surface remapped");
                                     }
-                                })
-                            });
-                            if restored.is_none() {
-                                let pos = layout::place_new_visual(
-                                    tex_size.w as f32 * visual.transform.scale.x,
-                                    tex_size.h as f32 * visual.transform.scale.y,
-                                    &self.scene,
+                                }
+                            } else {
+                                let z_off = [-200.0, 0.0, 200.0];
+                                let y_ang = [5.0, 0.0, -5.0];
+                                let n = self.toplevels.len();
+                                let angle_y = if idx < y_ang.len() { y_ang[idx] } else { 0.0 };
+                                let mut visual = Visual::new(
+                                    VisualContent::WaylandSurface(texture),
+                                    smithay::utils::Rectangle::new(
+                                        smithay::utils::Point::new(0, 0),
+                                        smithay::utils::Size::new(tex_size.w, tex_size.h),
+                                    ),
                                 );
-                                visual.transform.position = pos;
-                                visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
+                                use cgmath::Deg;
+                                use cgmath::Rotation3;
+                                visual.chrome.title = self.toplevels[idx].title.clone();
+                                visual.chrome.app_id = self.toplevels[idx].app_id.clone();
+                                let app_id = &self.toplevels[idx].app_id;
+                                let restored = self.saved_state.as_ref().and_then(|s| {
+                                    s.find_visual(app_id).map(|(_, vs)| {
+                                        visual.transform.position.x = vs.x;
+                                        visual.transform.position.y = vs.y;
+                                        visual.transform.position.z = vs.z;
+                                        visual.transform.rotation.s = vs.rotation[0];
+                                        visual.transform.rotation.v.x = vs.rotation[1];
+                                        visual.transform.rotation.v.y = vs.rotation[2];
+                                        visual.transform.rotation.v.z = vs.rotation[3];
+                                        visual.transform.scale.x = vs.scale[0];
+                                        visual.transform.scale.y = vs.scale[1];
+                                        visual.transform.scale.z = vs.scale[2];
+                                        if vs.detached {
+                                            self.scene.detached_set.push(visual.id);
+                                        }
+                                    })
+                                });
+                                if restored.is_none() {
+                                    let pos = layout::place_new_visual(
+                                        tex_size.w as f32 * visual.transform.scale.x,
+                                        tex_size.h as f32 * visual.transform.scale.y,
+                                        &self.scene,
+                                    );
+                                    visual.transform.position = pos;
+                                    visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
+                                }
+                                let visual_id = visual.id;
+                                self.toplevels[idx].visual_id = Some(visual_id);
+                                self.wayland_surfaces.insert(visual_id, surface.clone());
+                                self.scene.add(visual);
+                                self.workspace_manager.active_mut().add(visual_id);
+                                self.scene.focus(Some(visual_id));
+                                info!(?visual_id, app_id = %self.toplevels[idx].app_id, "surface mapped");
                             }
-                            let visual_id = visual.id;
-                            self.toplevels[idx].visual_id = Some(visual_id);
-                            self.wayland_surfaces.insert(visual_id, surface.clone());
-                            self.scene.add(visual);
-                            self.workspace_manager.active_mut().add(visual_id);
-                            // Set initial keyboard focus to newly mapped visual
-                            self.scene.focus(Some(visual_id));
-                            info!(?visual_id, app_id = %self.toplevels[idx].app_id, "surface mapped");
                         }
                     } else if let Some(vid) = existing_vid {
                         if let Some(visual) = self.scene.get_mut(vid) {
@@ -1298,9 +1383,25 @@ impl XdgShellHandler for LookingGlass {
 
     fn new_popup(
         &mut self,
-        _surface: smithay::wayland::shell::xdg::PopupSurface,
+        surface: smithay::wayland::shell::xdg::PopupSurface,
         _positioner: PositionerState,
     ) {
+        let wl_surface = surface.wl_surface().clone();
+        let parent_vid = find_parent_toplevel_vid(&self.toplevels, &self.popups, &surface);
+
+        // Send initial configure to the popup
+        let _ = surface.send_configure();
+
+        let mut info = PopupInfo {
+            popup: surface,
+            wl_surface,
+            parent_toplevel_vid: parent_vid,
+            visual_id: None,
+            lifecycle: SurfaceLifecycle::Created,
+            size: None,
+        };
+        info!("popup created");
+        self.popups.push(info);
     }
 
     fn grab(
@@ -1309,14 +1410,20 @@ impl XdgShellHandler for LookingGlass {
         _seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat,
         _serial: Serial,
     ) {
+        // For now, popup grabs are accepted. In a full implementation,
+        // we'd validate the serial. But the popup is already created
+        // by the client at this point.
+        info!("popup grab accepted");
     }
 
     fn reposition_request(
         &mut self,
-        _surface: smithay::wayland::shell::xdg::PopupSurface,
+        surface: smithay::wayland::shell::xdg::PopupSurface,
         _positioner: PositionerState,
         _token: u32,
     ) {
+        // Accept reposition requests by sending a configure
+        let _ = surface.send_configure();
     }
 
     fn ack_configure(&mut self, _surface: WlSurface, configure: Configure) {
@@ -1391,9 +1498,49 @@ delegate_xdg_shell!(LookingGlass);
 
 impl OutputHandler for LookingGlass {}
 
+/// Find which toplevel (or popup) visual is the parent of a given popup surface.
+fn find_parent_toplevel_vid(
+    toplevels: &[ToplevelInfo],
+    popups: &[PopupInfo],
+    popup: &smithay::wayland::shell::xdg::PopupSurface,
+) -> Option<VisualId> {
+    let parent_surface = popup.get_parent_surface()?;
+    for t in toplevels {
+        if t.toplevel.wl_surface() == &parent_surface {
+            return t.visual_id;
+        }
+    }
+    for p in popups {
+        if p.wl_surface == parent_surface {
+            return p.visual_id;
+        }
+    }
+    None
+}
+
+/// Clean up any popup info entries whose visual_id matches the given vid.
+fn cleanup_popups_by_vid(state: &mut LookingGlass, vid: VisualId) {
+    // Find popups that reference this vid as parent or have this vid
+    let popup_ids: Vec<VisualId> = state.popups.iter()
+        .filter(|p| p.visual_id == Some(vid) || p.parent_toplevel_vid == Some(vid))
+        .filter_map(|p| p.visual_id)
+        .collect();
+    // Remove their visuals from scene
+    for pvid in &popup_ids {
+        state.scene.remove(*pvid);
+        state.wayland_surfaces.remove(pvid);
+    }
+    // Remove from tracking list
+    state.popups.retain(|p| {
+        p.visual_id != Some(vid) && p.parent_toplevel_vid != Some(vid)
+    });
+}
+
 /// Clean up a visual from ALL workspaces, focus, interaction, snap, and scene state.
 /// This is used by the XdgShellHandler when a toplevel is destroyed.
 fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
+    // Clean up child popups first
+    cleanup_popups_by_vid(state, vid);
     // Remove from all workspaces
     for i in 0..state.workspace_manager.len() {
         if let Some(ws) = state.workspace_manager.get_mut(i) {
