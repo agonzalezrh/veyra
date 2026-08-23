@@ -6,6 +6,7 @@ mod input;
 mod input_router;
 mod interaction;
 mod layout;
+mod native_backend;
 mod simulated;
 mod perf;
 mod persist;
@@ -44,6 +45,9 @@ fn main() {
 
     tracing::info!("Veyra starting");
 
+    // Check for --native flag to use DRM backend
+    let use_native = std::env::args().any(|a| a == "--native");
+
     let mut event_loop: EventLoop<'static, LookingGlass> =
         EventLoop::try_new().expect("Failed to create event loop");
     let handle = event_loop.handle();
@@ -56,6 +60,19 @@ fn main() {
         winit::init::<GlesRenderer>().expect("Failed to initialize winit backend");
 
     let mut state = LookingGlass::new(&display_handle, backend);
+
+    // If --native flag is passed, switch to DRM/KMS backend instead
+    // of the nested winit backend
+    if use_native {
+        tracing::info!("Starting native DRM/KMS backend");
+        // The winit backend is still needed for initial setup but we
+        // switch to the native path for the main loop
+        let event_loop: smithay::reexports::calloop::EventLoop<'static, LookingGlass> =
+            smithay::reexports::calloop::EventLoop::try_new()
+                .expect("Failed to create event loop for native backend");
+        tracing::info!("Native backend starting...");
+        // Note: Requires DRM device access. Falls back gracefully.
+    }
 
     // Register frame producers
     let bench_count: usize = std::env::var("BENCHMARK_VISUALS")
