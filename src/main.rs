@@ -1,4 +1,5 @@
 mod anchor;
+mod arrange;
 mod backend;
 mod compositor;
 mod config;
