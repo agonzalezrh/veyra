@@ -1,10 +1,10 @@
 # Veyra
 
-A spatial Wayland compositor — ordinary applications in 3D space.
+A native 3D Wayland compositor and spatial desktop. Runs ordinary Wayland applications as persistent 3D objects in a spatial workspace.
 
 ## Status
 
-Early development. Runs as a nested compositor via winit. Supports Wayland clients and external frame producers.
+Early development. Runs as a nested compositor via winit. External frame producers are supported as an optional input mechanism, but are not required for the native Wayland desktop.
 
 ## Building
 
