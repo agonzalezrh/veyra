@@ -53,7 +53,7 @@ use crate::input_router::{self, InputSink, KeyboardEvent, PointerEventKind};
 use crate::interaction::InteractionController;
 use crate::layout;
 use crate::perf::PerfStats;
-use crate::workspace::Workspace;
+use crate::workspace::WorkspaceManager;
 use crate::producer::{FrameProducer, FrameResult};
 use crate::scene::{Scene, Visual, VisualContent, VisualId};
 use crate::renderer;
@@ -143,9 +143,7 @@ pub struct LookingGlass {
     pub scene: Scene,
     pub camera: Camera,
     pub spatial_mode: bool,
-    pub layout_mode: layout::LayoutMode,
-    pub workspaces: Vec<Workspace>,
-    pub active_workspace: usize,
+    pub workspace_manager: WorkspaceManager,
     /// Registered frame producers
     producers: Vec<(VisualId, Box<dyn FrameProducer>)>,
     pub perf: PerfStats,
@@ -158,7 +156,7 @@ pub struct LookingGlass {
     pub nav_button: u32,
     pub event_serial: u32,
     pub last_down_vid: Option<VisualId>,
-    pub auto_orbit: bool,
+    // auto_orbit is now per-workspace via workspace_manager.active().auto_orbit
     pub saved_state: Option<crate::persist::WorkspaceState>,
     pub focus_manager: FocusManager,
     pub interaction: InteractionController,
@@ -236,9 +234,7 @@ impl LookingGlass {
             scene: Scene::default(),
             camera: Camera::new(),
             spatial_mode: true,
-            layout_mode: layout::LayoutMode::Freeform,
-            workspaces: vec![Workspace::new(), Workspace::new(), Workspace::new()],
-            active_workspace: 0,
+            workspace_manager: WorkspaceManager::new(3),
             producers: Vec::new(),
             perf: PerfStats::new(),
             output: None,
@@ -250,7 +246,6 @@ impl LookingGlass {
             nav_button: 0,
             event_serial: 0,
             last_down_vid: None,
-            auto_orbit: true,
             saved_state: None,
             focus_manager: FocusManager::new(),
             interaction: InteractionController::new(),
@@ -396,7 +391,7 @@ impl LookingGlass {
                         self.toplevels[idx].visual_id = Some(visual_id);
                         self.wayland_surfaces.insert(visual_id, surface.clone());
                         self.scene.add(visual);
-                        self.workspaces[self.active_workspace].add(visual_id);
+                        self.workspace_manager.active_mut().add(visual_id);
                         info!(?visual_id, app_id = %self.toplevels[idx].app_id, "surface mapped");
                     } else if let Some(vid) = existing_vid {
                         if let Some(visual) = self.scene.get_mut(vid) {
@@ -508,7 +503,7 @@ impl LookingGlass {
         }
 
         self.scene.add(visual);
-        self.workspaces[self.active_workspace].add(vid);
+        self.workspace_manager.active_mut().add(vid);
         self.producers.push((vid, producer));
         info!(visual_id = ?vid, width = w, height = h, "frame producer registered");
         Some(vid)
@@ -587,9 +582,10 @@ impl LookingGlass {
         let world_w = w;
         let world_h = h;
         let detached = self.scene.detached_set.clone();
+        let layout_mode = self.workspace_manager.active().layout_mode;
         layout::apply_layout(
             &mut self.scene,
-            self.layout_mode,
+            layout_mode,
             &layout::LayoutConfig::default(),
             &detached,
             world_w,
@@ -602,7 +598,7 @@ impl LookingGlass {
             self.camera.position = cgmath::Point3::new(0.0, 0.0, 500.0);
             self.camera.yaw = 0.0;
             self.camera.pitch = 0.0;
-        } else if self.auto_orbit {
+        } else if self.workspace_manager.active().auto_orbit {
             let t = (self.perf.frame_count as f32) * 0.003;
             self.camera.yaw = t.cos() * 0.8;
             self.camera.pitch = (t * 0.5).sin() * 0.3 + 0.2;
@@ -616,7 +612,7 @@ impl LookingGlass {
         } else {
             cgmath::ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -1000.0, 1000.0)
         };
-        let ws_visible = self.workspaces.get(self.active_workspace).map(|ws| ws.visual_ids.as_slice());
+        let ws_visible = Some(self.workspace_manager.active().visual_ids.as_slice());
         if let Err(SwapBuffersError::ContextLost(e)) = renderer::render_scene(backend, &self.scene, &view, &proj, &mut self.perf, ws_visible) {
             error!(?e, "Context lost");
             self.backend = None;
@@ -767,9 +763,7 @@ impl LookingGlass {
         );
         // If the clicked visual doesn't belong to the active workspace, deselect it
         if let Some(vid) = self.scene.selected_id {
-            let in_workspace = self.workspaces.get(self.active_workspace)
-                .map(|ws| ws.contains(vid))
-                .unwrap_or(false);
+            let in_workspace = self.workspace_manager.active().contains(vid);
             if !in_workspace {
                 self.scene.selected_id = None;
                 self.scene.focus(None);
@@ -815,12 +809,12 @@ impl LookingGlass {
         self.last_mouse = (x, y);
         // Navigation buttons (right=mouse 3, middle=mouse 2)
         if self.nav_button == 3 {
-            self.auto_orbit = false;
+            self.workspace_manager.active_mut().auto_orbit = false;
             self.handle_orbit(dx, dy);
             return;
         }
         if self.nav_button == 2 {
-            self.auto_orbit = false;
+            self.workspace_manager.active_mut().auto_orbit = false;
             self.handle_pan(dx, dy);
             return;
         }
@@ -836,9 +830,7 @@ impl LookingGlass {
                     let mw = visual.total_width();
                     let mh = visual.total_height();
                     // Build anchor list from non-selected, non-detached, same-workspace visuals only
-                    let ws_ids = self.workspaces.get(self.active_workspace)
-                        .map(|ws| ws.visual_ids.as_slice())
-                        .unwrap_or(&[]);
+                    let ws_ids = self.workspace_manager.active().visual_ids.as_slice();
                     let anchors: Vec<_> = self.scene.visuals.iter()
                         .filter(|v| v.id != vid && !self.scene.detached_set.contains(&v.id) && ws_ids.contains(&v.id))
                         .map(|v| (v.transform.position, v.total_width(), v.total_height()))
@@ -892,9 +884,7 @@ impl LookingGlass {
         };
 
         // Pick the visual under cursor via 3D ray cast, filtered by active workspace
-        let ws_visible = self.workspaces.get(self.active_workspace)
-            .map(|ws| ws.visual_ids.as_slice())
-            .unwrap_or(&[]);
+        let ws_visible = self.workspace_manager.active().visual_ids.as_slice();
         let picked = self.scene.pick_visible(&pv, ndc_x, ndc_y, ws_visible);
         if let Some((vid, _)) = picked {
             self.scene.hovered_id = Some(vid);
@@ -1014,39 +1004,36 @@ impl LookingGlass {
         result
     }
 
-    /// Save the current workspace state to the active workspace slot.
-    fn sync_active_workspace(&mut self) {
-        if let Some(ws) = self.workspaces.get_mut(self.active_workspace) {
+    /// Convenience: get the layout mode from the active workspace.
+    pub fn layout_mode(&self) -> layout::LayoutMode {
+        self.workspace_manager.active().layout_mode
+    }
+
+    /// Switch to a workspace by ID.
+    /// Saves the current workspace state and restores the target workspace state.
+    /// Returns true if the switch occurred.
+    pub fn switch_workspace(&mut self, idx: usize) -> bool {
+        let old_id = self.workspace_manager.active_id();
+        // Save current state into the old workspace
+        {
+            let ws = self.workspace_manager.active_mut();
             ws.camera = self.camera.clone();
-            ws.layout_mode = self.layout_mode;
             ws.focused_id = self.scene.focused_id;
             ws.detached_set = self.scene.detached_set.clone();
-            ws.save_transforms(&self.scene);
+            ws.focus_manager_state = self.focus_manager.clone();
         }
-    }
-
-    /// Load workspace state from a slot into the active camera/layout.
-    fn load_workspace(&mut self, idx: usize) {
-        if idx >= self.workspaces.len() {
-            return;
+        if !self.workspace_manager.switch(idx, &mut self.scene) {
+            return false;
         }
-        self.sync_active_workspace();
-        if let Some(ws) = self.workspaces.get(idx) {
-            ws.restore_transforms(&mut self.scene);
-            self.camera = ws.camera.clone();
-            self.layout_mode = ws.layout_mode;
-            self.scene.focused_id = ws.focused_id;
-            self.scene.detached_set = ws.detached_set.clone();
-        }
-        self.active_workspace = idx;
-    }
-
-    /// Switch to a workspace by index (0-2).
-    pub fn switch_workspace(&mut self, idx: usize) {
-        if idx < self.workspaces.len() && idx != self.active_workspace {
-            self.load_workspace(idx);
-            info!(workspace = idx, "switched workspace");
-        }
+        // Sync camera, layout, focus from saved workspace state
+        let ws = self.workspace_manager.active();
+        self.camera = ws.camera.clone();
+        self.scene.focused_id = ws.focused_id;
+        self.scene.detached_set = ws.detached_set.clone();
+        // Sync focus manager state
+        self.focus_manager = ws.focus_manager_state.clone();
+        info!(workspace = idx, old = old_id, "switched workspace");
+        true
     }
 
     /// Public entry point for keyboard events.
@@ -1054,7 +1041,7 @@ impl LookingGlass {
     /// Tab key (23) is always consumed by the compositor for spatial mode toggle.
     pub fn handle_key(&mut self, linux_key: u32, pressed: bool) {
         if pressed {
-            self.auto_orbit = false;
+            self.workspace_manager.active_mut().auto_orbit = false;
         }
         tracing::info!(?linux_key, pressed, "KEY EVENT received");
 
