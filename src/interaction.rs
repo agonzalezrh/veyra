@@ -207,6 +207,11 @@ impl InteractionController {
         self.active.is_some()
     }
 
+    /// Whether a specific visual is being dragged.
+    pub fn is_dragging_visual(&self, vid: VisualId) -> bool {
+        self.active.as_ref().map_or(false, |a| a.vid == vid)
+    }
+
     /// Start a translate drag on the selected visual (without modifier).
     /// Used for title-bar drags and content-area spatial manipulation.
     pub fn force_translate(

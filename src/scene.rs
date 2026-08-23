@@ -140,6 +140,25 @@ pub enum VisualContent {
     ExternalTexture(GlesTexture),
 }
 
+/// Compositor-owned chrome data for a visual.
+/// This is metadata the compositor displays but never modifies client surfaces.
+#[derive(Debug, Clone)]
+pub struct SpatialChrome {
+    pub title: String,
+    pub app_id: String,
+    pub focused: bool,
+}
+
+impl Default for SpatialChrome {
+    fn default() -> Self {
+        SpatialChrome {
+            title: String::new(),
+            app_id: String::new(),
+            focused: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Visual {
     pub id: VisualId,
@@ -154,6 +173,8 @@ pub struct Visual {
     pub window_state: WindowState,
     /// Saved transform for Maximize → Restore cycle.
     pub saved_transform: Option<Transform3D>,
+    /// Compositor-owned spatial chrome metadata.
+    pub chrome: SpatialChrome,
 }
 
 impl Visual {
@@ -170,6 +191,7 @@ impl Visual {
             decoration: DecorationConfig::default(),
             window_state: WindowState::Normal,
             saved_transform: None,
+            chrome: SpatialChrome::default(),
         }
     }
 
@@ -238,6 +260,15 @@ impl Scene {
     }
 
     pub fn remove(&mut self, id: VisualId) {
+        // Remove parent-child relationships for this visual
+        // Children of this visual must also be cleaned up
+        let children: Vec<VisualId> = self.visuals.iter()
+            .filter(|v| v.parent == Some(id))
+            .map(|v| v.id)
+            .collect();
+        for child in children {
+            self.remove(child);
+        }
         self.visuals.retain(|v| v.id != id);
         if self.selected_id == Some(id) {
             self.selected_id = None;

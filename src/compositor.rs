@@ -75,11 +75,13 @@ impl ClientData for ClientState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceLifecycle {
     Created,
     Configured,
     Mapped,
+    Unmapped,
+    Destroyed,
 }
 
 #[derive(Debug, Clone)]
@@ -281,7 +283,6 @@ impl LookingGlass {
 
     /// Save current workspace state to disk.
     pub fn save_state(&self) {
-        use crate::layout::LayoutMode;
         let ws = self.workspace_manager.active();
         let state = crate::persist::WorkspaceState::capture(
             &self.scene,
@@ -315,9 +316,17 @@ impl LookingGlass {
             .position(|t| t.toplevel.wl_surface() == surface);
         let Some(idx) = idx else { return };
 
-        // On first commit, compute position data before other borrows
-        let first_commit = self.toplevels[idx].lifecycle != SurfaceLifecycle::Mapped;
-        let pos_data = if first_commit {
+        // Ignore commits on destroyed toplevels
+        if self.toplevels[idx].lifecycle == SurfaceLifecycle::Destroyed {
+            return;
+        }
+
+        // Determine if this is a first-map or remap commit
+        let is_first_map = self.toplevels[idx].lifecycle != SurfaceLifecycle::Mapped;
+        // If the visual already existed and we're remapping, use existing position
+        let is_remap = is_first_map && existing_vid.is_some();
+
+        let pos_data = if is_first_map && !is_remap {
             let z_off = [-200.0, 0.0, 200.0];
             let y_ang = [5.0, 0.0, -5.0];
             let n = self.toplevels.len();
@@ -358,55 +367,78 @@ impl LookingGlass {
             });
             match result {
                 Ok(texture) => {
-                    if first_commit {
-                        let (x, z, angle_y) = pos_data.unwrap();
+                    if is_first_map {
                         let tex_size = texture.size();
                         self.toplevels[idx].lifecycle = SurfaceLifecycle::Mapped;
                         self.toplevels[idx].size = Some((tex_size.w, tex_size.h));
 
-                        let mut visual = Visual::new(
-                            VisualContent::WaylandSurface(texture),
-                            smithay::utils::Rectangle::new(
-                                smithay::utils::Point::new(0, 0),
-                                smithay::utils::Size::new(tex_size.w, tex_size.h),
-                            ),
-                        );
-                        use cgmath::Deg;
-                        use cgmath::Rotation3;
-                        // Try restoring from saved state, fall back to layout
-                        let app_id = &self.toplevels[idx].app_id;
-                        let restored = self.saved_state.as_ref().and_then(|s| {
-                            s.find_visual(app_id).map(|(_, vs)| {
-                                visual.transform.position.x = vs.x;
-                                visual.transform.position.y = vs.y;
-                                visual.transform.position.z = vs.z;
-                                visual.transform.rotation.s = vs.rotation[0];
-                                visual.transform.rotation.v.x = vs.rotation[1];
-                                visual.transform.rotation.v.y = vs.rotation[2];
-                                visual.transform.rotation.v.z = vs.rotation[3];
-                                visual.transform.scale.x = vs.scale[0];
-                                visual.transform.scale.y = vs.scale[1];
-                                visual.transform.scale.z = vs.scale[2];
-                                if vs.detached {
-                                    self.scene.detached_set.push(visual.id);
+                        if is_remap {
+                            // Remap: use existing visual — just update its texture
+                            if let Some(vid) = existing_vid {
+                                if let Some(visual) = self.scene.get_mut(vid) {
+                                    if let Some(dst) = visual.texture_mut() {
+                                        *dst = texture;
+                                    }
+                                    visual.geometry = smithay::utils::Rectangle::new(
+                                        smithay::utils::Point::new(0, 0),
+                                        smithay::utils::Size::new(tex_size.w, tex_size.h),
+                                    );
+                                    // Re-add to active workspace
+                                    self.workspace_manager.active_mut().add(vid);
+                                    info!(?vid, app_id = %self.toplevels[idx].app_id, "surface remapped");
                                 }
-                            })
-                        });
-                        if restored.is_none() {
-                            let pos = layout::place_new_visual(
-                                tex_size.w as f32 * visual.transform.scale.x,
-                                tex_size.h as f32 * visual.transform.scale.y,
-                                &self.scene,
+                            }
+                        } else {
+                            let (_x, _z, angle_y) = pos_data.unwrap();
+                            let mut visual = Visual::new(
+                                VisualContent::WaylandSurface(texture),
+                                smithay::utils::Rectangle::new(
+                                    smithay::utils::Point::new(0, 0),
+                                    smithay::utils::Size::new(tex_size.w, tex_size.h),
+                                ),
                             );
-                            visual.transform.position = pos;
-                            visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
+                            use cgmath::Deg;
+                            use cgmath::Rotation3;
+                            // Set chrome from toplevel metadata
+                            visual.chrome.title = self.toplevels[idx].title.clone();
+                            visual.chrome.app_id = self.toplevels[idx].app_id.clone();
+                            // Try restoring from saved state, fall back to layout
+                            let app_id = &self.toplevels[idx].app_id;
+                            let restored = self.saved_state.as_ref().and_then(|s| {
+                                s.find_visual(app_id).map(|(_, vs)| {
+                                    visual.transform.position.x = vs.x;
+                                    visual.transform.position.y = vs.y;
+                                    visual.transform.position.z = vs.z;
+                                    visual.transform.rotation.s = vs.rotation[0];
+                                    visual.transform.rotation.v.x = vs.rotation[1];
+                                    visual.transform.rotation.v.y = vs.rotation[2];
+                                    visual.transform.rotation.v.z = vs.rotation[3];
+                                    visual.transform.scale.x = vs.scale[0];
+                                    visual.transform.scale.y = vs.scale[1];
+                                    visual.transform.scale.z = vs.scale[2];
+                                    if vs.detached {
+                                        self.scene.detached_set.push(visual.id);
+                                    }
+                                })
+                            });
+                            if restored.is_none() {
+                                let pos = layout::place_new_visual(
+                                    tex_size.w as f32 * visual.transform.scale.x,
+                                    tex_size.h as f32 * visual.transform.scale.y,
+                                    &self.scene,
+                                );
+                                visual.transform.position = pos;
+                                visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
+                            }
+                            let visual_id = visual.id;
+                            self.toplevels[idx].visual_id = Some(visual_id);
+                            self.wayland_surfaces.insert(visual_id, surface.clone());
+                            self.scene.add(visual);
+                            self.workspace_manager.active_mut().add(visual_id);
+                            // Set initial keyboard focus to newly mapped visual
+                            self.scene.focus(Some(visual_id));
+                            info!(?visual_id, app_id = %self.toplevels[idx].app_id, "surface mapped");
                         }
-                        let visual_id = visual.id;
-                        self.toplevels[idx].visual_id = Some(visual_id);
-                        self.wayland_surfaces.insert(visual_id, surface.clone());
-                        self.scene.add(visual);
-                        self.workspace_manager.active_mut().add(visual_id);
-                        info!(?visual_id, app_id = %self.toplevels[idx].app_id, "surface mapped");
                     } else if let Some(vid) = existing_vid {
                         if let Some(visual) = self.scene.get_mut(vid) {
                             if let Some(dst) = visual.texture_mut() {
@@ -650,12 +682,35 @@ impl LookingGlass {
     /// Route a pointer event to the selected visual's InputSink.
     /// Focus follows click: sets focused visual to the selected one.
     /// Title bar hits are NOT routed to content — caller should start a drag.
+    /// Authoritative keyboard focus setter.
+    /// Updates scene focus, Wayland keyboard focus, FocusManager, and SpatialChrome consistently.
+    fn set_keyboard_focus(&mut self, vid: Option<VisualId>) {
+        // Update scene focus
+        self.scene.focus(vid);
+
+        // Update Wayland keyboard focus
+        if let (Some(vid), Some(kh)) = (vid, self.keyboard_handle.clone()) {
+            if let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() {
+                let serial = self.next_serial();
+                kh.set_focus(self, Some(wl_surface), serial);
+            }
+        } else if let Some(kh) = self.keyboard_handle.clone() {
+            let serial = self.next_serial();
+            kh.set_focus(self, None, serial);
+        }
+
+        // Update SpatialChrome on visuals
+        for visual in &mut self.scene.visuals {
+            visual.chrome.focused = Some(visual.id) == vid;
+        }
+    }
+
     fn route_to_content(&mut self, kind: PointerEventKind, x: f64, y: f64) -> ContentRouting {
         let Some(vid) = self.scene.selected_id else { return ContentRouting::NoTarget };
         if !self.scene.is_active(vid) { return ContentRouting::NoTarget }
 
         if kind == PointerEventKind::Down {
-            self.scene.focus(Some(vid));
+            self.set_keyboard_focus(Some(vid));
             self.scene.bring_to_front(vid);
             info!(?vid, "focus set, brought to front");
         }
@@ -745,6 +800,7 @@ impl LookingGlass {
             let serial = self.next_serial();
             let time = now_ms();
             let state = if pressed { KeyState::Pressed } else { KeyState::Released };
+            // Ensure keyboard focus is on the right surface
             kh_handle.set_focus(self, Some(wl_surface), serial);
             let _ = kh_handle.input::<(), _>(
                 self,
@@ -1266,21 +1322,44 @@ impl XdgShellHandler for LookingGlass {
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
-        if let Some(info) = self.find_toplevel(surface.wl_surface()) {
+        // Extract values before mutable borrows to avoid borrow conflicts
+        let (title, vid) = {
+            let info = match self.find_toplevel(surface.wl_surface()) {
+                Some(i) => i,
+                None => return,
+            };
             let old = info.title.clone();
             info.refresh_metadata();
-            if info.title != old {
-                info!(title = %info.title, "title changed");
+            if info.title == old {
+                return;
+            }
+            (info.title.clone(), info.visual_id)
+        };
+        info!(title = %title, "title changed");
+        if let Some(vid) = vid {
+            if let Some(visual) = self.scene.get_mut(vid) {
+                visual.chrome.title = title;
             }
         }
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
-        if let Some(info) = self.find_toplevel(surface.wl_surface()) {
+        let (app_id, vid) = {
+            let info = match self.find_toplevel(surface.wl_surface()) {
+                Some(i) => i,
+                None => return,
+            };
             let old = info.app_id.clone();
             info.refresh_metadata();
-            if info.app_id != old {
-                info!(app_id = %info.app_id, "app_id changed");
+            if info.app_id == old {
+                return;
+            }
+            (info.app_id.clone(), info.visual_id)
+        };
+        info!(app_id = %app_id, "app_id changed");
+        if let Some(vid) = vid {
+            if let Some(visual) = self.scene.get_mut(vid) {
+                visual.chrome.app_id = app_id;
             }
         }
     }
@@ -1292,28 +1371,51 @@ impl XdgShellHandler for LookingGlass {
             .iter()
             .position(|t| t.toplevel.wl_surface() == wl_surface)
         {
-            let info = self.toplevels.remove(idx);
+            let mut info = self.toplevels.remove(idx);
+            info.lifecycle = SurfaceLifecycle::Destroyed;
             if let Some(vid) = info.visual_id {
-                self.scene.remove(vid);
-                self.wayland_surfaces.remove(&vid);
+                cleanup_visual_permanently(self, vid);
             }
             info!(
                 app_id = %info.app_id,
                 title = %info.title,
-                lifecycle = ?info.lifecycle,
                 "surface destroyed"
             );
         }
-    }
-
-    fn client_destroyed(&mut self, _client: smithay::wayland::shell::xdg::ShellClient) {
-        info!("shell client destroyed");
     }
 }
 
 delegate_xdg_shell!(LookingGlass);
 
 impl OutputHandler for LookingGlass {}
+
+/// Clean up a visual from ALL workspaces, focus, interaction, snap, and scene state.
+/// This is used by the XdgShellHandler when a toplevel is destroyed.
+fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
+    // Remove from all workspaces
+    for i in 0..state.workspace_manager.len() {
+        if let Some(ws) = state.workspace_manager.get_mut(i) {
+            ws.remove(vid);
+        }
+    }
+    // Clean up focus state
+    state.scene.remove(vid);
+    state.wayland_surfaces.remove(&vid);
+    // Clean up interaction state
+    if state.interaction.is_dragging_visual(vid) {
+        state.interaction.handle_pointer_up();
+    }
+    if state.scene.selected_id == Some(vid) {
+        state.scene.selected_id = None;
+    }
+    // Clean up focus manager
+    if state.focus_manager.focus_target == Some(vid) {
+        let mut saved = Camera::new();
+        std::mem::swap(&mut saved, &mut state.camera);
+        state.focus_manager.exit(&mut saved, &state.scene);
+        std::mem::swap(&mut saved, &mut state.camera);
+    }
+}
 
 impl SeatHandler for LookingGlass {
     type KeyboardFocus = WlSurface;
