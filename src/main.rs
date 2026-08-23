@@ -8,6 +8,7 @@ mod interaction;
 mod kvmfr;
 mod layout;
 mod perf;
+mod persist;
 mod producer;
 mod renderer;
 mod scene;
@@ -198,7 +199,8 @@ fn main() {
                 state.render();
             }
             WinitEvent::CloseRequested => {
-                tracing::info!("Close requested, shutting down");
+                tracing::info!("Close requested, saving workspace state");
+                state.save_state();
                 state.backend.take();
             }
             _ => {}

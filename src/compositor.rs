@@ -160,6 +160,7 @@ pub struct LookingGlass {
     pub event_serial: u32,
     pub last_down_vid: Option<VisualId>,
     pub auto_orbit: bool,
+    pub saved_state: Option<crate::persist::WorkspaceState>,
     pub focus_manager: FocusManager,
     pub interaction: InteractionController,
     input_sinks: HashMap<VisualId, Box<dyn InputSink>>,
@@ -251,6 +252,7 @@ impl LookingGlass {
             event_serial: 0,
             last_down_vid: None,
             auto_orbit: true,
+            saved_state: None,
             focus_manager: FocusManager::new(),
             interaction: InteractionController::new(),
             input_sinks: HashMap::new(),
@@ -258,6 +260,31 @@ impl LookingGlass {
             pointer_handle,
             keyboard_handle,
             last_wayland_focus: None,
+        }
+    }
+
+    /// Load saved workspace state from disk and apply camera.
+    pub fn load_saved_state(&mut self) {
+        if crate::persist::exists() {
+            match crate::persist::load() {
+                Ok(state) => {
+                    self.saved_state = Some(state);
+                    if let Some(ref s) = self.saved_state {
+                        s.apply_camera(&mut self.camera);
+                        info!(visuals = s.visuals.len(), "workspace state loaded");
+                    }
+                }
+                Err(e) => info!(?e, "no saved workspace state to load"),
+            }
+        }
+    }
+
+    /// Save current workspace state to disk.
+    pub fn save_state(&self) {
+        let state = crate::persist::WorkspaceState::capture(&self.scene, &self.camera);
+        match crate::persist::save(&state) {
+            Ok(()) => info!("workspace state saved"),
+            Err(e) => warn!(?e, "failed to save workspace state"),
         }
     }
 
@@ -338,13 +365,34 @@ impl LookingGlass {
                         );
                         use cgmath::Deg;
                         use cgmath::Rotation3;
-                        let pos = layout::place_new_visual(
-                            tex_size.w as f32 * visual.transform.scale.x,
-                            tex_size.h as f32 * visual.transform.scale.y,
-                            &self.scene,
-                        );
-                        visual.transform.position = pos;
-                        visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
+                        // Try restoring from saved state, fall back to layout
+                        let app_id = &self.toplevels[idx].app_id;
+                        let restored = self.saved_state.as_ref().and_then(|s| {
+                            s.find_visual(app_id).map(|vs| {
+                                visual.transform.position.x = vs.x;
+                                visual.transform.position.y = vs.y;
+                                visual.transform.position.z = vs.z;
+                                visual.transform.rotation.s = vs.rotation[0];
+                                visual.transform.rotation.v.x = vs.rotation[1];
+                                visual.transform.rotation.v.y = vs.rotation[2];
+                                visual.transform.rotation.v.z = vs.rotation[3];
+                                visual.transform.scale.x = vs.scale[0];
+                                visual.transform.scale.y = vs.scale[1];
+                                visual.transform.scale.z = vs.scale[2];
+                                if vs.detached {
+                                    self.scene.detached_set.push(visual.id);
+                                }
+                            })
+                        });
+                        if restored.is_none() {
+                            let pos = layout::place_new_visual(
+                                tex_size.w as f32 * visual.transform.scale.x,
+                                tex_size.h as f32 * visual.transform.scale.y,
+                                &self.scene,
+                            );
+                            visual.transform.position = pos;
+                            visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
+                        }
                         let visual_id = visual.id;
                         self.toplevels[idx].visual_id = Some(visual_id);
                         self.wayland_surfaces.insert(visual_id, surface.clone());
