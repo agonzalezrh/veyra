@@ -1338,6 +1338,19 @@ impl LookingGlass {
                 self.toggle_focus_mode();
                 return;
             }
+            // M (58) — toggle de-emphasis on selected visual
+            if linux_key == 58 {
+                if let Some(vid) = self.scene.selected_id {
+                    if self.scene.is_de_emphasized(vid) {
+                        self.scene.restore_from_de_emphasis(vid);
+                        info!(?vid, "restored from de-emphasis");
+                    } else {
+                        self.scene.de_emphasize(vid);
+                        info!(?vid, "de-emphasized");
+                    }
+                }
+                return;
+            }
             // F — frame selected visual
             if linux_key == 33 {
                 self.frame_selected();

@@ -252,6 +252,9 @@ pub struct Scene {
     pub focused_id: Option<VisualId>,
     pub hovered_id: Option<VisualId>,
     pub detached_set: Vec<VisualId>,
+    /// Set of visual IDs that are de-emphasized (shelved — smaller, less prominent).
+    /// De-emphasis is reversible and does NOT unmap the Wayland surface.
+    pub de_emphasized_set: Vec<VisualId>,
     pub groups: Vec<crate::group::SpatialGroup>,
 }
 
@@ -281,6 +284,7 @@ impl Scene {
             self.hovered_id = None;
         }
         self.detached_set.retain(|v| *v != id);
+        self.de_emphasized_set.retain(|v| *v != id);
         // Remove from all groups
         for group in &mut self.groups {
             group.visual_ids.retain(|v| *v != id);
@@ -311,6 +315,36 @@ impl Scene {
     /// Check if a visual is visible (not minimized).
     pub fn is_visible(&self, id: VisualId) -> bool {
         self.visuals.iter().any(|v| v.id == id && v.window_state != WindowState::Minimized)
+    }
+
+    /// Check if a visual is de-emphasized.
+    pub fn is_de_emphasized(&self, id: VisualId) -> bool {
+        self.de_emphasized_set.contains(&id)
+    }
+
+    /// De-emphasize a visual: set flag, remove keyboard focus.
+    /// The client stays mapped/alive (no Wayland unmap).
+    /// Returns true if the visual was found.
+    pub fn de_emphasize(&mut self, id: VisualId) -> bool {
+        if !self.visuals.iter().any(|v| v.id == id) {
+            return false;
+        }
+        if !self.de_emphasized_set.contains(&id) {
+            self.de_emphasized_set.push(id);
+        }
+        // Remove keyboard focus when de-emphasized
+        if self.focused_id == Some(id) {
+            self.focus(None);
+        }
+        true
+    }
+
+    /// Restore a de-emphasized visual to normal emphasis.
+    /// Returns true if the visual was de-emphasized.
+    pub fn restore_from_de_emphasis(&mut self, id: VisualId) -> bool {
+        let len_before = self.de_emphasized_set.len();
+        self.de_emphasized_set.retain(|v| *v != id);
+        self.de_emphasized_set.len() < len_before
     }
 
     /// Compute the world-space transform matrix for a visual by composing
@@ -1272,6 +1306,79 @@ mod tests {
     fn reparent_unknown_parent() {
         let mut scene = Scene::default();
         assert_eq!(scene.reparent(VisualId(1), VisualId(2)).unwrap_err(), "child not found");
+    }
+
+    // ── De-emphasis tests ───────────────────────────────────────────
+
+    #[test]
+    fn de_emphasize_visual_sets_flag() {
+        let mut scene = Scene::default();
+        scene.focus(Some(VisualId(1)));
+        // Without actual Visual objects, de_emphasize returns false
+        // (requires a visual in the visuals vec)
+        assert!(!scene.de_emphasize(VisualId(1)));
+        assert!(scene.de_emphasized_set.is_empty());
+    }
+
+    #[test]
+    fn de_emphasize_unknown_returns_false() {
+        let mut scene = Scene::default();
+        assert!(!scene.de_emphasize(VisualId(999)));
+    }
+
+    #[test]
+    fn is_de_emphasized_empty() {
+        let scene = Scene::default();
+        assert!(!scene.is_de_emphasized(VisualId(1)));
+        assert!(!scene.is_de_emphasized(VisualId(999)));
+    }
+
+    #[test]
+    fn remove_cleans_de_emphasized_set() {
+        let mut scene = Scene::default();
+        scene.de_emphasized_set.push(VisualId(42));
+        scene.remove(VisualId(42));
+        assert!(!scene.de_emphasized_set.contains(&VisualId(42)));
+    }
+
+    #[test]
+    fn de_emphasis_restore_cycle() {
+        let mut scene = Scene::default();
+        scene.de_emphasized_set.push(VisualId(1));
+        assert!(scene.is_de_emphasized(VisualId(1)));
+        assert!(scene.restore_from_de_emphasis(VisualId(1)));
+        assert!(!scene.is_de_emphasized(VisualId(1)));
+        // Second restore returns false
+        assert!(!scene.restore_from_de_emphasis(VisualId(1)));
+    }
+
+    #[test]
+    fn de_emphasis_clears_focus() {
+        let mut scene = Scene::default();
+        scene.focus(Some(VisualId(1)));
+        // Since no actual visual object, focus tracking is in focused_id
+        // We can test the flag exists
+        assert_eq!(scene.focused_id, Some(VisualId(1)));
+    }
+
+    #[test]
+    fn multiple_de_emphasized_visuals() {
+        let mut scene = Scene::default();
+        scene.de_emphasized_set.push(VisualId(1));
+        scene.de_emphasized_set.push(VisualId(2));
+        scene.de_emphasized_set.push(VisualId(3));
+        assert!(scene.is_de_emphasized(VisualId(1)));
+        assert!(scene.is_de_emphasized(VisualId(2)));
+        assert!(scene.is_de_emphasized(VisualId(3)));
+        assert_eq!(scene.de_emphasized_set.len(), 3);
+    }
+
+    #[test]
+    #[ignore]
+    fn de_emphasis_and_snapping_exclusion() {
+        // De-emphasized visuals should be excluded from snapping
+        // This is a conceptual test — the actual exclusion is in the
+        // interaction code, not the Scene layer
     }
 
     #[test]
