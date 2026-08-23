@@ -1564,6 +1564,8 @@ fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
         state.focus_manager.exit(&mut saved, &state.scene);
         std::mem::swap(&mut saved, &mut state.camera);
     }
+    // Remove from all groups
+    state.scene.remove_from_all_groups(vid);
 }
 
 impl SeatHandler for LookingGlass {

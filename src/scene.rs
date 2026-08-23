@@ -252,6 +252,7 @@ pub struct Scene {
     pub focused_id: Option<VisualId>,
     pub hovered_id: Option<VisualId>,
     pub detached_set: Vec<VisualId>,
+    pub groups: Vec<crate::group::SpatialGroup>,
 }
 
 impl Scene {
@@ -280,6 +281,10 @@ impl Scene {
             self.hovered_id = None;
         }
         self.detached_set.retain(|v| *v != id);
+        // Remove from all groups
+        for group in &mut self.groups {
+            group.visual_ids.retain(|v| *v != id);
+        }
     }
 
     /// Mark a visual as disconnected from its content producer.
