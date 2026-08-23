@@ -1,9 +1,9 @@
 [package]
-name = "looking-glass-ng"
+name = "veyra"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
-description = "A spatial Wayland compositor inspired by Project Looking Glass"
+description = "A spatial Wayland compositor"
 license = "MIT"
 
 [dependencies]

@@ -134,7 +134,7 @@ fn state_path() -> PathBuf {
         std::env::var("XDG_RUNTIME_DIR")
             .unwrap_or_else(|_| "/tmp".to_string()),
     );
-    path.push("looking-glass-ng-state.json");
+    path.push("veyra-state.json");
     path
 }
 

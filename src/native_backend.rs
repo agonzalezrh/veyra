@@ -1,4 +1,4 @@
-//! Native DRM/KMS backend for Looking Glass NG.
+//! Native DRM/KMS backend for Veyra.
 //!
 //! Replaces the winit nested backend when running directly on hardware.
 //! Uses Smithay's DRM + GBM + EGL + libseat + libinput infrastructure.

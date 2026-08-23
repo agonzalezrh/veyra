@@ -280,7 +280,7 @@ impl KvmfrFrameProducer {
     /// Try transports in priority order, then init LGMP on the first that works.
     fn try_lgmp(&mut self, renderer: &mut GlesRenderer) -> Option<FrameResult> {
         let mapping = IvshmemTransport::open()
-            .or_else(|| PosixShmTransport::open("/looking-glass-ng-test"))?;
+            .or_else(|| PosixShmTransport::open("/veyra-test"))?;
 
         let mem = mapping.ptr();
         let size = mapping.len();

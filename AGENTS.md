@@ -1,8 +1,8 @@
-# Looking Glass NG — AI Development Instructions
+# Veyra — AI Development Instructions
 
 ## 1. Project identity
 
-**Looking Glass NG is a modern 3D Wayland compositor/window manager inspired by the Sun Looking Glass 3D desktop.**
+**Veyra is a spatial Wayland compositor/desktop.**
 
 The primary goal is to create a **spatial desktop for normal Wayland applications**.
 
@@ -39,22 +39,26 @@ The project also supports loading external frame buffers through the `FrameProdu
 The architecture must remain provider-agnostic:
 
 ```text
-Looking Glass NG
-       │
-   ┌───┴───┐
+Veyra
+   │
+   ├── Wayland
    │       │
-Wayland  External (KVMFR, etc.)
-   │       │
-   └───┬───┘
-       ▼
-     Visual
-       │
-       ▼
-     Scene
-       │
-       ▼
-    Renderer
+   │       ▼
+   │     Visual
+   │
+   └── External (KVMFR, etc.)
+           │
+           ▼
+         Visual
+           │
+           ▼
+         Scene
+           │
+           ▼
+        Renderer
 ```
+
+
 
 Provider-specific code belongs ONLY behind the `FrameProducer`, `InputSink`, and `ProviderCapabilities` interfaces. The following must NEVER contain provider-specific logic:
 
@@ -559,7 +563,7 @@ Smithay is actively evolving. Do not blindly copy code written for an older majo
 
 The project is successful when a user can:
 
-1. Start Looking Glass NG.
+1. Start Veyra.
 2. Launch normal Linux applications.
 3. Use them normally.
 4. Enter spatial mode.

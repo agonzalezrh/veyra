@@ -38,11 +38,11 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "looking_glass_ng=info,warn".into()),
+                .unwrap_or_else(|_| "veyra=info,warn".into()),
         )
         .init();
 
-    tracing::info!("Looking Glass NG starting");
+    tracing::info!("Veyra starting");
 
     let mut event_loop: EventLoop<'static, LookingGlass> =
         EventLoop::try_new().expect("Failed to create event loop");
@@ -207,7 +207,7 @@ fn main() {
         })
         .expect("Failed to register winit event source");
 
-    tracing::info!("Looking Glass NG running on {}", socket_name);
+    tracing::info!("Veyra running on {}", socket_name);
 
     let _ = event_loop.run(None, &mut state, |_| {});
 }
