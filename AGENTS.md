@@ -145,6 +145,22 @@ In particular:
 - A Visual has workspace-local lifetime.
 - A Renderer never owns window-management state.
 
+## 3.3 Spatial desktop invariants
+
+These rules apply to all spatial operations (Groups C+):
+
+1. **Camera state never modifies Visual transforms.** Camera movement (orbit/pan/zoom/focus/overview) changes the view, not the scene.
+
+2. **Arrangement produces transforms; it does not own transforms.** The arrangement engine computes desired positions; WorkspaceState owns them.
+
+3. **Spatial groups contain presentation relationships, never Wayland protocol relationships.** A Group is a `Vec<VisualId>` with a transform, not a Wayland object.
+
+4. **Overview is a camera mode, not a scene mutation.** The overview "zoom-out" changes `CameraMode`; Visual transforms remain untouched.
+
+5. **Focus is a camera/presentation operation, never a Wayland surface lifecycle operation.** Focusing changes the camera trajectory and visual emphasis, not Wayland keyboard focus or surface state.
+
+6. **No spatial feature may require a Wayland client to know that Veyra is 3D.** Applications must believe they are talking to a normal 2D Wayland compositor.
+
 ---
 
 # 4. Source of truth
@@ -544,17 +560,25 @@ navigation, and persistence v2 with schema versioning.
 Exit criteria: 155–170 tests, 3+ workspaces with independent state,
 no cross-workspace interaction.
 
+**Status: ✅ Complete (149 tests)**
+
 ## Group B — Native Wayland Desktop (M061–M066)
 
 Toplevel lifecycle hardening, keyboard focus model, pointer grabs,
 XDG popups/transients, decorations/chrome, native input integration.
 Veyra runs a normal Wayland session with foot, menus, dialogs.
 
+**Status: ✅ Complete (177 tests)**
+
 ## Group C — Spatial Desktop (M067–M073)
 
 Spatial anchoring, groups, intelligent arrangement, focus mode v2,
-spatial minimize, spatial overview, workspace overview.
-"D applications inhabit a navigable spatial desktop."
+spatial de-emphasis, spatial overview, workspace overview.
+Applications inhabit a navigable spatial desktop.
+
+Exit criteria: 210–240 tests, camera/overview/focus are camera-only
+operations (never scene mutations), arrangement produces transforms
+(never owns them), all Wayland clients remain unaware of the 3D desktop."
 
 ## Group D — Production Architecture (M074–M080)
 
