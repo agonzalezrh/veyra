@@ -115,6 +115,36 @@ A window is NOT a renderer texture.
 
 A renderer must NOT become the owner of window-management state.
 
+## 3.2 Four-layer architecture
+
+Wayland protocol state, application content state, spatial presentation state, and rendering state are four separate layers. No provider-specific implementation may leak upward across these boundaries.
+
+```text
+┌──────────────────────┐
+│  Wayland Protocol    │  clients, surfaces, protocol objects
+└──────────┬───────────┘
+           │
+┌──────────▼───────────┐
+│  Application Content │  buffer contents, window metadata
+└──────────┬───────────┘
+           │
+┌──────────▼───────────┐
+│  Spatial Workspace   │  VisualState, Camera, Focus, Layout, Snap
+└──────────┬───────────┘
+           │
+┌──────────▼───────────┐
+│  Scene + Renderer    │  scene graph, GLES/DRM presentation
+└──────────────────────┘
+```
+
+Each layer owns its own state. Lower layers never reach upward.
+
+In particular:
+
+- A Wayland surface has compositor-global lifetime.
+- A Visual has workspace-local lifetime.
+- A Renderer never owns window-management state.
+
 ---
 
 # 4. Source of truth
@@ -499,7 +529,42 @@ Every implementation task must have:
 
 ---
 
-# 24. Commit discipline
+# 24. Development roadmap
+
+The project is organized into milestone groups. Each group is implemented
+autonomously as a batch, with the AI running all milestones, running
+tests, and committing before moving to the next group.
+
+## Group A — Workspace Foundation (M056.1–M060)
+
+Per-workspace transforms, picking, snapping, focus, layout, and persistence.
+State model formalized with WorkspaceManager. Multi-workspace lifecycle,
+navigation, and persistence v2 with schema versioning.
+
+Exit criteria: 155–170 tests, 3+ workspaces with independent state,
+no cross-workspace interaction.
+
+## Group B — Native Wayland Desktop (M061–M066)
+
+Toplevel lifecycle hardening, keyboard focus model, pointer grabs,
+XDG popups/transients, decorations/chrome, native input integration.
+Veyra runs a normal Wayland session with foot, menus, dialogs.
+
+## Group C — Spatial Desktop (M067–M073)
+
+Spatial anchoring, groups, intelligent arrangement, focus mode v2,
+spatial minimize, spatial overview, workspace overview.
+"D applications inhabit a navigable spatial desktop."
+
+## Group D — Production Architecture (M074–M080)
+
+Renderer abstraction audit, DRM/KMS production path, GPU capability
+detection, multi-monitor, rendering performance, frame scheduling,
+long-running stability.
+
+---
+
+# 25. Commit discipline
 
 Prefer small commits.
 
@@ -519,7 +584,7 @@ Do not combine unrelated milestones.
 
 ---
 
-# 25. When uncertain
+# 26. When uncertain
 
 Do not guess about Smithay APIs.
 
@@ -529,7 +594,7 @@ Smithay is actively evolving. Do not blindly copy code written for an older majo
 
 ---
 
-# 26. Definition of success
+# 27. Definition of success
 
 The project is successful when a user can:
 
