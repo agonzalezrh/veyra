@@ -769,6 +769,16 @@ impl LookingGlass {
         let mode = self.interaction.handle_pointer_down(
             x, y, &mut self.scene, &self.camera, self.spatial_mode, shift, ctrl, alt,
         );
+        // If the clicked visual doesn't belong to the active workspace, deselect it
+        if let Some(vid) = self.scene.selected_id {
+            let in_workspace = self.workspaces.get(self.active_workspace)
+                .map(|ws| ws.contains(vid))
+                .unwrap_or(false);
+            if !in_workspace {
+                self.scene.selected_id = None;
+                self.scene.focus(None);
+            }
+        }
         self.last_down_vid = self.scene.selected_id;
         match mode {
             Some(_) => {}
@@ -829,9 +839,12 @@ impl LookingGlass {
                     let mpos = visual.transform.position;
                     let mw = visual.total_width();
                     let mh = visual.total_height();
-                    // Build anchor list from non-selected, non-detached visuals
+                    // Build anchor list from non-selected, non-detached, same-workspace visuals only
+                    let ws_ids = self.workspaces.get(self.active_workspace)
+                        .map(|ws| ws.visual_ids.as_slice())
+                        .unwrap_or(&[]);
                     let anchors: Vec<_> = self.scene.visuals.iter()
-                        .filter(|v| v.id != vid && !self.scene.detached_set.contains(&v.id))
+                        .filter(|v| v.id != vid && !self.scene.detached_set.contains(&v.id) && ws_ids.contains(&v.id))
                         .map(|v| (v.transform.position, v.total_width(), v.total_height()))
                         .collect();
                     if let Some(snap) = crate::snap::snap_position(mpos, mw, mh, &anchors, &Default::default()) {
@@ -883,10 +896,12 @@ impl LookingGlass {
             None => return,
         };
 
-        // Pick the visual under cursor via 3D ray cast
-        let picked = self.scene.pick(&pv, ndc_x, ndc_y);
+        // Pick the visual under cursor via 3D ray cast, filtered by active workspace
+        let ws_visible = self.workspaces.get(self.active_workspace)
+            .map(|ws| ws.visual_ids.as_slice())
+            .unwrap_or(&[]);
+        let picked = self.scene.pick_visible(&pv, ndc_x, ndc_y, ws_visible);
         if let Some((vid, _)) = picked {
-            // Update hovered visual (including non-Wayland visuals)
             self.scene.hovered_id = Some(vid);
         } else {
             self.scene.hovered_id = None;
@@ -1011,6 +1026,7 @@ impl LookingGlass {
             ws.layout_mode = self.layout_mode;
             ws.focused_id = self.scene.focused_id;
             ws.detached_set = self.scene.detached_set.clone();
+            ws.save_transforms(&self.scene);
         }
     }
 
@@ -1021,6 +1037,7 @@ impl LookingGlass {
         }
         self.sync_active_workspace();
         if let Some(ws) = self.workspaces.get(idx) {
+            ws.restore_transforms(&mut self.scene);
             self.camera = ws.camera.clone();
             self.layout_mode = ws.layout_mode;
             self.scene.focused_id = ws.focused_id;

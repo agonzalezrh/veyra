@@ -596,6 +596,29 @@ impl Scene {
     ) -> Option<(VisualId, f32)> {
         pick_visual(proj_view, ndc_x, ndc_y, &self.visuals)
     }
+
+    /// Pick only among visuals in the given visible set (workspace filter).
+    /// Uses the same ray-cast logic but only considers IDs in `visible`.
+    pub fn pick_visible(
+        &self,
+        proj_view: &Matrix4<f32>,
+        ndc_x: f32,
+        ndc_y: f32,
+        visible: &[VisualId],
+    ) -> Option<(VisualId, f32)> {
+        let items: Vec<_> = self.visuals
+            .iter()
+            .filter(|v| visible.contains(&v.id))
+            .map(|v| {
+                (
+                    v.id,
+                    v.transform.clone(),
+                    (v.total_width(), v.total_height()),
+                )
+            })
+            .collect();
+        pick_visual_items(proj_view, ndc_x, ndc_y, &items)
+    }
 }
 
 /// Pure function: test which visual is hit by a ray from screen NDC.

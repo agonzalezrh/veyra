@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use cgmath::Point3;
 
 use crate::input::Camera;
 use crate::layout::LayoutMode;
-use crate::scene::VisualId;
+use crate::scene::{Transform3D, VisualId};
 
 /// A workspace is a spatial presentation of a subset of the global Scene.
 ///
@@ -23,6 +25,9 @@ pub struct Workspace {
     pub detached_set: Vec<VisualId>,
     /// The focused visual in this workspace.
     pub focused_id: Option<VisualId>,
+    /// Per-workspace Visual transforms (position, rotation, scale).
+    /// Maps VisualId -> workspace-specific transform.
+    pub transforms: HashMap<VisualId, Transform3D>,
 }
 
 impl Workspace {
@@ -33,6 +38,7 @@ impl Workspace {
             visual_ids: Vec::new(),
             detached_set: Vec::new(),
             focused_id: None,
+            transforms: HashMap::new(),
         }
     }
 
@@ -45,6 +51,7 @@ impl Workspace {
     pub fn remove(&mut self, id: VisualId) {
         self.visual_ids.retain(|v| *v != id);
         self.detached_set.retain(|v| *v != id);
+        self.transforms.remove(&id);
         if self.focused_id == Some(id) {
             self.focused_id = None;
         }
@@ -56,6 +63,24 @@ impl Workspace {
 
     pub fn focus(&mut self, id: Option<VisualId>) {
         self.focused_id = id;
+    }
+
+    /// Save the scene's current transforms for all workspace members into the workspace.
+    pub fn save_transforms(&mut self, scene: &crate::scene::Scene) {
+        for v in &scene.visuals {
+            if self.visual_ids.contains(&v.id) {
+                self.transforms.insert(v.id, v.transform.clone());
+            }
+        }
+    }
+
+    /// Restore the workspace's saved transforms onto the matching scene visuals.
+    pub fn restore_transforms(&self, scene: &mut crate::scene::Scene) {
+        for v in &mut scene.visuals {
+            if let Some(saved) = self.transforms.get(&v.id) {
+                v.transform = saved.clone();
+            }
+        }
     }
 }
 
