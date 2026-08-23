@@ -5,8 +5,8 @@ mod focus;
 mod input;
 mod input_router;
 mod interaction;
-mod kvmfr;
 mod layout;
+mod simulated;
 mod perf;
 mod persist;
 mod producer;
@@ -57,10 +57,7 @@ fn main() {
 
     let mut state = LookingGlass::new(&display_handle, backend);
 
-    // Register the animated checkerboard frame producer
-    // This proves the external frame producer pipeline works with continuous updates.
-    // A Looking Glass KVMFR producer would be registered the same way.
-    // Register benchmark producers if BENCHMARK_VISUALS is set
+    // Register frame producers
     let bench_count: usize = std::env::var("BENCHMARK_VISUALS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -72,7 +69,11 @@ fn main() {
     ) {
         state.add_producer(Box::new(prod));
     }
-    state.add_producer(Box::new(kvmfr::KvmfrFrameProducer::new()));
+    if let Some(prod) = simulated::SimulatedFrameProducer::new(
+        state.backend.as_mut().map(|b| b.renderer()).unwrap(),
+    ) {
+        state.add_producer(Box::new(prod));
+    }
 
     // Create benchmark producers first, then add them to the state
     let mut bench_producers: Vec<Box<dyn producer::FrameProducer>> = Vec::new();

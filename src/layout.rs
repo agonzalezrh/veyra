@@ -1,9 +1,8 @@
-use cgmath::Deg;
 use cgmath::Quaternion;
 use cgmath::Rotation3;
 use cgmath::Vector3;
 
-use crate::scene::{Scene, Visual, VisualId};
+use crate::scene::{Scene, VisualId};
 
 /// Compute an initial placement position for a new visual of the given size.
 /// Uses a spiral pattern that spreads out from the origin.

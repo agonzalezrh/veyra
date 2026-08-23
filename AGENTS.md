@@ -28,37 +28,7 @@ Camera / Layout / Interaction
 GLES Renderer
 ```
 
-The MVP must be demonstrable using ordinary Wayland applications alone. No VMs required.
-
-### KVMFR/Looking Glass KVM
-
-The project also supports loading external frame buffers through the `FrameProducer` abstraction. KVMFR framebuffers from Looking Glass KVM are one such optional provider.
-
-**KVMFR is an optional `FrameProducer`, not the purpose of the compositor.**
-
-The architecture must remain provider-agnostic:
-
-```text
-Veyra
-   │
-   ├── Wayland
-   │       │
-   │       ▼
-   │     Visual
-   │
-   └── External (KVMFR, etc.)
-           │
-           ▼
-         Visual
-           │
-           ▼
-         Scene
-           │
-           ▼
-        Renderer
-```
-
-
+The MVP must be demonstrable using ordinary Wayland applications alone.
 
 Provider-specific code belongs ONLY behind the `FrameProducer`, `InputSink`, and `ProviderCapabilities` interfaces. The following must NEVER contain provider-specific logic:
 
@@ -454,7 +424,7 @@ The central UX principle is:
 
 Normal mode should feel familiar.
 
-Spatial mode should expose the Looking Glass experience.
+Spatial mode should expose the 3D desktop experience.
 
 Do not force users to manipulate windows in 3D continuously.
 

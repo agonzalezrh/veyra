@@ -22,7 +22,6 @@ use smithay::input::SeatState;
 use smithay::wayland::selection::data_device::{ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
-use smithay::utils::Logical;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Client;
@@ -147,7 +146,7 @@ pub struct LookingGlass {
     pub layout_mode: layout::LayoutMode,
     pub workspaces: Vec<Workspace>,
     pub active_workspace: usize,
-    /// Registered frame producers (e.g. animated textures, Looking Glass)
+    /// Registered frame producers
     producers: Vec<(VisualId, Box<dyn FrameProducer>)>,
     pub perf: PerfStats,
     pub output: Option<Output>,
@@ -209,8 +208,8 @@ impl LookingGlass {
             PhysicalProperties {
                 size: (338, 270).into(),
                 subpixel: Subpixel::Unknown,
-                make: "Looking Glass".into(),
-                model: "NG Display".into(),
+                make: "Veyra".into(),
+                model: "Display".into(),
             },
         );
         let _output_global = output.create_global::<Self>(display_handle);
@@ -413,9 +412,6 @@ impl LookingGlass {
     }
 
     /// Create a visual from external (non-Wayland) pixel data.
-    /// This demonstrates the VisualContent::ExternalTexture abstraction.
-    /// A real external producer (e.g. Looking Glass framebuffer) would
-    /// provide GPU textures through this same path.
     pub fn add_external_visual(&mut self, pixels: Vec<u8>, width: u32, height: u32) {
         use smithay::backend::allocator::Fourcc;
         use smithay::backend::renderer::ImportMem;
@@ -882,8 +878,7 @@ impl LookingGlass {
     /// Updates pointer focus based on 3D ray hit testing. Only emits
     /// enter/leave transitions when the hovered surface ACTUALLY changes
     /// (debounces against last_wayland_focus). Never clears focus from
-    /// hover alone — that avoids flickering with non-Wayland visuals
-    /// like the KVMFR chess board.
+    /// hover alone — that avoids flickering with non-Wayland visuals.
     fn route_hover(&mut self, x: f64, y: f64) {
         let (w, h) = self.window_size;
         if w <= 0.0 || h <= 0.0 { return; }
