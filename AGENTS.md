@@ -583,8 +583,20 @@ operations (never scene mutations), arrangement produces transforms
 ## Group D — Production Architecture (M074–M080)
 
 Renderer abstraction audit, DRM/KMS production path, GPU capability
-detection, multi-monitor, rendering performance, frame scheduling,
-long-running stability.
+detection, multi-display architecture, rendering performance, frame
+scheduling and damage tracking, long-running stability soak tests.
+No new spatial UX features in Group D — stabilize, measure, harden.
+
+**Note**: `/dev/dri/cardN` existence does not imply usable 3D rendering.
+EGL/GLES capability detection is required before committing to native
+rendering.
+
+**Status: ⬜ Not started**
+
+Exit criteria: Wayland/spatial/renderer layers cleanly separated,
+multi-display architecture defined, damage tracking + frame scheduling,
+benchmark suite, DRM native session works reliably with clean failure
+diagnostics, long-running soak test, 240+ tests."
 
 ---
 
