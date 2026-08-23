@@ -13,7 +13,8 @@ use smithay::delegate_output;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_xdg_shell;
-use smithay::input::keyboard::{KeyboardHandle, LedState};
+use smithay::backend::input::{KeyState, Keycode};
+use smithay::input::keyboard::{FilterResult, KeyboardHandle, LedState};
 use smithay::input::pointer::{ButtonEvent, CursorImageStatus, MotionEvent, PointerHandle};
 use smithay::input::Seat;
 use smithay::input::SeatHandler;
@@ -153,7 +154,10 @@ pub struct LookingGlass {
     pub last_mouse: (f64, f64),
     pub last_dx: f64,
     pub last_dy: f64,
+    pub press_pos: (f64, f64),
     pub nav_button: u32,
+    pub event_serial: u32,
+    pub last_down_vid: Option<VisualId>,
     pub auto_orbit: bool,
     pub focus_manager: FocusManager,
     pub interaction: InteractionController,
@@ -233,7 +237,10 @@ impl LookingGlass {
             last_mouse: (0.0, 0.0),
             last_dx: 0.0,
             last_dy: 0.0,
+            press_pos: (0.0, 0.0),
             nav_button: 0,
+            event_serial: 0,
+            last_down_vid: None,
             auto_orbit: true,
             focus_manager: FocusManager::new(),
             interaction: InteractionController::new(),
@@ -658,11 +665,21 @@ impl LookingGlass {
         let Some(vid) = self.scene.focused_id else { return };
         if !self.scene.is_active(vid) { return }
 
-        // For Wayland surfaces, set keyboard focus via KeyboardHandle
+        // For Wayland surfaces, set keyboard focus and deliver key event
         let wl_focus = self.wayland_surfaces.get(&vid).cloned();
         let kh = self.keyboard_handle.clone();
         if let (Some(wl_surface), Some(ref kh_handle)) = (wl_focus, kh) {
+            let state = if pressed { KeyState::Pressed } else { KeyState::Released };
+            // Set focus first, then deliver the key event via input_forward
             kh_handle.set_focus(self, Some(wl_surface), smithay::utils::Serial::from(0));
+            let _ = kh_handle.input::<(), _>(
+                self,
+                Keycode::new(key as u32),
+                state,
+                smithay::utils::Serial::from(0),
+                0,
+                |_, _, _| FilterResult::Forward,
+            );
             return;
         }
 
@@ -678,10 +695,13 @@ impl LookingGlass {
 
     /// Public entry point for a pointer button press.
     pub fn handle_pointer_down(&mut self, x: f64, y: f64, shift: bool, ctrl: bool, alt: bool) {
+        self.press_pos = (x, y);
+        self.event_serial = self.event_serial.wrapping_add(1);
         self.interaction.window_size = self.window_size;
         let mode = self.interaction.handle_pointer_down(
             x, y, &mut self.scene, &self.camera, self.spatial_mode, shift, ctrl, alt,
         );
+        self.last_down_vid = self.scene.selected_id;
         match mode {
             Some(_) => {}
             None => {
@@ -705,6 +725,8 @@ impl LookingGlass {
 
     /// Public entry point for pointer button release.
     pub fn handle_pointer_up(&mut self, x: f64, y: f64) {
+        self.event_serial = self.event_serial.wrapping_add(1);
+        self.last_down_vid = None;
         let has_active = self.interaction.is_dragging();
         self.interaction.handle_pointer_up();
         if !has_active {
@@ -737,7 +759,7 @@ impl LookingGlass {
             if let Some(vid) = self.scene.selected_id {
                 if self.scene.is_active(vid) {
                     let threshold = 5.0;
-                    if (x - self.last_mouse.0).abs() > threshold || (y - self.last_mouse.1).abs() > threshold {
+                    if (x - self.press_pos.0).abs() > threshold || (y - self.press_pos.1).abs() > threshold {
                         self.interaction.force_translate(x, y, &mut self.scene, &self.camera, self.spatial_mode);
                     }
                 }

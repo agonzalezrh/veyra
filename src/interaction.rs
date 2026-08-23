@@ -1,10 +1,11 @@
 use cgmath::InnerSpace;
 use cgmath::Matrix4;
+use cgmath::Rad;
 use cgmath::SquareMatrix;
 use cgmath::Vector3;
 use cgmath::Vector4;
 
-use crate::scene::Scene;
+use crate::scene::{Scene, VisualId};
 use crate::input::Camera;
 
 /// Which mode the interaction controller is in.
@@ -32,8 +33,12 @@ pub enum ManipMode {
 #[derive(Debug, Clone)]
 struct ActiveManip {
     mode: ManipMode,
+    /// The visual being manipulated (authoritative, not derived from selection).
+    vid: VisualId,
     /// The hit point on the visual in world space when drag started.
     origin: Vector3<f32>,
+    /// The offset from visual center to grab point (for smooth drag start).
+    grab_offset: Vector3<f32>,
     /// The plane normal for translation (camera forward at drag start).
     plane_normal: Vector3<f32>,
     /// Original transform values for relative manipulation.
@@ -174,8 +179,8 @@ impl InteractionController {
 
         if let Some(visual) = scene.visuals.iter().find(|v| v.id == vid) {
             let pos = visual.transform.position;
-            let view_fwd = camera.view_matrix() * Vector4::new(0.0, 0.0, -1.0, 0.0);
-            let plane_normal = Vector3::new(view_fwd.x, view_fwd.y, view_fwd.z).normalize();
+            let fwd = camera.forward();
+            let plane_normal = Vector3::new(fwd.z, 0.0, -fwd.x).normalize();
 
             // Mark as detached from layout when user starts manipulating
             if !scene.detached_set.contains(&vid) {
@@ -183,9 +188,12 @@ impl InteractionController {
             }
 
             if let Some(hit) = Self::ray_plane_intersect(ray_origin, ray_dir, pos, plane_normal) {
+                let grab_offset = hit - pos;
                 self.active = Some(ActiveManip {
                     mode,
+                    vid,
                     origin: hit,
+                    grab_offset,
                     plane_normal,
                     start_position: pos,
                     start_rotation: visual.transform.rotation,
@@ -203,7 +211,7 @@ impl InteractionController {
     }
 
     /// Start a translate drag on the selected visual (without modifier).
-    /// Used for title-bar drags.
+    /// Used for title-bar drags and content-area spatial manipulation.
     pub fn force_translate(
         &mut self,
         x: f64,
@@ -219,17 +227,23 @@ impl InteractionController {
 
         if let Some(visual) = scene.visuals.iter().find(|v| v.id == vid) {
             let pos = visual.transform.position;
-            let view_fwd = camera.view_matrix() * Vector4::new(0.0, 0.0, -1.0, 0.0);
-            let plane_normal = Vector3::new(view_fwd.x, view_fwd.y, view_fwd.z).normalize();
+            // Compute camera forward in world space using camera orientation
+            let fwd = camera.forward();
+            let plane_normal = Vector3::new(fwd.z, 0.0, -fwd.x).normalize();
+            // Use a vertical plane for dragging to match expected behavior
 
+            let plane_point = pos;
             if !scene.detached_set.contains(&vid) {
                 scene.detached_set.push(vid);
             }
 
-            if let Some(hit) = Self::ray_plane_intersect(ray_origin, ray_dir, pos, plane_normal) {
+            if let Some(hit) = Self::ray_plane_intersect(ray_origin, ray_dir, plane_point, plane_normal) {
+                let grab_offset = hit - pos;
                 self.active = Some(ActiveManip {
                     mode: ManipMode::Translate,
+                    vid,
                     origin: hit,
+                    grab_offset,
                     plane_normal,
                     start_position: pos,
                     start_rotation: visual.transform.rotation,
@@ -259,8 +273,7 @@ impl InteractionController {
         self.mouse_y = y;
 
         let Some(ref active) = self.active.clone() else { return };
-        let Some(vid) = scene.selected_id else { return };
-        let visual = match scene.get_mut(vid) {
+        let visual = match scene.get_mut(active.vid) {
             Some(v) => v,
             None => return,
         };
