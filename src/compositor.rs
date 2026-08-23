@@ -1081,6 +1081,7 @@ impl LookingGlass {
 
     /// Switch to a workspace by ID.
     /// Saves the current workspace state and restores the target workspace state.
+    /// Uses set_keyboard_focus() to ensure Wayland keyboard focus stays in sync.
     /// Returns true if the switch occurred.
     pub fn switch_workspace(&mut self, idx: usize) -> bool {
         let old_id = self.workspace_manager.active_id();
@@ -1098,10 +1099,11 @@ impl LookingGlass {
         // Sync camera, layout, focus from saved workspace state
         let ws = self.workspace_manager.active();
         self.camera = ws.camera.clone();
-        self.scene.focused_id = ws.focused_id;
         self.scene.detached_set = ws.detached_set.clone();
         // Sync focus manager state
         self.focus_manager = ws.focus_manager_state.clone();
+        // Use authoritative focus setter for Wayland keyboard focus sync
+        self.set_keyboard_focus(ws.focused_id);
         info!(workspace = idx, old = old_id, "switched workspace");
         true
     }
