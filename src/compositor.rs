@@ -267,10 +267,11 @@ impl LookingGlass {
         if crate::persist::exists() {
             match crate::persist::load() {
                 Ok(state) => {
+                    let count = state.workspace_count();
                     self.saved_state = Some(state);
                     if let Some(ref s) = self.saved_state {
                         s.apply_camera(&mut self.camera);
-                        info!(visuals = s.visuals.len(), "workspace state loaded");
+                        info!(workspaces = count, "workspace state loaded");
                     }
                 }
                 Err(e) => info!(?e, "no saved workspace state to load"),
@@ -280,7 +281,15 @@ impl LookingGlass {
 
     /// Save current workspace state to disk.
     pub fn save_state(&self) {
-        let state = crate::persist::WorkspaceState::capture(&self.scene, &self.camera);
+        use crate::layout::LayoutMode;
+        let ws = self.workspace_manager.active();
+        let state = crate::persist::WorkspaceState::capture(
+            &self.scene,
+            &self.camera,
+            ws.layout_mode,
+            &self.scene.detached_set,
+            &ws.visual_ids,
+        );
         match crate::persist::save(&state) {
             Ok(()) => info!("workspace state saved"),
             Err(e) => warn!(?e, "failed to save workspace state"),
@@ -367,7 +376,7 @@ impl LookingGlass {
                         // Try restoring from saved state, fall back to layout
                         let app_id = &self.toplevels[idx].app_id;
                         let restored = self.saved_state.as_ref().and_then(|s| {
-                            s.find_visual(app_id).map(|vs| {
+                            s.find_visual(app_id).map(|(_, vs)| {
                                 visual.transform.position.x = vs.x;
                                 visual.transform.position.y = vs.y;
                                 visual.transform.position.z = vs.z;
