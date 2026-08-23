@@ -912,6 +912,18 @@ impl LookingGlass {
         sink.handle_keyboard(KeyboardEvent { key: hid, pressed });
     }
 
+    /// Find which workspace contains a visual.
+    fn workspace_for_visual(&self, vid: VisualId) -> Option<usize> {
+        for i in 0..self.workspace_manager.len() {
+            if let Some(ws) = self.workspace_manager.get(i) {
+                if ws.contains(vid) {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
     /// Public entry point for a pointer button press.
     pub fn handle_pointer_down(&mut self, x: f64, y: f64, shift: bool, ctrl: bool, alt: bool) {
         self.press_pos = (x, y);
@@ -925,6 +937,18 @@ impl LookingGlass {
             if let Some(vid) = self.scene.selected_id {
                 self.focus_manager.enter(&self.camera, vid, &self.scene);
                 info!(?vid, "overview click -> focus");
+            }
+            return;
+        }
+        // In workspace overview, clicking a visual switches to its workspace
+        if matches!(self.focus_manager.camera_mode, CameraMode::WorkspaceOverview) {
+            if let Some(vid) = self.scene.selected_id {
+                if let Some(ws_id) = self.workspace_for_visual(vid) {
+                    let _ = self.activate_workspace(ws_id);
+                    self.focus_manager.exit_overview(&mut self.camera);
+                    self.set_keyboard_focus(Some(vid));
+                    info!(?vid, workspace = ws_id, "workspace overview click -> switch");
+                }
             }
             return;
         }
@@ -1355,6 +1379,19 @@ impl LookingGlass {
                     }
                     _ => {
                         self.enter_overview();
+                    }
+                }
+                return;
+            }
+            // P (25) — toggle workspace overview mode
+            if linux_key == 25 {
+                match self.focus_manager.camera_mode {
+                    CameraMode::WorkspaceOverview => {
+                        self.focus_manager.exit_overview(&mut self.camera);
+                        info!("workspace overview off");
+                    }
+                    _ => {
+                        self.enter_workspace_overview();
                     }
                 }
                 return;

@@ -522,4 +522,41 @@ mod tests {
         assert_eq!(cam.position.x, 100.0);
         assert_eq!(cam.position.y, 200.0);
     }
+
+    // ── Workspace overview tests ─────────────────────────────────────
+
+    #[test]
+    fn workspace_overview_enter_and_exit() {
+        let mut fm = FocusManager::new();
+        let mut cam = Camera::new();
+        cam.position = cgmath::Point3::new(100.0, 200.0, 300.0);
+
+        let overview_cam = Camera {
+            position: cgmath::Point3::new(0.0, 0.0, 3000.0),
+            pitch: -0.3,
+            ..Camera::new()
+        };
+        fm.enter_workspace_overview(&cam, overview_cam);
+        assert!(matches!(fm.camera_mode, CameraMode::WorkspaceOverview));
+
+        fm.exit_overview(&mut cam);
+        assert!(matches!(fm.camera_mode, CameraMode::Normal));
+        assert_eq!(cam.position.x, 100.0);
+        assert_eq!(cam.position.y, 200.0);
+        assert_eq!(cam.position.z, 300.0);
+    }
+
+    #[test]
+    fn workspace_overview_persists_saved_camera() {
+        let mut fm = FocusManager::new();
+        let cam = Camera::new();
+        let overview_cam = Camera {
+            position: cgmath::Point3::new(0.0, 0.0, 3000.0),
+            ..Camera::new()
+        };
+        fm.enter_workspace_overview(&cam, overview_cam);
+        assert!(fm.saved_camera.is_some());
+        assert!(fm.transition.is_some());
+        assert!(matches!(fm.camera_mode, CameraMode::WorkspaceOverview));
+    }
 }
