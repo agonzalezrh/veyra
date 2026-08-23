@@ -8,6 +8,10 @@ use tracing::info;
 
 use crate::scene::{Scene, VisualId};
 
+const MIN_DISTANCE: f32 = 50.0;
+const MAX_DISTANCE: f32 = 20000.0;
+const PITCH_LIMIT: f32 = 1.5; // ~85 degrees up/down
+
 #[derive(Debug, Clone)]
 pub struct Camera {
     pub position: Point3<f32>,
@@ -48,6 +52,14 @@ impl Camera {
         Matrix4::look_at_rh(self.position, center, Vector3::new(0.0, 1.0, 0.0))
     }
 
+    /// Camera look direction (full 3D, includes pitch).
+    pub fn look_dir(&self) -> Vector3<f32> {
+        let (sy, cy) = self.yaw.sin_cos();
+        let (sp, cp) = self.pitch.sin_cos();
+        Vector3::new(-sy * cp, sp, -cy * cp)
+    }
+
+    /// Horizontal forward direction (no pitch, for WASD movement).
     pub fn forward(&self) -> Vector3<f32> {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         Vector3::new(-sin_yaw, 0.0, -cos_yaw)
@@ -58,31 +70,58 @@ impl Camera {
         Vector3::new(cos_yaw, 0.0, -sin_yaw)
     }
 
+    /// Clamp pitch and position to valid ranges.
+    fn clamp_state(&mut self) {
+        self.pitch = self.pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        self.position.x = self.position.x.clamp(-MAX_DISTANCE, MAX_DISTANCE);
+        self.position.y = self.position.y.clamp(-MAX_DISTANCE, MAX_DISTANCE);
+        self.position.z = self.position.z.clamp(-MAX_DISTANCE, MAX_DISTANCE);
+        // NaN/Inf protection
+        if !self.position.x.is_finite() { self.position.x = 0.0; }
+        if !self.position.y.is_finite() { self.position.y = 0.0; }
+        if !self.position.z.is_finite() { self.position.z = 800.0; }
+        if !self.yaw.is_finite() { self.yaw = 0.0; }
+        if !self.pitch.is_finite() { self.pitch = 0.0; }
+    }
+
+    /// Orbit the camera around its current focus point.
+    /// The camera rotates around the point it's looking at,
+    /// maintaining the same distance. This gives natural 3D orbit.
+    pub fn handle_orbit(&mut self, dx: f64, dy: f64) {
+        let focus = self.position + self.look_dir() * distance_to_focus(self);
+        self.yaw += dx as f32 * self.sensitivity * 5.0;
+        self.pitch = (self.pitch - dy as f32 * self.sensitivity * 5.0)
+            .clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        // Reposition camera to maintain focus distance
+        let dist = distance_to_focus(self);
+        self.position = focus - self.look_dir() * dist;
+        self.clamp_state();
+    }
+
     /// Pan the camera in screen space (middle-drag).
-    /// dx, dy are in window pixels. translation is perpendicular to the view direction.
+    /// Moves the camera through workspace coordinates without modifying visuals.
     pub fn handle_pan(&mut self, dx: f64, dy: f64, speed: f32) {
         let fwd = self.forward();
         let right = self.right();
         let up = Vector3::new(0.0, 1.0, 0.0);
         self.position += right * (dx as f32 * speed);
         self.position += up * (-dy as f32 * speed);
+        self.clamp_state();
     }
 
-    /// Orbit the camera around the target point (right-drag).
-    /// The camera rotates in place — the view direction changes.
-    pub fn handle_orbit(&mut self, dx: f64, dy: f64) {
-        self.yaw += dx as f32 * self.sensitivity * 5.0;
-        self.pitch = (self.pitch - dy as f32 * self.sensitivity * 5.0)
-            .clamp(Rad(-1.5).0, Rad(1.5).0);
-    }
-
-    /// Zoom by moving camera along forward axis.
+    /// Dolly zoom: move camera along look direction with distance limits.
     pub fn handle_zoom(&mut self, delta: f64) {
-        let fwd = self.forward();
-        self.position += fwd * (delta as f32 * self.zoom_speed * 0.01);
-        // Prevent going behind the scene
-        if self.position.z < -10000.0 { self.position.z = -10000.0; }
-        if self.position.z > 10000.0 { self.position.z = 10000.0; }
+        let dir = self.look_dir();
+        let new_pos = self.position + dir * (delta as f32 * self.zoom_speed * 0.01);
+        let dist = (new_pos - (self.position + dir * distance_to_focus(self))).magnitude();
+        if dist > MIN_DISTANCE && dist < MAX_DISTANCE {
+            self.position = new_pos;
+        } else if dist <= MIN_DISTANCE {
+            // Move to minimum distance
+            let focus = self.position + dir * distance_to_focus(self);
+            self.position = focus - dir * MIN_DISTANCE;
+        }
+        self.clamp_state();
     }
 
     pub fn handle_key(&mut self, key: u32, pressed: bool, dt: f32) {
@@ -210,6 +249,13 @@ impl Camera {
     }
 }
 
+/// Distance from camera to its focus point (where it's looking).
+fn distance_to_focus(cam: &Camera) -> f32 {
+    let p = &cam.position;
+    let dist = (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
+    dist.max(200.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +328,51 @@ mod tests {
         cam.handle_pan(100.0, 50.0, 0.5);
         assert_ne!(cam.position.x, x0);
         assert_ne!(cam.position.y, y0);
+    }
+
+    #[test]
+    fn orbit_does_not_change_distance_to_focus() {
+        let mut cam = Camera::new();
+        let d0 = distance_to_focus(&cam);
+        cam.handle_orbit(30.0, 10.0);
+        let d1 = distance_to_focus(&cam);
+        // Distance should remain approximately the same
+        let diff = (d1 - d0).abs();
+        assert!(diff < d0 * 0.5, "orbit should roughly preserve focus distance: {} vs {}", d0, d1);
+    }
+
+    #[test]
+    fn zoom_bounded() {
+        let mut cam = Camera::new();
+        // Zoom in a lot
+        for _ in 0..1000 {
+            cam.handle_zoom(-1000.0);
+        }
+        // Should not go behind minimum distance
+        let d = distance_to_focus(&cam);
+        assert!(d >= crate::input::MIN_DISTANCE * 0.9, "zoom should not go below min distance: {}", d);
+        // Should not go to infinity
+        assert!(cam.position.z.is_finite());
+    }
+
+    #[test]
+    fn clamp_state_handles_nan() {
+        let mut cam = Camera::new();
+        cam.position.x = f32::NAN;
+        cam.position.y = f32::INFINITY;
+        cam.yaw = f32::NEG_INFINITY;
+        cam.clamp_state();
+        assert!(cam.position.x.is_finite());
+        assert!(cam.position.y.is_finite());
+        assert!(cam.yaw.is_finite());
+    }
+
+    #[test]
+    fn look_dir_is_normalized() {
+        let cam = Camera::new();
+        let dir = cam.look_dir();
+        let len = (dir.x * dir.x + dir.y * dir.y + dir.z * dir.z).sqrt();
+        assert!((len - 1.0).abs() < 0.01, "look direction should be normalized: {}", len);
     }
 }
 
