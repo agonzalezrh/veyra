@@ -1,6 +1,7 @@
 mod anchor;
 mod arrange;
 mod backend;
+mod capabilities;
 mod compositor;
 mod config;
 mod drm_backend;
