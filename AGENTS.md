@@ -582,10 +582,28 @@ operations (never scene mutations), arrangement produces transforms
 
 ## Group D — Production Architecture (M074–M080)
 
-Renderer abstraction audit, DRM/KMS production path, GPU capability
-detection, multi-display architecture, rendering performance, frame
-scheduling and damage tracking, long-running stability soak tests.
-No new spatial UX features in Group D — stabilize, measure, harden.
+**Keep `GlesRenderer` concrete. Abstract the presentation backend.**
+
+The renderer and presentation backend are separate concerns:
+- GLES is the rendering technology (concrete, stays concrete)
+- Winit vs DRM/KMS is how rendered frames are presented (abstract)
+
+`FrameProducer` may continue to operate on `GlesRenderer`. Producers
+must NOT know about presentation backends. Remove direct raw GL
+operations from producers behind narrow `GlesRenderer`-owned texture
+operations.
+
+Do not introduce a general `Renderer` trait. Do not implement DRM/KMS
+until presentation-backend boundary and render scheduling are
+established.
+
+### M074 — Presentation backend abstraction
+### M075 — Texture upload boundary (remove raw GL from producers)
+### M076 — Render scheduling (dirty state, no fixed 16ms timer)
+### M077 — Damage tracking
+### M078 — Native DRM/KMS backend (`DrmGraphicsBackend<GlesRenderer>`)
+### M079 — EGL/GLES capability detection (G200eW scenario)
+### M080 — Benchmark suite + long-running soak test
 
 **Note**: `/dev/dri/cardN` existence does not imply usable 3D rendering.
 EGL/GLES capability detection is required before committing to native
@@ -594,7 +612,7 @@ rendering.
 **Status: ⬜ Not started**
 
 Exit criteria: Wayland/spatial/renderer layers cleanly separated,
-multi-display architecture defined, damage tracking + frame scheduling,
+presentation backend abstracted, damage tracking + frame scheduling,
 benchmark suite, DRM native session works reliably with clean failure
 diagnostics, long-running soak test, 240+ tests."
 
