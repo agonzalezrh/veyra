@@ -47,13 +47,17 @@ use std::time::SystemTime;
 
 use cgmath::Matrix4;
 
+use crate::app_switcher::ApplicationSwitcher;
 use crate::focus::{CameraMode, FocusManager};
 use crate::input::Camera;
 use crate::input_router::{self, InputSink, KeyboardEvent, PointerEventKind};
 use crate::interaction::InteractionController;
+use crate::launcher::Launcher;
 use crate::layout;
+use crate::navigation::{EscapeAction, NavigationModel};
 use crate::perf::PerfStats;
 use crate::scheduler::RenderScheduler;
+use crate::shelf::SpatialShelf;
 use crate::workspace::WorkspaceManager;
 use crate::producer::{FrameProducer, FrameResult};
 use crate::scene::{DamageKind, Scene, Visual, VisualContent, VisualId};
@@ -188,6 +192,18 @@ pub struct LookingGlass {
     /// Modifier key state for keyboard shortcuts.
     ctrl_pressed: bool,
     shift_pressed: bool,
+    alt_pressed: bool,
+    meta_pressed: bool,
+    /// Application switcher (Alt+Tab).
+    pub app_switcher: ApplicationSwitcher,
+    /// Launcher (desktop file based application launcher).
+    pub launcher: Launcher,
+    /// Spatial shelf (de-emphasized visuals at bottom of workspace).
+    pub shelf: SpatialShelf,
+    /// Navigation model (key binding dispatch).
+    pub navigation: NavigationModel,
+    /// Alt+Tab was active (releasing Alt commits selection).
+    alt_tab_active: bool,
 }
 
 /// Result of routing a pointer event to the selected visual's content.
@@ -277,6 +293,13 @@ impl LookingGlass {
             last_wayland_focus: None,
             ctrl_pressed: false,
             shift_pressed: false,
+            alt_pressed: false,
+            meta_pressed: false,
+            app_switcher: ApplicationSwitcher::new(),
+            launcher: Launcher::new(),
+            shelf: SpatialShelf::new(),
+            navigation: NavigationModel::new(),
+            alt_tab_active: false,
             scheduler: RenderScheduler::new(),
         }
     }
@@ -525,6 +548,10 @@ impl LookingGlass {
                                 self.scene.add(visual);
                                 self.workspace_manager.active_mut().add(visual_id);
                                 self.scene.focus(Some(visual_id));
+                                self.app_switcher.register_visual(
+                                    &self.toplevels[idx].app_id,
+                                    visual_id,
+                                );
                                 info!(?visual_id, app_id = %self.toplevels[idx].app_id, "surface mapped");
                             }
                         }
@@ -733,6 +760,11 @@ impl LookingGlass {
             world_w,
             world_h,
         );
+
+        // Apply shelf transforms to shelved visuals (overrides layout)
+        if self.shelf.visible {
+            self.shelf.apply_shelf_transforms(&mut self.scene);
+        }
 
         // Step 4: Camera + render
         let back: &mut dyn PresentationBackend = match self.backend.as_mut() {
@@ -1351,30 +1383,51 @@ impl LookingGlass {
 
     /// Public entry point for keyboard events.
     /// Routes to the focused visual's InputSink.
-    /// Tab key (23) is always consumed by the compositor for spatial mode toggle.
+    /// Uses NavigationModel for binding dispatch.
     pub fn handle_key(&mut self, linux_key: u32, pressed: bool) {
-        // Track modifier keys (Linux keycodes: 29=Left Ctrl, 97=Right Ctrl, 42=Left Shift, 54=Right Shift)
+        // Track modifier keys (Linux keycodes: 29=Left Ctrl, 97=Right Ctrl,
+        // 42=Left Shift, 54=Right Shift, 56=Left Alt, 100=Right Alt,
+        // 125=Left Meta/Super, 126=Right Meta/Super)
         match linux_key {
             29 | 97 => { self.ctrl_pressed = pressed; }
             42 | 54 => { self.shift_pressed = pressed; }
+            56 | 100 => {
+                self.alt_pressed = pressed;
+                if !pressed && self.alt_tab_active {
+                    // Alt released — commit the Alt+Tab selection
+                    self.alt_tab_active = false;
+                    // Alt released after Alt+Tab — nothing else to do
+                }
+            }
+            125 | 126 => {
+                self.meta_pressed = pressed;
+            }
             _ => {}
         }
 
         if pressed {
             self.workspace_manager.active_mut().auto_orbit = false;
         }
-        tracing::debug!(?linux_key, pressed, ctrl = self.ctrl_pressed, shift = self.shift_pressed, "KEY EVENT");
+
+        // Track Alt+Tab state: while Alt is held, keep cycling
+        if self.alt_pressed && linux_key == 23 && pressed {
+            if self.shift_pressed {
+                self.alt_tab_active = true;
+                if let Some(app_id) = self.app_switcher.previous() {
+                    info!(app = %app_id.as_str(), "alt+shift+tab: previous app");
+                }
+            } else {
+                self.alt_tab_active = true;
+                if let Some(app_id) = self.app_switcher.next() {
+                    info!(app = %app_id.as_str(), "alt+tab: next app");
+                }
+            }
+            return;
+        }
+
+        tracing::debug!(?linux_key, pressed, ctrl = self.ctrl_pressed, shift = self.shift_pressed, alt = self.alt_pressed, meta = self.meta_pressed, "KEY EVENT");
 
         if pressed {
-            // Ctrl+Tab -> next workspace, Ctrl+Shift+Tab -> previous workspace
-            if linux_key == 23 && self.ctrl_pressed {
-                if self.shift_pressed {
-                    self.previous_workspace();
-                } else {
-                    self.next_workspace();
-                }
-                return;
-            }
             // F1/F2/F3 -> switch workspaces 0/1/2 (X11 keycodes 67=F1, 68=F2, 69=F3)
             match linux_key {
                 67 => { self.activate_workspace(0); return; }
@@ -1382,65 +1435,18 @@ impl LookingGlass {
                 69 => { self.activate_workspace(2); return; }
                 _ => {}
             }
-            // Tab (23) or F5 (71) — spatial mode toggle (but not with Ctrl)
-            // F5 is used because TigerVNC intercepts Tab for internal focus switching
-            if (linux_key == 23 || linux_key == 71) && !self.ctrl_pressed {
-                self.spatial_mode = !self.spatial_mode;
-                tracing::info!(spatial_mode = self.spatial_mode, "mode toggled by key {}", linux_key);
-                return;
-            }
-            // F6 (72) — toggle focus mode
-            if linux_key == 72 {
-                self.toggle_focus_mode();
-                return;
-            }
-            // O (24) — toggle overview mode
-            if linux_key == 24 {
-                match self.focus_manager.camera_mode {
-                    CameraMode::Overview | CameraMode::WorkspaceOverview => {
-                        self.focus_manager.exit_overview(&mut self.camera);
-                        info!("overview mode off");
-                    }
-                    _ => {
-                        self.enter_overview();
-                    }
-                }
-                return;
-            }
-            // P (25) — toggle workspace overview mode
-            if linux_key == 25 {
-                match self.focus_manager.camera_mode {
-                    CameraMode::WorkspaceOverview => {
-                        self.focus_manager.exit_overview(&mut self.camera);
-                        info!("workspace overview off");
-                    }
-                    _ => {
-                        self.enter_workspace_overview();
-                    }
-                }
-                return;
-            }
-            // M (58) — toggle de-emphasis on selected visual
-            if linux_key == 58 {
-                if let Some(vid) = self.scene.selected_id {
-                    if self.scene.is_de_emphasized(vid) {
-                        self.scene.restore_from_de_emphasis(vid);
-                        info!(?vid, "restored from de-emphasis");
-                    } else {
-                        self.scene.de_emphasize(vid);
-                        info!(?vid, "de-emphasized");
-                    }
-                }
-                return;
-            }
-            // F — frame selected visual
-            if linux_key == 33 {
-                self.frame_selected();
-                return;
-            }
-            // Home — frame all visuals
-            if linux_key == 102 {
-                self.frame_all();
+
+            // Dispatch key bindings through NavigationModel
+            let binding = self.navigation.match_binding(
+                linux_key,
+                self.ctrl_pressed,
+                self.shift_pressed,
+                self.alt_pressed,
+                self.meta_pressed,
+            );
+
+            if let Some(b) = binding {
+                self.handle_binding(b);
                 return;
             }
         }
@@ -1472,6 +1478,134 @@ impl LookingGlass {
         }
         // Route ALL keyboard events (down AND up) to focused visual
         self.route_keyboard(linux_key, pressed);
+    }
+
+    /// Dispatch a key binding to the appropriate handler.
+    fn handle_binding(&mut self, binding: crate::navigation::Binding) {
+        use crate::navigation::Binding::*;
+        match binding {
+            ToggleSpatial => {
+                self.spatial_mode = !self.spatial_mode;
+                tracing::info!(spatial_mode = self.spatial_mode, "spatial mode toggled");
+            }
+            ToggleFocus => {
+                self.toggle_focus_mode();
+            }
+            ToggleOverview => {
+                match self.focus_manager.camera_mode {
+                    CameraMode::Overview | CameraMode::WorkspaceOverview => {
+                        self.focus_manager.exit_overview(&mut self.camera);
+                        info!("overview mode off");
+                    }
+                    _ => {
+                        self.enter_overview();
+                    }
+                }
+            }
+            ToggleWorkspaceOverview => {
+                match self.focus_manager.camera_mode {
+                    CameraMode::WorkspaceOverview => {
+                        self.focus_manager.exit_overview(&mut self.camera);
+                        info!("workspace overview off");
+                    }
+                    _ => {
+                        self.enter_workspace_overview();
+                    }
+                }
+            }
+            WorkspaceNext => {
+                self.next_workspace();
+            }
+            WorkspacePrev => {
+                self.previous_workspace();
+            }
+            AppNext | AppPrev => {
+                // Alt+Tab is already handled above, but this catches
+                // any other key bound to app switching
+            }
+            DeEmphasize => {
+                if let Some(vid) = self.scene.selected_id {
+                    if self.scene.is_de_emphasized(vid) {
+                        self.scene.restore_from_de_emphasis(vid);
+                        info!(?vid, "restored from de-emphasis");
+                    } else {
+                        self.scene.de_emphasize(vid);
+                        info!(?vid, "de-emphasized");
+                    }
+                }
+            }
+            FrameSelected => {
+                self.frame_selected();
+            }
+            FrameAll => {
+                self.frame_all();
+            }
+            ResetCamera => {
+                self.reset_camera();
+            }
+            Escape => {
+                self.handle_escape();
+            }
+            ToggleShelf => {
+                self.shelf.toggle_visibility();
+                info!(visible = self.shelf.visible, "shelf toggled");
+            }
+            SendToShelf => {
+                if let Some(vid) = self.scene.selected_id {
+                    if self.shelf.contains(vid) {
+                        self.shelf.restore_from_shelf(&mut self.scene, vid);
+                        info!(?vid, "restored from shelf");
+                    } else {
+                        self.shelf.send_to_shelf(&mut self.scene, vid);
+                        info!(?vid, "sent to shelf");
+                    }
+                }
+            }
+            Launcher => {
+                info!("launcher triggered");
+            }
+        }
+    }
+
+    /// Handle the Escape key with deterministic priority.
+    fn handle_escape(&mut self) {
+        use crate::focus::CameraMode;
+        let in_workspace_overview = matches!(self.focus_manager.camera_mode, CameraMode::WorkspaceOverview);
+        let in_overview = matches!(self.focus_manager.camera_mode, CameraMode::Overview);
+        let in_focus = matches!(self.focus_manager.camera_mode, CameraMode::Focus(_));
+
+        let action = crate::navigation::escape_chain(
+            self.interaction.is_dragging(),
+            in_workspace_overview,
+            in_overview,
+            in_focus,
+        );
+        info!(?action, "escape chain");
+        match action {
+            EscapeAction::CancelDrag => {
+                self.interaction.handle_pointer_up();
+            }
+            EscapeAction::ExitWorkspaceOverview => {
+                self.focus_manager.exit_overview(&mut self.camera);
+            }
+            EscapeAction::ExitOverview => {
+                self.focus_manager.exit_overview(&mut self.camera);
+            }
+            EscapeAction::ExitFocus => {
+                self.focus_manager.exit(&mut self.camera, &self.scene);
+            }
+            EscapeAction::ResetCamera => {
+                self.reset_camera();
+            }
+        }
+    }
+
+    /// Reset the camera to its default position.
+    pub fn reset_camera(&mut self) {
+        self.camera.position = cgmath::Point3::new(0.0, 0.0, 800.0);
+        self.camera.yaw = 0.0;
+        self.camera.pitch = 0.0;
+        info!("camera reset");
     }
 }
 
@@ -1600,8 +1734,10 @@ impl XdgShellHandler for LookingGlass {
         info!(app_id = %app_id, "app_id changed");
         if let Some(vid) = vid {
             if let Some(visual) = self.scene.get_mut(vid) {
-                visual.chrome.app_id = app_id;
+                visual.chrome.app_id = app_id.clone();
             }
+            // Register with the application switcher
+            self.app_switcher.register_visual(&app_id, vid);
         }
     }
 
@@ -1615,6 +1751,8 @@ impl XdgShellHandler for LookingGlass {
             let mut info = self.toplevels.remove(idx);
             info.lifecycle = SurfaceLifecycle::Destroyed;
             if let Some(vid) = info.visual_id {
+                self.app_switcher.unregister_visual(&info.app_id, vid);
+                self.shelf.remove(vid);
                 cleanup_visual_permanently(self, vid);
             }
             info!(

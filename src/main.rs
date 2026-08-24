@@ -1,4 +1,5 @@
 mod anchor;
+mod app_switcher;
 mod arrange;
 mod bench;
 mod backend;
@@ -11,14 +12,17 @@ mod group;
 mod input;
 mod input_router;
 mod interaction;
+mod launcher;
 mod layout;
 mod native_backend;
+mod navigation;
 mod perf;
 mod persist;
 mod producer;
 mod renderer;
 mod scene;
 mod scheduler;
+mod shelf;
 mod simulated;
 mod snap;
 #[cfg(test)]
