@@ -313,35 +313,111 @@ impl LookingGlass {
         }
     }
 
-    /// Load saved workspace state from disk and apply camera.
+    /// Load saved workspace state from disk and apply to workspaces.
+    ///
+    /// Precedence:
+    /// 1. Built-in defaults (from Config)
+    /// 2. Config file overrides
+    /// 3. Saved state (overrides config for runtime values like camera/transforms)
+    ///
+    /// This method applies saved state for each workspace (camera, layout mode)
+    /// and stores visual state for later remapping when surfaces appear.
     pub fn load_saved_state(&mut self) {
-        if crate::persist::exists() {
-            match crate::persist::load() {
-                Ok(state) => {
-                    let count = state.workspace_count();
-                    self.saved_state = Some(state);
-                    if let Some(ref s) = self.saved_state {
-                        s.apply_camera(&mut self.camera);
-                        info!(workspaces = count, "workspace state loaded");
+        use crate::layout::LayoutMode;
+
+        if !crate::persist::exists() {
+            info!("no saved workspace state found, using config defaults");
+            return;
+        }
+
+        match crate::persist::load() {
+            Ok(state) => {
+                let count = state.workspace_count();
+                info!(workspaces = count, "workspace state loaded");
+
+                // Apply per-workspace state: camera and layout mode
+                for i in 0..count {
+                    if let Some(ws_entry) = state.workspace(i) {
+                        if let Some(ws) = self.workspace_manager.get_mut(i) {
+                            // Restore workspace camera (overrides config default)
+                            ws.camera.position.x = ws_entry.camera.x;
+                            ws.camera.position.y = ws_entry.camera.y;
+                            ws.camera.position.z = ws_entry.camera.z;
+                            ws.camera.yaw = ws_entry.camera.yaw;
+                            ws.camera.pitch = ws_entry.camera.pitch;
+
+                            // Restore layout mode from state, fall back to config default
+                            ws.layout_mode = match ws_entry.layout_mode.as_str() {
+                                "flat" => LayoutMode::Flat,
+                                s if s.starts_with("grid:") => {
+                                    let cols = s[5..].parse().unwrap_or(3);
+                                    LayoutMode::Grid { columns: cols }
+                                }
+                                _ => LayoutMode::Freeform,
+                            };
+                        }
                     }
                 }
-                Err(e) => info!(?e, "no saved workspace state to load"),
+
+                // Apply camera from first workspace to the compositor's active camera
+                if let Some(first) = state.workspace(0) {
+                    self.camera.position.x = first.camera.x;
+                    self.camera.position.y = first.camera.y;
+                    self.camera.position.z = first.camera.z;
+                    self.camera.yaw = first.camera.yaw;
+                    self.camera.pitch = first.camera.pitch;
+                }
+
+                // Store saved visual state for surface remapping
+                self.saved_state = Some(state);
+
+                // Validate version mismatch
+                if self.saved_state.as_ref().map_or(false, |s| s.version > crate::persist::CURRENT_VERSION) {
+                    warn!("saved state version {} > current version {}, attempt load",
+                        self.saved_state.as_ref().unwrap().version,
+                        crate::persist::CURRENT_VERSION);
+                }
+            }
+            Err(e) => {
+                // Corrupt state: back up file and start fresh
+                if crate::persist::exists() {
+                    warn!(?e, "corrupt saved state, backing up and starting fresh");
+                    crate::persist::backup();
+                } else {
+                    info!(?e, "no saved workspace state to load");
+                }
             }
         }
     }
 
-    /// Save current workspace state to disk.
+    /// Save current workspace state to disk (multi-workspace).
     pub fn save_state(&self) {
-        let ws = self.workspace_manager.active();
-        let state = crate::persist::WorkspaceState::capture(
+        // Collect workspace data
+        let n = self.workspace_manager.len();
+        let mut ws_visuals: Vec<Vec<VisualId>> = Vec::with_capacity(n);
+        let mut ws_cameras: Vec<Camera> = Vec::with_capacity(n);
+        let mut ws_layouts: Vec<crate::layout::LayoutMode> = Vec::with_capacity(n);
+        let mut ws_detached: Vec<Vec<VisualId>> = Vec::with_capacity(n);
+
+        for i in 0..n {
+            if let Some(ws) = self.workspace_manager.get(i) {
+                ws_visuals.push(ws.visual_ids.clone());
+                ws_cameras.push(ws.camera.clone());
+                ws_layouts.push(ws.layout_mode);
+                ws_detached.push(ws.detached_set.clone());
+            }
+        }
+
+        let state = crate::persist::WorkspaceState::capture_multi(
             &self.scene,
             &self.camera,
-            ws.layout_mode,
-            &self.scene.detached_set,
-            &ws.visual_ids,
+            &ws_visuals,
+            &ws_cameras,
+            &ws_layouts,
+            &ws_detached,
         );
         match crate::persist::save(&state) {
-            Ok(()) => info!("workspace state saved"),
+            Ok(()) => info!("multi-workspace state saved"),
             Err(e) => warn!(?e, "failed to save workspace state"),
         }
     }

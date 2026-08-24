@@ -95,6 +95,9 @@ fn main() {
         }
     }
 
+    // Load saved workspace state (applies on top of config defaults)
+    state.load_saved_state();
+
     // Register frame producers
     let bench_count: usize = std::env::var("BENCHMARK_VISUALS")
         .ok()

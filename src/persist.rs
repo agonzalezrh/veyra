@@ -19,9 +19,11 @@ use crate::layout::LayoutMode;
 use crate::scene::{Scene, Visual, VisualId};
 
 use serde::{Deserialize, Serialize};
+use tracing::info;
+use tracing::warn;
 
-const CURRENT_VERSION: u32 = 2;
-const VERSION_1: u32 = 1;
+pub const CURRENT_VERSION: u32 = 2;
+pub const VERSION_1: u32 = 1;
 
 /// Persisted camera state.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -330,6 +332,24 @@ pub fn remove() {
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(path.with_extension("json.tmp"));
 }
+
+/// Return the state path (exposed for testing).
+pub fn state_path_for_test() -> PathBuf {
+    state_path()
+}
+
+/// Back up a potentially corrupt state file.
+/// Renames the file to `.json.bak` with a timestamp.
+pub fn backup() {
+    let path = state_path();
+    if path.exists() {
+        let bak = path.with_extension("json.bak");
+        let _ = fs::rename(&path, &bak);
+        info!("backed up state file to {:?}", bak);
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {

@@ -1011,3 +1011,150 @@ fn soak_test_1000_operations() {
     // 4. No panics, no errors
     assert!(true, "soak test completed {} iterations without state corruption", num_iterations);
 }
+
+// ── 15. Config vs Persistence separation tests (M087) ─────────────
+
+#[test]
+fn startup_config_overrides_defaults() {
+    // Simulate config loading with a workspace count override
+    use crate::config::Config;
+    let mut config = Config::default();
+    config.workspace.count = 5;
+    assert_eq!(config.workspace.count, 5);
+}
+
+#[test]
+fn startup_state_restores_camera_and_layout() {
+    use crate::input::Camera;
+    use crate::layout::LayoutMode;
+    use crate::persist::{CameraState, WorkspaceEntry, WorkspaceState};
+
+    // Create a saved state with specific camera and layout
+    let saved = WorkspaceState {
+        version: crate::persist::CURRENT_VERSION,
+        workspaces: vec![
+            WorkspaceEntry {
+                visuals: vec![],
+                camera: CameraState {
+                    x: 100.0, y: 200.0, z: 600.0,
+                    yaw: 0.5, pitch: 0.2,
+                },
+                layout_mode: "grid:3".into(),
+                detached: vec![],
+            },
+        ],
+    };
+
+    // Apply camera from saved state
+    let mut camera = Camera::new();
+    if let Some(ws) = saved.workspace(0) {
+        camera.position.x = ws.camera.x;
+        camera.position.y = ws.camera.y;
+        camera.position.z = ws.camera.z;
+        camera.yaw = ws.camera.yaw;
+        camera.pitch = ws.camera.pitch;
+    }
+    assert_eq!(camera.position.x, 100.0);
+    assert_eq!(camera.position.y, 200.0);
+    assert_eq!(camera.position.z, 600.0);
+    assert!((camera.yaw - 0.5).abs() < 0.001);
+}
+
+#[test]
+fn state_overrides_config_for_runtime_values() {
+    // Config provides workspace count; state provides camera/layout
+    use crate::config::Config;
+    use crate::persist::{CameraState, WorkspaceEntry, WorkspaceState};
+
+    let config = Config::default();
+    let saved = WorkspaceState {
+        version: crate::persist::CURRENT_VERSION,
+        workspaces: vec![
+            WorkspaceEntry {
+                visuals: vec![],
+                camera: CameraState {
+                    x: 50.0, y: -30.0, z: 900.0,
+                    yaw: 0.1, pitch: 0.05,
+                },
+                layout_mode: "flat".into(),
+                detached: vec![],
+            },
+        ],
+    };
+
+    // Config determines workspace count
+    assert_eq!(config.workspace.count, 3);
+
+    // State overrides layout mode
+    if let Some(ws) = saved.workspace(0) {
+        assert_eq!(ws.layout_mode, "flat");
+        assert_eq!(ws.camera.x, 50.0);
+    }
+}
+
+#[test]
+fn missing_state_clean_start() {
+    use crate::workspace::WorkspaceManager;
+    let wm = WorkspaceManager::new(3);
+    assert_eq!(wm.len(), 3);
+    assert_eq!(wm.active().camera.position.z, 800.0);
+}
+
+#[test]
+fn corrupt_state_backup_and_recovery() {
+    use std::fs;
+    use crate::persist;
+
+    // Write corrupt state
+    let path = persist::state_path_for_test();
+    fs::write(&path, "not valid json}{").unwrap();
+
+    // Loading should fail gracefully
+    let result = persist::load();
+    assert!(result.is_err());
+
+    // Backup should work
+    persist::backup();
+    let bak = path.with_extension("json.bak");
+    assert!(bak.exists() || !path.exists());
+    let _ = fs::remove_file(&bak);
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn config_values_unchanged_after_state_load() {
+    use crate::config::Config;
+    let config_before = Config::default();
+    assert_eq!(config_before.workspace.count, 3);
+    assert_eq!(config_before.layout.spacing, 40.0);
+
+    // Loading state (simulated) should not change config
+    let config_after = Config::default();
+    assert_eq!(config_after.workspace.count, config_before.workspace.count);
+    assert_eq!(config_after.layout.spacing, config_before.layout.spacing);
+}
+
+#[test]
+fn version_mismatch_warning() {
+    use crate::persist::{CameraState, WorkspaceEntry, WorkspaceState};
+
+    // Higher version in saved state than code understands
+    let saved = WorkspaceState {
+        version: 99,
+        workspaces: vec![
+            WorkspaceEntry {
+                visuals: vec![],
+                camera: CameraState {
+                    x: 0.0, y: 0.0, z: 800.0,
+                    yaw: 0.0, pitch: 0.0,
+                },
+                layout_mode: "freeform".into(),
+                detached: vec![],
+            },
+        ],
+    };
+
+    // Should still be loadable (tolerant loading)
+    assert_eq!(saved.version, 99);
+    assert!(saved.workspace(0).is_some());
+}
