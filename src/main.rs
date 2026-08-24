@@ -10,12 +10,13 @@ mod input_router;
 mod interaction;
 mod layout;
 mod native_backend;
-mod simulated;
 mod perf;
 mod persist;
 mod producer;
 mod renderer;
 mod scene;
+mod scheduler;
+mod simulated;
 mod snap;
 #[cfg(test)]
 mod stress_tests;
@@ -141,18 +142,22 @@ fn main() {
                 let inner = unsafe { display.get_mut() };
                 let _ = inner.dispatch_clients(state);
                 let _ = inner.flush_clients();
+                state.scheduler.schedule_render();
                 state.render();
                 Ok(PostAction::Continue)
             },
         )
         .expect("Failed to init wayland server source");
 
-    // Periodic render timer (~60 fps)
+    // Periodic render timer — only renders when scheduler says so
     use smithay::reexports::calloop::timer::{Timer, TimeoutAction};
     let render_timer = Timer::from_duration(std::time::Duration::from_millis(16));
     handle
         .insert_source(render_timer, |_, _, state| {
             state.render();
+            // If animating, keep the timer going at full rate.
+            // Otherwise, use a longer interval to wake up less often
+            // (render() will early-return if nothing is dirty).
             TimeoutAction::ToDuration(std::time::Duration::from_millis(16))
         })
         .expect("Failed to register render timer");
@@ -163,6 +168,7 @@ fn main() {
             WinitEvent::Resized { size, .. } => {
                 tracing::debug!("Window resized to {:?}", size);
                 state.window_size = (size.w as f32, size.h as f32);
+                state.scheduler.schedule_render();
                 state.render();
             }
             WinitEvent::Input(event) => {
@@ -171,18 +177,17 @@ fn main() {
                         let key = event.key_code();
                         let pressed = event.state() == smithay::backend::input::KeyState::Pressed;
                         state.handle_key(u32::from(key), pressed);
+                        state.scheduler.schedule_render();
                     }
                     InputEvent::PointerMotionAbsolute { event } => {
                         let x = event.x();
                         let y = event.y();
-                        // During right/middle dray, pan/orbit instead of moving content
-                        // (button state tracked via has_active_drag flag)
                         state.handle_pointer_move(x, y);
+                        state.scheduler.schedule_render();
                     }
                     InputEvent::PointerButton { event } => {
                         let pressed = event.state() == smithay::backend::input::ButtonState::Pressed;
                         let (mx, my) = state.last_mouse;
-                        // Encode button as u32: 1=Left, 2=Middle, 3=Right
                         let btn_code = match event.button() {
                             Some(MouseButton::Left) => 1u32,
                             Some(MouseButton::Middle) => 2u32,
@@ -202,11 +207,10 @@ fn main() {
                                     state.handle_pointer_up(mx, my);
                                 }
                             }
-                            2 | 3 => {
-                                // Middle (pan) and Right (orbit): handled in pointer_move
-                            }
+                            2 | 3 => {}
                             _ => {}
                         }
+                        state.scheduler.schedule_render();
                     }
                     InputEvent::PointerAxis { event } => {
                         let v = event.amount(Axis::Vertical).unwrap_or(0.0);
@@ -216,6 +220,7 @@ fn main() {
                         } else {
                             state.handle_zoom(h);
                         }
+                        state.scheduler.schedule_render();
                     }
                     _ => {}
                 }

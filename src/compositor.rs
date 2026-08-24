@@ -53,6 +53,7 @@ use crate::input_router::{self, InputSink, KeyboardEvent, PointerEventKind};
 use crate::interaction::InteractionController;
 use crate::layout;
 use crate::perf::PerfStats;
+use crate::scheduler::RenderScheduler;
 use crate::workspace::WorkspaceManager;
 use crate::producer::{FrameProducer, FrameResult};
 use crate::scene::{Scene, Visual, VisualContent, VisualId};
@@ -182,6 +183,8 @@ pub struct LookingGlass {
     /// Track the last Wayland surface that received pointer focus
     /// for proper enter/leave event sequencing.
     last_wayland_focus: Option<WlSurface>,
+    /// Render scheduling (dirty/animating state instead of fixed 16ms timer).
+    pub scheduler: RenderScheduler,
     /// Modifier key state for keyboard shortcuts.
     ctrl_pressed: bool,
     shift_pressed: bool,
@@ -274,6 +277,7 @@ impl LookingGlass {
             last_wayland_focus: None,
             ctrl_pressed: false,
             shift_pressed: false,
+            scheduler: RenderScheduler::new(),
         }
     }
 
@@ -642,6 +646,14 @@ impl LookingGlass {
 
     pub fn render(&mut self) {
         use crate::perf::PipelineStage;
+
+        // Check if a render is actually needed
+        if !self.scheduler.needs_render() {
+            self.perf.record_dropped();
+            return;
+        }
+        self.scheduler.clear();
+
         let t_frame = std::time::Instant::now();
         self.perf.begin_frame();
 
@@ -749,6 +761,14 @@ impl LookingGlass {
             CameraMode::WorkspaceOverview => None, // show all
             _ => Some(self.workspace_manager.active().visual_ids.as_slice()),
         };
+        // Keep animating if focus/overview transition is active
+        if self.focus_manager.transition.is_some() {
+            self.scheduler.set_animating(true);
+        } else if self.workspace_manager.active().auto_orbit {
+            self.scheduler.set_animating(true);
+        } else {
+            self.scheduler.set_animating(false);
+        }
         if let Err(SwapBuffersError::ContextLost(e)) = renderer::render_scene(back, &self.scene, &view, &proj, &mut self.perf, ws_visible) {
             error!(?e, "Context lost");
             self.backend = None;
