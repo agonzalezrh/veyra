@@ -3,6 +3,7 @@ mod arrange;
 mod backend;
 mod compositor;
 mod config;
+mod drm_backend;
 mod focus;
 mod group;
 mod input;
@@ -67,17 +68,19 @@ fn main() {
 
     let mut state = LookingGlass::new(&display_handle, Box::new(WinitPresentationBackend(backend)));
 
-    // If --native flag is passed, switch to DRM/KMS backend instead
-    // of the nested winit backend
+    // Handle --native flag: construct DrmGraphicsBackend instead
     if use_native {
         tracing::info!("Starting native DRM/KMS backend");
-        // The winit backend is still needed for initial setup but we
-        // switch to the native path for the main loop
-        let event_loop: smithay::reexports::calloop::EventLoop<'static, LookingGlass> =
-            smithay::reexports::calloop::EventLoop::try_new()
-                .expect("Failed to create event loop for native backend");
-        tracing::info!("Native backend starting...");
-        // Note: Requires DRM device access. Falls back gracefully.
+        match crate::drm_backend::DrmGraphicsBackend::try_new() {
+            Ok(drm_backend) => {
+                state = LookingGlass::new(&display_handle, Box::new(drm_backend));
+                tracing::info!("Native backend initialized successfully");
+            }
+            Err(e) => {
+                tracing::error!(?e, "Failed to initialize native backend, falling back to winit");
+                // Keep the winit backend already set up in `state`
+            }
+        }
     }
 
     // Register frame producers
