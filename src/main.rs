@@ -7,6 +7,7 @@ mod capabilities;
 mod compositor;
 mod config;
 mod context_menu;
+mod dmabuf;
 mod drm_backend;
 mod focus;
 mod group;

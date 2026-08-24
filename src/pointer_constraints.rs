@@ -1,5 +1,4 @@
 use smithay::input::pointer::PointerHandle;
-use smithay::input::SeatHandler;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::wayland::pointer_constraints::{
@@ -24,10 +23,6 @@ impl PointerConstraints {
             pointer_locked: false,
             locked_surface: None,
         }
-    }
-
-    pub fn has_constraint_for(&self, surface: &WlSurface) -> bool {
-        self.locked_surface.as_ref().map_or(false, |s| s == surface)
     }
 
     pub fn unlock(&mut self) {

@@ -1,7 +1,7 @@
 //! Wayland protocol integration and central compositor state.
 
 use smithay::backend::renderer::gles::GlesTexture;
-use smithay::backend::renderer::ImportMemWl;
+use smithay::backend::renderer::ImportAll;
 use smithay::backend::renderer::Texture;
 use smithay::backend::SwapBuffersError;
 
@@ -24,7 +24,7 @@ use smithay::wayland::selection::data_device::{ClientDndGrabHandler, DataDeviceH
 use smithay::wayland::selection::primary_selection::{PrimarySelectionHandler, PrimarySelectionState};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
-use smithay::wayland::pointer_constraints::PointerConstraintsHandler;
+use smithay::delegate_dmabuf;
 use smithay::delegate_pointer_constraints;
 use smithay::delegate_relative_pointer;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -234,6 +234,8 @@ pub struct LookingGlass {
     pub pointer_constraints: crate::pointer_constraints::PointerConstraints,
     /// Relative pointer manager for sending relative motion deltas.
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
+    /// DMA-BUF buffer import state.
+    pub dmabuf_manager: crate::dmabuf::DmabufManager,
 }
 
 /// Result of routing a pointer event to the selected visual's content.
@@ -344,6 +346,7 @@ impl LookingGlass {
             scheduler: RenderScheduler::new(),
             pointer_constraints: crate::pointer_constraints::PointerConstraints::new(display_handle),
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<LookingGlass>(display_handle),
+            dmabuf_manager: crate::dmabuf::DmabufManager::new(display_handle),
         }
     }
 
@@ -530,11 +533,13 @@ impl LookingGlass {
 
         if let Some(backend) = self.backend.as_mut() {
             let renderer = backend.renderer();
+            // Use ImportAll::import_buffer to handle SHM, EGL, and DMA-BUF buffers
             let result = with_states(surface, |states| {
-                renderer.import_shm_buffer(&wl_buffer, Some(states), &damage)
+                renderer.import_buffer(&wl_buffer, Some(states), &damage)
             });
             match result {
-                Ok(texture) => {
+                Some(Ok(texture)) => {
+                    use smithay::backend::renderer::Texture;
                     if is_first_map {
                         let tex_size = texture.size();
 
@@ -710,7 +715,8 @@ impl LookingGlass {
                         }
                     }
                 }
-                Err(e) => warn!(?e, "SHM import failed"),
+                Some(Err(e)) => warn!(?e, "buffer import failed"),
+                None => warn!("buffer type not recognized by renderer"),
             }
         }
     }
@@ -2460,3 +2466,4 @@ delegate_data_device!(LookingGlass);
 delegate_primary_selection!(LookingGlass);
 delegate_pointer_constraints!(LookingGlass);
 delegate_relative_pointer!(LookingGlass);
+delegate_dmabuf!(LookingGlass);
