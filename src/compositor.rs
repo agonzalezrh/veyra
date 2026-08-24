@@ -10,6 +10,7 @@ use smithay::delegate_compositor;
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::delegate_data_device;
 use smithay::delegate_output;
+use smithay::delegate_primary_selection;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_xdg_shell;
@@ -20,12 +21,15 @@ use smithay::input::Seat;
 use smithay::input::SeatHandler;
 use smithay::input::SeatState;
 use smithay::wayland::selection::data_device::{ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler};
+use smithay::wayland::selection::primary_selection::{PrimarySelectionHandler, PrimarySelectionState};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Client;
 use smithay::reexports::wayland_server::DisplayHandle;
+use smithay::reexports::wayland_server::Resource;
 use smithay::utils::Serial;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::with_states;
@@ -162,8 +166,11 @@ pub struct LookingGlass {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub seat_state: SeatState<Self>,
+    /// Track the Smithay Seat handle for data device and selection operations.
+    pub seat: Option<smithay::input::Seat<Self>>,
     pub shm_state: ShmState,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
     pub backend: Option<Box<dyn PresentationBackend>>,
     pub toplevels: Vec<ToplevelInfo>,
     pub popups: Vec<PopupInfo>,
@@ -244,10 +251,12 @@ impl LookingGlass {
         let shm_state = ShmState::new::<Self>(display_handle, vec![]);
         let data_device_state = DataDeviceState::new::<Self>(display_handle);
         let mut seat_state = SeatState::new();
+        let primary_selection_state = PrimarySelectionState::new::<Self>(display_handle);
 
         // Create a seat and pointer/keyboard handles for Wayland input routing
         // Use new_wl_seat to register the wl_seat global (new_seat doesn't register it)
         let mut seat_actual = seat_state.new_wl_seat(display_handle, "default");
+        let seat_handle = seat_actual.clone();
         let pointer_handle = Some(seat_actual.add_pointer());
         // Load system keyboard configuration for proper non-US layout support
         let xkb_config = load_system_xkb_config();
@@ -284,6 +293,8 @@ impl LookingGlass {
             seat_state,
             shm_state,
             data_device_state,
+            primary_selection_state,
+            seat: Some(seat_handle),
             backend: Some(backend),
             toplevels: Vec::new(),
             popups: Vec::new(),
@@ -958,7 +969,7 @@ impl LookingGlass {
     /// Focus follows click: sets focused visual to the selected one.
     /// Title bar hits are NOT routed to content — caller should start a drag.
     /// Authoritative keyboard focus setter.
-    /// Updates scene focus, Wayland keyboard focus, FocusManager, and SpatialChrome consistently.
+    /// Updates scene focus, Wayland keyboard focus, data device focus, FocusManager, and SpatialChrome consistently.
     fn set_keyboard_focus(&mut self, vid: Option<VisualId>) {
         // Update scene focus
         self.scene.focus(vid);
@@ -974,9 +985,26 @@ impl LookingGlass {
             kh.set_focus(self, None, serial);
         }
 
+        // Update data device focus so clipboard selection is offered
+        self.update_data_device_focus(vid);
+
         // Update SpatialChrome on visuals
         for visual in &mut self.scene.visuals {
             visual.chrome.focused = Some(visual.id) == vid;
+        }
+    }
+
+    /// Update the data device focus to match the keyboard focus.
+    /// This ensures clipboard/primary selection is offered to the correct client.
+    fn update_data_device_focus(&mut self, vid: Option<VisualId>) {
+        let client = vid.and_then(|vid| {
+            self.wayland_surfaces.get(&vid)
+                .and_then(|s| Resource::client(s))
+        });
+        if let Some(ref seat) = self.seat {
+            let dh = &self.display_handle;
+            smithay::wayland::selection::data_device::set_data_device_focus::<Self>(dh, seat, client.clone());
+            smithay::wayland::selection::primary_selection::set_primary_focus::<Self>(dh, seat, client);
         }
     }
 
@@ -2067,6 +2095,24 @@ impl XdgShellHandler for LookingGlass {
         let _ = surface.send_configure();
     }
 
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>) {
+        let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
+        surface.with_pending_state(|state| {
+            state.states.set(xdg_toplevel::State::Fullscreen);
+        });
+        let _ = surface.send_configure();
+        info!(?vid, "fullscreen requested");
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
+        surface.with_pending_state(|state| {
+            state.states.unset(xdg_toplevel::State::Fullscreen);
+        });
+        let _ = surface.send_configure();
+        info!(?vid, "unfullscreen requested");
+    }
+
     fn ack_configure(&mut self, _surface: WlSurface, configure: Configure) {
         info!(?configure, "configure acknowledged");
     }
@@ -2242,7 +2288,54 @@ impl ShmHandler for LookingGlass {
 
 impl SelectionHandler for LookingGlass {
     type SelectionUserData = ();
-    fn new_selection(&mut self, _ty: SelectionTarget, _source: Option<smithay::wayland::selection::SelectionSource>, _seat: Seat<Self>) {}
+    fn new_selection(&mut self, ty: SelectionTarget, source: Option<smithay::wayland::selection::SelectionSource>, _seat: Seat<Self>) {
+        match ty {
+            SelectionTarget::Clipboard => {
+                if let Some(ref seat) = self.seat {
+                    let dh = &self.display_handle;
+                    smithay::wayland::selection::data_device::set_data_device_selection::<Self>(
+                        dh, seat, vec![], (),
+                    );
+                }
+            }
+            SelectionTarget::Primary => {
+                if let Some(ref seat) = self.seat {
+                    let dh = &self.display_handle;
+                    smithay::wayland::selection::primary_selection::set_primary_selection::<Self>(
+                        dh, seat, vec![], (),
+                    );
+                }
+            }
+        }
+        // The source is managed by Smithay internally via the seat's user_data;
+        // we simply acknowledge that a new selection was made.
+    }
+
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: std::os::unix::io::OwnedFd,
+        _seat: Seat<Self>,
+        _user_data: &Self::SelectionUserData,
+    ) {
+        // When a client requests clipboard data, forward the request
+        // to the currently active selection source via Smithay's free functions.
+        if let Some(ref seat) = self.seat {
+            match ty {
+                SelectionTarget::Clipboard => {
+                    let _ = smithay::wayland::selection::data_device::request_data_device_client_selection::<Self>(
+                        seat, mime_type, fd,
+                    );
+                }
+                SelectionTarget::Primary => {
+                    let _ = smithay::wayland::selection::primary_selection::request_primary_client_selection::<Self>(
+                        seat, mime_type, fd,
+                    );
+                }
+            }
+        }
+    }
 }
 
 impl ClientDndGrabHandler for LookingGlass {}
@@ -2251,6 +2344,12 @@ impl ServerDndGrabHandler for LookingGlass {}
 impl DataDeviceHandler for LookingGlass {
     fn data_device_state(&self) -> &DataDeviceState {
         &self.data_device_state
+    }
+}
+
+impl PrimarySelectionHandler for LookingGlass {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.primary_selection_state
     }
 }
 
@@ -2303,3 +2402,4 @@ fn load_system_xkb_config() -> smithay::input::keyboard::XkbConfig<'static> {
 delegate_shm!(LookingGlass);
 delegate_output!(LookingGlass);
 delegate_data_device!(LookingGlass);
+delegate_primary_selection!(LookingGlass);
