@@ -58,7 +58,9 @@ use crate::launcher::Launcher;
 use crate::layout;
 use crate::navigation::{EscapeAction, NavigationModel};
 use crate::perf::PerfStats;
+use crate::recovery::Recovery;
 use crate::scheduler::RenderScheduler;
+use crate::session::Session;
 use crate::shelf::SpatialShelf;
 use crate::workspace::WorkspaceManager;
 use crate::producer::{FrameProducer, FrameResult};
@@ -210,6 +212,10 @@ pub struct LookingGlass {
     pub context_menu: ContextMenu,
     /// Configuration (loaded at startup, no live reload).
     pub config: Config,
+    /// Session lifecycle management.
+    pub session: Session,
+    /// Recovery operations for destroyed focus, corrupt state, etc.
+    pub recovery: Recovery,
 }
 
 /// Result of routing a pointer event to the selected visual's content.
@@ -308,7 +314,9 @@ impl LookingGlass {
             navigation: NavigationModel::new(),
             alt_tab_active: false,
             context_menu: ContextMenu::new(),
-            config,
+            config: config.clone(),
+            session: Session::new(config.clone()),
+            recovery: Recovery::new(),
             scheduler: RenderScheduler::new(),
         }
     }
@@ -765,6 +773,9 @@ impl LookingGlass {
             self.perf.record_dropped();
             return;
         }
+
+        // Clear stale focus: if the focused visual has been destroyed, clean up
+        self.clear_stale_focus();
         self.scheduler.clear();
 
         let t_frame = std::time::Instant::now();
@@ -1761,6 +1772,19 @@ impl LookingGlass {
             Launcher => {
                 info!("launcher triggered");
             }
+            CloseApp => {
+                self.close_focused_app();
+            }
+            CycleVisuals => {
+                self.cycle_visuals();
+            }
+            OpenContextMenu => {
+                self.open_context_menu_on_focused();
+            }
+            HelpOverlay => {
+                self.shelf.toggle_visibility();
+                info!("help overlay toggled (using shelf for now)");
+            }
         }
     }
 
@@ -1797,12 +1821,112 @@ impl LookingGlass {
         }
     }
 
+    /// Open context menu on the focused visual (triggered by Menu key).
+    pub fn open_context_menu_on_focused(&mut self) {
+        if let Some(vid) = self.scene.focused_id {
+            let (x, y) = (self.window_size.0 as f64 * 0.5, self.window_size.1 as f64 * 0.5);
+            let ws_count = self.workspace_manager.len();
+            self.context_menu.show(x, y, vid, ws_count);
+            info!(?vid, "context menu opened via keyboard");
+        }
+    }
+
+    /// Close the focused application.
+    pub fn close_focused_app(&mut self) {
+        let Some(vid) = self.scene.focused_id else { return };
+        if let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() {
+            for t in &self.toplevels {
+                if t.toplevel.wl_surface() == &wl_surface {
+                    t.toplevel.send_close();
+                    info!(?vid, "close sent to focused app");
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Cycle through visuals in the current workspace (Super+Tab).
+    pub fn cycle_visuals(&mut self) -> bool {
+        let ws_ids = self.workspace_manager.active().visual_ids.clone();
+        if ws_ids.is_empty() {
+            return false;
+        }
+        let current = self.scene.focused_id;
+        let next = if let Some(cid) = current {
+            // Find the current visual's position and pick the next one
+            if let Some(pos) = ws_ids.iter().position(|id| *id == cid) {
+                ws_ids[(pos + 1) % ws_ids.len()]
+            } else {
+                ws_ids[0]
+            }
+        } else {
+            ws_ids[0]
+        };
+        self.set_keyboard_focus(Some(next));
+        self.scene.select(Some(next));
+        info!(?next, "cycled to visual");
+        true
+    }
+
     /// Reset the camera to its default position.
     pub fn reset_camera(&mut self) {
         self.camera.position = cgmath::Point3::new(0.0, 0.0, 800.0);
         self.camera.yaw = 0.0;
         self.camera.pitch = 0.0;
         info!("camera reset");
+    }
+
+    /// Recover from destroyed focus — if the focused visual no longer exists,
+    /// clear focus state cleanly.
+    pub fn recover_from_destroyed_focus(&mut self) {
+        if let Some(vid) = self.scene.focused_id {
+            if !self.scene.visuals.iter().any(|v| v.id == vid) {
+                info!(?vid, "recovering from destroyed focus");
+                self.set_keyboard_focus(None);
+                self.scene.selected_id = None;
+            }
+        }
+    }
+
+    /// Cancel any active drag or grab interaction.
+    pub fn cancel_interaction(&mut self) {
+        if self.interaction.is_dragging() {
+            self.interaction.handle_pointer_up();
+            info!("interaction cancelled");
+        }
+    }
+
+    /// Run full recovery: cancel interaction → exit focus → exit overview → reset camera.
+    pub fn recover(&mut self) {
+        use crate::focus::CameraMode;
+        info!("full recovery sequence");
+
+        self.cancel_interaction();
+
+        if matches!(self.focus_manager.camera_mode, CameraMode::Focus(_)) {
+            self.focus_manager.exit(&mut self.camera, &self.scene);
+            info!("recovery: exited focus mode");
+        }
+
+        if matches!(self.focus_manager.camera_mode, CameraMode::Overview)
+            || matches!(self.focus_manager.camera_mode, CameraMode::WorkspaceOverview)
+        {
+            self.focus_manager.exit_overview(&mut self.camera);
+            info!("recovery: exited overview");
+        }
+
+        self.reset_camera();
+    }
+
+    /// Clear stale focus: verify focused visual still exists.
+    /// Called after every render.
+    pub fn clear_stale_focus(&mut self) {
+        if let Some(focused) = self.scene.focused_id {
+            if !self.scene.visuals.iter().any(|v| v.id == focused) {
+                info!(?focused, "stale focus cleared after render");
+                self.set_keyboard_focus(None);
+            }
+        }
     }
 }
 

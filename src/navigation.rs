@@ -17,6 +17,10 @@ pub enum Binding {
     FrameSelected,
     FrameAll,
     Escape,
+    CloseApp,
+    CycleVisuals,
+    OpenContextMenu,
+    HelpOverlay,
 }
 
 /// Describes a key binding composed of modifiers and a key.
@@ -80,6 +84,12 @@ impl NavigationModel {
             (SendToShelf,            KeyBinding::meta(108)),             // Meta+Down (108=Down)
             (Launcher,               KeyBinding::meta(57)),              // Meta+Space
             (Escape,                 KeyBinding::new(1)),                // Escape
+            (CloseApp,               KeyBinding::meta(25)),              // Meta+W (25=W)
+            (CycleVisuals,           KeyBinding::meta(23)),              // Meta+Tab
+            (OpenContextMenu,        KeyBinding::new(127)),              // Menu key (127 = menu/apps key)
+            (HelpOverlay,            KeyBinding::meta(19)),              // Meta+/ (19=/)
+            // F1 is hardcoded to workspace 0 above — don't override it
+            // Help is accessible via Meta+/
         ];
         NavigationModel { bindings }
     }
