@@ -24,6 +24,9 @@ use smithay::wayland::selection::data_device::{ClientDndGrabHandler, DataDeviceH
 use smithay::wayland::selection::primary_selection::{PrimarySelectionHandler, PrimarySelectionState};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
+use smithay::wayland::pointer_constraints::PointerConstraintsHandler;
+use smithay::delegate_pointer_constraints;
+use smithay::delegate_relative_pointer;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -227,6 +230,10 @@ pub struct LookingGlass {
     pub session: Session,
     /// Recovery operations for destroyed focus, corrupt state, etc.
     pub recovery: Recovery,
+    /// Pointer constraints (lock/confine) state.
+    pub pointer_constraints: crate::pointer_constraints::PointerConstraints,
+    /// Relative pointer manager for sending relative motion deltas.
+    pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
 }
 
 /// Result of routing a pointer event to the selected visual's content.
@@ -335,6 +342,8 @@ impl LookingGlass {
             session: Session::new(config.clone()),
             recovery: Recovery::new(),
             scheduler: RenderScheduler::new(),
+            pointer_constraints: crate::pointer_constraints::PointerConstraints::new(display_handle),
+            relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<LookingGlass>(display_handle),
         }
     }
 
@@ -970,7 +979,19 @@ impl LookingGlass {
     /// Title bar hits are NOT routed to content — caller should start a drag.
     /// Authoritative keyboard focus setter.
     /// Updates scene focus, Wayland keyboard focus, data device focus, FocusManager, and SpatialChrome consistently.
+    /// Unlocks pointer if focus changes to a different surface than the locked one.
     fn set_keyboard_focus(&mut self, vid: Option<VisualId>) {
+        // Unlock pointer on focus change (unless the same visual)
+        if self.pointer_constraints.pointer_locked {
+            let locked_surface = self.pointer_constraints.locked_surface.clone();
+            let is_same_surface = vid.and_then(|v| self.wayland_surfaces.get(&v)).map_or(false, |s| {
+                locked_surface.as_ref().map_or(false, |ls| ls == s)
+            });
+            if !is_same_surface {
+                self.pointer_constraints.unlock();
+            }
+        }
+
         // Update scene focus
         self.scene.focus(vid);
 
@@ -1323,6 +1344,29 @@ impl LookingGlass {
         let dx = x - self.last_mouse.0;
         let dy = y - self.last_mouse.1;
         self.last_mouse = (x, y);
+
+        // When pointer is locked, route relative motion to the locked client
+        // and skip all spatial interaction.
+        if self.pointer_constraints.pointer_locked {
+            if let (Some(ph), Some(surface)) = (self.pointer_handle.clone(), self.pointer_constraints.locked_surface.clone()) {
+                let serial = self.next_serial();
+                let time = now_ms();
+                let pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
+                let mot_ev = MotionEvent {
+                    location: pos,
+                    serial,
+                    time,
+                };
+                let rel_ev = smithay::input::pointer::RelativeMotionEvent {
+                    delta: (dx, dy).into(),
+                    delta_unaccel: (dx, dy).into(),
+                    utime: time as u64 * 1000,
+                };
+                ph.motion(self, Some((surface.clone(), pos)), &mot_ev);
+                ph.relative_motion(self, Some((surface.clone(), pos)), &rel_ev);
+            }
+            return;
+        }
         // Navigation buttons (right=mouse 3, middle=mouse 2)
         if self.nav_button == 3 {
             self.workspace_manager.active_mut().auto_orbit = false;
@@ -1559,6 +1603,11 @@ impl LookingGlass {
     /// Uses set_keyboard_focus() to ensure Wayland keyboard focus stays in sync.
     /// Returns true if the switch occurred.
     pub fn switch_workspace(&mut self, idx: usize) -> bool {
+        // Unlock pointer on workspace switch
+        if self.pointer_constraints.pointer_locked {
+            self.pointer_constraints.unlock();
+        }
+
         let old_id = self.workspace_manager.active_id();
         // Save current state into the old workspace
         {
@@ -1867,6 +1916,12 @@ impl LookingGlass {
 
     /// Handle the Escape key with deterministic priority.
     fn handle_escape(&mut self) {
+        // If pointer is locked, unlock it first
+        if self.pointer_constraints.pointer_locked {
+            self.pointer_constraints.unlock();
+            return;
+        }
+
         use crate::focus::CameraMode;
         let in_workspace_overview = matches!(self.focus_manager.camera_mode, CameraMode::WorkspaceOverview);
         let in_overview = matches!(self.focus_manager.camera_mode, CameraMode::Overview);
@@ -2403,3 +2458,5 @@ delegate_shm!(LookingGlass);
 delegate_output!(LookingGlass);
 delegate_data_device!(LookingGlass);
 delegate_primary_selection!(LookingGlass);
+delegate_pointer_constraints!(LookingGlass);
+delegate_relative_pointer!(LookingGlass);

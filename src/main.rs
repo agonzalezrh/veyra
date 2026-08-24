@@ -19,6 +19,7 @@ mod native_backend;
 mod navigation;
 mod perf;
 mod persist;
+mod pointer_constraints;
 mod producer;
 mod recovery;
 mod renderer;
