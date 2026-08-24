@@ -1,15 +1,13 @@
 use std::sync::Mutex;
 
 use cgmath::Matrix;
-use cgmath::Matrix3;
 use cgmath::Matrix4;
 use smithay::backend::renderer::gles::ffi;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::Renderer;
-use smithay::backend::renderer::Texture;
 use smithay::backend::SwapBuffersError;
 use tracing::error;
 
+use crate::backend::PresentationBackend;
 use crate::perf::PerfStats;
 use crate::scene::Scene;
 
@@ -46,7 +44,6 @@ void main() {
         false
     );
     if (uv.y < u_title_h) {
-        // Title bar area
         bool title_edge = uv.x < title_border || uv.x > 1.0 - title_border ||
                           uv.y < title_border || uv.y > u_title_h - title_border;
         if (title_edge) {
@@ -67,7 +64,6 @@ void main() {
             }
         }
     } else {
-        // Content area
         vec2 content_uv = vec2(uv.x, (uv.y - u_title_h) / (1.0 - u_title_h));
         if (any(edge)) {
             if (u_selected > 0.5) {
@@ -153,7 +149,6 @@ impl DrawGl {
 }
 
 /// Get or create the cached DrawGl.
-/// Reset the cache if the GL context was lost (returns None on error).
 fn get_draw_gl(gl: &ffi::Gles2) -> Option<std::sync::MutexGuard<'static, Option<DrawGl>>> {
     let mut guard = DRAW_GL.lock().unwrap();
     if guard.is_none() {
@@ -196,73 +191,8 @@ fn draw_textured_quad(
     }
 }
 
-fn do_render(
-    backend: &mut smithay::backend::winit::WinitGraphicsBackend<GlesRenderer>,
-    scene: &Scene,
-    view: &Matrix4<f32>,
-    proj: &Matrix4<f32>,
-    window_size: smithay::utils::Size<i32, smithay::utils::Physical>,
-    _w: f32, _h: f32,
-) -> Result<(), SwapBuffersError> {
-    let (renderer, mut target) = backend.bind()?;
-    let mut frame = match renderer.render(&mut target, window_size, smithay::utils::Transform::Normal) {
-        Ok(f) => f,
-        Err(_) => return Ok(()),
-    };
-
-    // Initialize DrawGl once per GL context lifetime
-    let _ = frame.with_context(|gl| { get_draw_gl(gl); });
-    let draw_guard = DRAW_GL.lock().unwrap();
-    let draw = match draw_guard.as_ref() {
-        Some(d) => d,
-        None => {
-            error!("DrawGl not initialized");
-            return Ok(());
-        }
-    };
-
-    let _ = frame.with_context(|gl| unsafe {
-        gl.ClearColor(0.15, 0.15, 0.15, 1.0);
-        gl.Clear(ffi::COLOR_BUFFER_BIT | ffi::DEPTH_BUFFER_BIT);
-    });
-    let _ = frame.with_context(|gl| unsafe {
-        gl.Enable(ffi::BLEND);
-        gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
-        gl.Enable(ffi::DEPTH_TEST);
-        gl.DepthFunc(ffi::LESS);
-    });
-
-    for visual in scene.iter() {
-        if visual.window_state == crate::scene::WindowState::Minimized { continue; }
-        let Some(texture) = visual.texture() else { continue };
-        let tex_id = texture.tex_id();
-        let gw = visual.total_width();
-        let gh = visual.total_height();
-        let title_h = visual.decoration.title_bar_height / (1.0 + visual.decoration.title_bar_height);
-
-        // Use world-space position and rotation (scale stays local)
-        let world = scene.world_matrix(visual.id);
-        let wx = world[3][0]; let wy = world[3][1]; let wz = world[3][2];
-        let m3 = cgmath::Matrix3::new(
-            world[0][0], world[0][1], world[0][2],
-            world[1][0], world[1][1], world[1][2],
-            world[2][0], world[2][1], world[2][2],
-        );
-        let rot = cgmath::Quaternion::from(m3);
-        let model = Matrix4::from_translation(cgmath::Vector3::new(wx, wy, wz))
-            * Matrix4::from(rot)
-            * Matrix4::from_nonuniform_scale(gw, gh, 1.0);
-        let mvp = proj * view * model;
-        let _ = frame.with_context(|gl| draw_textured_quad(gl, draw, &mvp, tex_id, visual.selected, visual.focused, title_h));
-    }
-
-    drop(frame);
-    drop(target);
-    backend.submit(None)
-}
-
 pub fn render_scene(
-    backend: &mut smithay::backend::winit::WinitGraphicsBackend<GlesRenderer>,
+    backend: &mut dyn PresentationBackend,
     scene: &Scene,
     view: &Matrix4<f32>,
     proj: &Matrix4<f32>,
@@ -271,33 +201,28 @@ pub fn render_scene(
 ) -> Result<(), SwapBuffersError> {
     use crate::perf::PipelineStage;
 
-    let window_size = backend.window_size();
-    let w = window_size.w as f32;
-    let h = window_size.h as f32;
+    let (w, h) = backend.size();
 
     let t_bind = std::time::Instant::now();
-    let (renderer, mut target) = match backend.bind() {
-        Ok(pair) => pair,
-        Err(e) => { error!(?e, "bind failed"); return Ok(()); }
-    };
-    let mut frame = match renderer.render(&mut target, window_size, smithay::utils::Transform::Normal) {
-        Ok(f) => f,
-        Err(_) => return Ok(()),
-    };
+    backend.begin_frame()?;
     perf.record_stage(PipelineStage::RenderBind, t_bind.elapsed().as_nanos() as u64);
 
-    let _ = frame.with_context(|gl| { get_draw_gl(gl); });
+    let renderer = backend.renderer();
+
+    // Initialize DrawGl once per GL context lifetime
+    let _ = renderer.with_context(|gl| { get_draw_gl(gl); });
     let draw_guard = DRAW_GL.lock().unwrap();
     let draw = match draw_guard.as_ref() {
         Some(d) => d,
         None => { error!("DrawGl not initialized"); return Ok(()); }
     };
 
-    let _ = frame.with_context(|gl| unsafe {
+    let _ = renderer.with_context(|gl| unsafe {
+        gl.Viewport(0, 0, w as i32, h as i32);
         gl.ClearColor(0.15, 0.15, 0.15, 1.0);
         gl.Clear(ffi::COLOR_BUFFER_BIT | ffi::DEPTH_BUFFER_BIT);
     });
-    let _ = frame.with_context(|gl| unsafe {
+    let _ = renderer.with_context(|gl| unsafe {
         gl.Enable(ffi::BLEND);
         gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
         gl.Enable(ffi::DEPTH_TEST);
@@ -328,15 +253,12 @@ pub fn render_scene(
             * Matrix4::from(rot)
             * Matrix4::from_nonuniform_scale(gw, gh, 1.0);
         let mvp = proj * view * model;
-        let _ = frame.with_context(|gl| draw_textured_quad(gl, draw, &mvp, tex_id, visual.selected, visual.focused, title_h));
+        let _ = renderer.with_context(|gl| draw_textured_quad(gl, draw, &mvp, tex_id, visual.selected, visual.focused, title_h));
     }
     perf.record_stage(PipelineStage::RenderDraw, t_draw.elapsed().as_nanos() as u64);
 
-    drop(frame);
-    drop(target);
-
     let t_submit = std::time::Instant::now();
-    let r = backend.submit(None);
+    let r = backend.finish_frame();
     perf.record_stage(PipelineStage::RenderSubmit, t_submit.elapsed().as_nanos() as u64);
 
     if let Err(SwapBuffersError::ContextLost(e)) = r {

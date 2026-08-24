@@ -29,6 +29,8 @@ use producer::{HostileCheckerboard, StaticColor};
 use smithay::backend::input::{AbsolutePositionEvent, Axis, InputEvent, KeyboardKeyEvent, MouseButton, PointerAxisEvent, PointerButtonEvent};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self, WinitEvent};
+
+use crate::backend::{PresentationBackend, WinitPresentationBackend};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::PostAction;
 use smithay::reexports::calloop::Interest;
@@ -62,7 +64,7 @@ fn main() {
     let (backend, winit_source) =
         winit::init::<GlesRenderer>().expect("Failed to initialize winit backend");
 
-    let mut state = LookingGlass::new(&display_handle, backend);
+    let mut state = LookingGlass::new(&display_handle, Box::new(WinitPresentationBackend(backend)));
 
     // If --native flag is passed, switch to DRM/KMS backend instead
     // of the nested winit backend

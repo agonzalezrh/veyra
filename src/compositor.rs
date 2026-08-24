@@ -1,11 +1,11 @@
 //! Wayland protocol integration and central compositor state.
 
-use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::gles::GlesTexture;
 use smithay::backend::renderer::ImportMemWl;
 use smithay::backend::renderer::Texture;
 use smithay::backend::SwapBuffersError;
-use smithay::backend::winit::WinitGraphicsBackend;
+
+use crate::backend::PresentationBackend;
 use smithay::delegate_compositor;
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::delegate_data_device;
@@ -151,7 +151,7 @@ pub struct LookingGlass {
     pub seat_state: SeatState<Self>,
     pub shm_state: ShmState,
     pub data_device_state: DataDeviceState,
-    pub backend: Option<WinitGraphicsBackend<GlesRenderer>>,
+    pub backend: Option<Box<dyn PresentationBackend>>,
     pub toplevels: Vec<ToplevelInfo>,
     pub popups: Vec<PopupInfo>,
     pub scene: Scene,
@@ -201,7 +201,7 @@ fn now_ms() -> u32 {
 impl LookingGlass {
     pub fn new(
         display_handle: &DisplayHandle,
-        backend: WinitGraphicsBackend<GlesRenderer>,
+        backend: Box<dyn PresentationBackend>,
     ) -> Self {
         let compositor_state = CompositorState::new::<Self>(display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
@@ -709,9 +709,7 @@ impl LookingGlass {
         self.perf.record_stage(PipelineStage::TexCopy, t_tex_start.elapsed().as_nanos() as u64);
 
         // Step 3: Apply layout
-        let (w, h) = self.window_size;
-        let world_w = w;
-        let world_h = h;
+        let (world_w, world_h) = self.window_size;
         let detached = self.scene.detached_set.clone();
         let layout_mode = self.workspace_manager.active().layout_mode;
         layout::apply_layout(
@@ -724,7 +722,10 @@ impl LookingGlass {
         );
 
         // Step 4: Camera + render
-        let Some(backend) = self.backend.as_mut() else { return; };
+        let back: &mut dyn PresentationBackend = match self.backend.as_mut() {
+            Some(b) => b.as_mut(),
+            None => return,
+        };
         if !self.spatial_mode {
             self.camera.position = cgmath::Point3::new(0.0, 0.0, 500.0);
             self.camera.yaw = 0.0;
@@ -748,7 +749,7 @@ impl LookingGlass {
             CameraMode::WorkspaceOverview => None, // show all
             _ => Some(self.workspace_manager.active().visual_ids.as_slice()),
         };
-        if let Err(SwapBuffersError::ContextLost(e)) = renderer::render_scene(backend, &self.scene, &view, &proj, &mut self.perf, ws_visible) {
+        if let Err(SwapBuffersError::ContextLost(e)) = renderer::render_scene(back, &self.scene, &view, &proj, &mut self.perf, ws_visible) {
             error!(?e, "Context lost");
             self.backend = None;
         }
