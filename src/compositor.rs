@@ -102,6 +102,8 @@ pub struct PopupInfo {
     pub visual_id: Option<VisualId>,
     pub lifecycle: SurfaceLifecycle,
     pub size: Option<(i32, i32)>,
+    /// The positioner state for computing popup geometry.
+    pub positioner: PositionerState,
 }
 
 #[derive(Debug, Clone)]
@@ -522,6 +524,14 @@ impl LookingGlass {
 
                             if is_remap {
                                 if let Some(vid) = existing_vid {
+                                    // Compute position before mutable borrow of scene
+                                    let new_pos = self.popups[popup_idx].positioner.get_geometry();
+                                    let parent_pos = self.popups[popup_idx].parent_toplevel_vid
+                                        .and_then(|pvid| {
+                                            self.scene.visuals.iter().find(|v| v.id == pvid).map(|parent| {
+                                                (parent.transform.position, parent.total_width(), parent.total_height())
+                                            })
+                                        });
                                     if let Some(visual) = self.scene.get_mut(vid) {
                                         if let Some(dst) = visual.texture_mut() {
                                             *dst = texture;
@@ -530,12 +540,30 @@ impl LookingGlass {
                                             smithay::utils::Point::new(0, 0),
                                             smithay::utils::Size::new(tex_size.w, tex_size.h),
                                         );
+                                        // Recompute position from updated positioner
+                                        if let Some((p_pos, p_total_w, p_total_h)) = parent_pos {
+                                            let popup_w = new_pos.size.w as f32;
+                                            let popup_h = new_pos.size.h as f32;
+                                            let local_x = new_pos.loc.x as f32 + popup_w * 0.5 - p_total_w * 0.5;
+                                            let local_y = -(new_pos.loc.y as f32 + popup_h * 0.5 - p_total_h * 0.5);
+                                            visual.transform.position = p_pos
+                                                + cgmath::Vector3::new(local_x, local_y, 10.0);
+                                        }
                                         self.workspace_manager.active_mut().add(vid);
                                         info!(?vid, "popup remapped");
                                     }
                                 }
                             } else {
                                 let parent_vid = self.popups[popup_idx].parent_toplevel_vid;
+                                let positioner = self.popups[popup_idx].positioner;
+                                // Compute popup position from xdg_positioner before creating visual
+                                let popup_geometry = positioner.get_geometry();
+                                // Find parent position info before mutable borrow
+                                let parent_info = parent_vid.and_then(|pvid| {
+                                    self.scene.visuals.iter().find(|v| v.id == pvid).map(|parent| {
+                                        (parent.transform.position, parent.total_width(), parent.total_height(), pvid)
+                                    })
+                                });
                                 let mut visual = Visual::new(
                                     VisualContent::WaylandSurface(texture),
                                     smithay::utils::Rectangle::new(
@@ -543,20 +571,21 @@ impl LookingGlass {
                                         smithay::utils::Size::new(tex_size.w, tex_size.h),
                                     ),
                                 );
-                                // Position popup relative to parent with a simple offset
-                                if let Some(pvid) = parent_vid {
-                                    if let Some(parent) = self.scene.visuals.iter().find(|v| v.id == pvid) {
-                                        visual.transform.position = parent.transform.position
-                                            + cgmath::Vector3::new(100.0, -50.0, 10.0); // offset right and slightly down, in front
-                                        visual.parent = Some(pvid);
-                                    }
+                                if let Some((p_pos, p_total_w, p_total_h, pvid)) = parent_info {
+                                    let popup_w = popup_geometry.size.w as f32;
+                                    let popup_h = popup_geometry.size.h as f32;
+                                    let local_x = popup_geometry.loc.x as f32 + popup_w * 0.5 - p_total_w * 0.5;
+                                    let local_y = -(popup_geometry.loc.y as f32 + popup_h * 0.5 - p_total_h * 0.5);
+                                    visual.transform.position = p_pos
+                                        + cgmath::Vector3::new(local_x, local_y, 10.0);
+                                    visual.parent = Some(pvid);
                                 }
                                 let visual_id = visual.id;
                                 self.popups[popup_idx].visual_id = Some(visual_id);
                                 self.wayland_surfaces.insert(visual_id, surface.clone());
                                 self.scene.add(visual);
                                 // Add to the same workspace as the parent (or active workspace)
-                                if let Some(pvid) = parent_vid {
+                                if let Some((_, _, _, pvid)) = parent_info {
                                     for i in 0..self.workspace_manager.len() {
                                         if let Some(ws) = self.workspace_manager.get_mut(i) {
                                             if ws.visual_ids.contains(&pvid) {
@@ -568,7 +597,7 @@ impl LookingGlass {
                                 } else {
                                     self.workspace_manager.active_mut().add(visual_id);
                                 }
-                                info!(?visual_id, ?parent_vid, "popup mapped");
+                                info!(?visual_id, ?parent_vid, ?popup_geometry, "popup mapped");
                             }
                         } else {
                             // ── Toplevel commit ──
@@ -1987,7 +2016,7 @@ impl XdgShellHandler for LookingGlass {
     fn new_popup(
         &mut self,
         surface: smithay::wayland::shell::xdg::PopupSurface,
-        _positioner: PositionerState,
+        positioner: PositionerState,
     ) {
         let wl_surface = surface.wl_surface().clone();
         let parent_vid = find_parent_toplevel_vid(&self.toplevels, &self.popups, &surface);
@@ -2002,6 +2031,7 @@ impl XdgShellHandler for LookingGlass {
             visual_id: None,
             lifecycle: SurfaceLifecycle::Created,
             size: None,
+            positioner,
         };
         info!("popup created");
         self.popups.push(info);
@@ -2022,9 +2052,13 @@ impl XdgShellHandler for LookingGlass {
     fn reposition_request(
         &mut self,
         surface: smithay::wayland::shell::xdg::PopupSurface,
-        _positioner: PositionerState,
+        positioner: PositionerState,
         _token: u32,
     ) {
+        // Update stored positioner state for this popup
+        if let Some(info) = self.popups.iter_mut().find(|p| p.popup.wl_surface() == surface.wl_surface()) {
+            info.positioner = positioner;
+        }
         // Accept reposition requests by sending a configure
         let _ = surface.send_configure();
     }
