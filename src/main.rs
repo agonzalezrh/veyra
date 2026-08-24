@@ -1,5 +1,6 @@
 mod anchor;
 mod arrange;
+mod bench;
 mod backend;
 mod capabilities;
 mod compositor;
