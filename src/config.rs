@@ -337,17 +337,21 @@ mod tests {
     use std::io::Write;
 
     /// Run a test with a temporary config file set via VEYRA_CONFIG_PATH.
+    /// Uses a unique temp dir per call so parallel tests don't interfere.
     fn with_config(toml_content: &str) -> Config {
-        let dir = std::env::temp_dir().join(format!("veyra_test_{}", std::process::id()));
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("veyra_config_test_{}", id));
         let _ = fs::create_dir_all(&dir);
-        let path = dir.join("test_config.toml");
+        let path = dir.join("config.toml");
         let mut file = fs::File::create(&path).unwrap();
         write!(file, "{}", toml_content).unwrap();
 
         std::env::set_var("VEYRA_CONFIG_PATH", &path);
         let config = Config::load();
         std::env::remove_var("VEYRA_CONFIG_PATH");
-        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&dir);
         config
     }
 
@@ -388,7 +392,10 @@ sensitivity = 2.0
 
     #[test]
     fn invalid_toml_uses_defaults() {
-        let dir = std::env::temp_dir().join(format!("veyra_test_{}", std::process::id()));
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("veyra_config_test_invalid_{}", id));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test_invalid.toml");
         fs::write(&path, "not valid toml {{{").unwrap();
@@ -396,7 +403,7 @@ sensitivity = 2.0
         std::env::set_var("VEYRA_CONFIG_PATH", &path);
         let config = Config::load();
         std::env::remove_var("VEYRA_CONFIG_PATH");
-        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&dir);
 
         assert_eq!(config.workspace.count, 3);
     }
