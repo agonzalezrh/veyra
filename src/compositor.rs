@@ -56,7 +56,7 @@ use crate::perf::PerfStats;
 use crate::scheduler::RenderScheduler;
 use crate::workspace::WorkspaceManager;
 use crate::producer::{FrameProducer, FrameResult};
-use crate::scene::{Scene, Visual, VisualContent, VisualId};
+use crate::scene::{DamageKind, Scene, Visual, VisualContent, VisualId};
 use crate::renderer;
 use tracing::error;
 use tracing::info;
@@ -533,6 +533,7 @@ impl LookingGlass {
                             if let Some(dst) = visual.texture_mut() {
                                 *dst = texture;
                             }
+                            visual.damage = DamageKind::Content;
                         }
                     }
                 }
@@ -773,6 +774,8 @@ impl LookingGlass {
             error!(?e, "Context lost");
             self.backend = None;
         }
+
+        self.scene.clear_damage();
 
         self.perf.record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
         self.perf.record_frame();

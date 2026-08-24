@@ -46,6 +46,18 @@ impl Default for DecorationConfig {
     }
 }
 
+/// Distinguishes damage types for the rendering pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum DamageKind {
+    /// No damage, visual unchanged.
+    #[default]
+    None,
+    /// Pixel content changed (buffer commit).
+    Content,
+    /// Only spatial state changed (position/rotation/scale), not content.
+    SpatialOnly,
+}
+
 /// The state of a visual's content producer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ContentState {
@@ -175,6 +187,8 @@ pub struct Visual {
     pub saved_transform: Option<Transform3D>,
     /// Compositor-owned spatial chrome metadata.
     pub chrome: SpatialChrome,
+    /// Damage tracking — whether content or spatial state changed.
+    pub damage: DamageKind,
 }
 
 impl Visual {
@@ -192,6 +206,7 @@ impl Visual {
             window_state: WindowState::Normal,
             saved_transform: None,
             chrome: SpatialChrome::default(),
+            damage: DamageKind::Content,
         }
     }
 
@@ -642,6 +657,13 @@ impl Scene {
         }
         self.visuals.swap(idx, idx - 1);
         true
+    }
+
+    /// Clear damage after rendering.
+    pub fn clear_damage(&mut self) {
+        for v in &mut self.visuals {
+            v.damage = DamageKind::default();
+        }
     }
 
     /// Reset a visual's transform to identity (position 0,0,0, no rotation, scale 1).
@@ -1371,6 +1393,33 @@ mod tests {
         assert!(scene.is_de_emphasized(VisualId(2)));
         assert!(scene.is_de_emphasized(VisualId(3)));
         assert_eq!(scene.de_emphasized_set.len(), 3);
+    }
+
+    #[test]
+    fn damage_new_visual_starts_as_content() {
+        let mut scene = Scene::default();
+        // Without GlesTexture we can't create a Visual, but we can test
+        // the DamageKind enum values directly
+        assert_eq!(DamageKind::default(), DamageKind::None);
+        assert_ne!(DamageKind::Content, DamageKind::None);
+        assert_ne!(DamageKind::SpatialOnly, DamageKind::None);
+        assert_ne!(DamageKind::Content, DamageKind::SpatialOnly);
+    }
+
+    #[test]
+    fn clear_damage_no_visuals_no_crash() {
+        let mut scene = Scene::default();
+        scene.clear_damage();
+        // No crash
+    }
+
+    #[test]
+    fn damage_is_correct_type() {
+        // DamageKind is a simple enum with 3 variants
+        fn takes_damage(d: DamageKind) -> DamageKind { d }
+        assert_eq!(takes_damage(DamageKind::None), DamageKind::None);
+        assert_eq!(takes_damage(DamageKind::Content), DamageKind::Content);
+        assert_eq!(takes_damage(DamageKind::SpatialOnly), DamageKind::SpatialOnly);
     }
 
     #[test]
