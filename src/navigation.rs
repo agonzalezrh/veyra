@@ -240,4 +240,28 @@ mod tests {
         let nav = NavigationModel::new();
         assert_eq!(nav.match_binding(57, false, false, false, true), Some(Binding::Launcher));
     }
+
+    #[test]
+    fn match_binding_close_app() {
+        let nav = NavigationModel::new();
+        assert_eq!(nav.match_binding(25, false, false, false, true), Some(Binding::CloseApp));
+    }
+
+    #[test]
+    fn match_binding_cycle_visuals() {
+        let nav = NavigationModel::new();
+        assert_eq!(nav.match_binding(23, false, false, false, true), Some(Binding::CycleVisuals));
+    }
+
+    #[test]
+    fn match_binding_open_context_menu() {
+        let nav = NavigationModel::new();
+        assert_eq!(nav.match_binding(127, false, false, false, false), Some(Binding::OpenContextMenu));
+    }
+
+    #[test]
+    fn match_binding_help_overlay() {
+        let nav = NavigationModel::new();
+        assert_eq!(nav.match_binding(19, false, false, false, true), Some(Binding::HelpOverlay));
+    }
 }

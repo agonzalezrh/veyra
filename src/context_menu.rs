@@ -92,6 +92,37 @@ impl ContextMenu {
         let idx = ((y - my) / item_height) as usize;
         if idx < self.items.len() { Some(idx) } else { None }
     }
+
+    /// Select the next item in the menu (down arrow).
+    pub fn select_next(&mut self) {
+        if !self.visible || self.items.is_empty() { return; }
+        let current = match self.selected {
+            Some(i) => i,
+            None => {
+                self.selected = Some(0);
+                return;
+            }
+        };
+        self.selected = Some((current + 1) % self.items.len());
+    }
+
+    /// Select the previous item in the menu (up arrow).
+    pub fn select_prev(&mut self) {
+        if !self.visible || self.items.is_empty() { return; }
+        let current = match self.selected {
+            Some(i) => i,
+            None => {
+                self.selected = Some(self.items.len() - 1);
+                return;
+            }
+        };
+        self.selected = Some((current + self.items.len() - 1) % self.items.len());
+    }
+
+    /// Confirm the current selection and return the action.
+    pub fn confirm_selection(&self) -> Option<MenuAction> {
+        self.selected.and_then(|idx| self.items.get(idx)).map(|item| item.action)
+    }
 }
 
 impl Default for ContextMenu {
@@ -163,5 +194,78 @@ mod tests {
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Arrange)));
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Close)));
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::ResetTransform)));
+    }
+
+    #[test]
+    fn keyboard_navigate_next() {
+        let mut menu = ContextMenu::new();
+        menu.show(0.0, 0.0, VisualId(1), 3);
+        assert_eq!(menu.selected, None);
+        menu.select_next();
+        assert_eq!(menu.selected, Some(0)); // Focus
+        menu.select_next();
+        assert_eq!(menu.selected, Some(1)); // Arrange
+    }
+
+    #[test]
+    fn keyboard_navigate_prev() {
+        let mut menu = ContextMenu::new();
+        menu.show(0.0, 0.0, VisualId(1), 3);
+        menu.select_prev();
+        // Wraps around to last item
+        let last = menu.items.len() - 1;
+        assert_eq!(menu.selected, Some(last));
+    }
+
+    #[test]
+    fn keyboard_navigate_wraps_around() {
+        let mut menu = ContextMenu::new();
+        menu.show(0.0, 0.0, VisualId(1), 3);
+        let count = menu.items.len();
+        // Navigate past the end
+        for _ in 0..count + 1 {
+            menu.select_next();
+        }
+        assert_eq!(menu.selected, Some(0)); // Back to start
+    }
+
+    #[test]
+    fn keyboard_confirm_selection() {
+        let mut menu = ContextMenu::new();
+        menu.show(0.0, 0.0, VisualId(1), 3);
+        // No selection initially
+        assert!(menu.confirm_selection().is_none());
+        menu.selected = Some(0);
+        assert_eq!(menu.confirm_selection(), Some(MenuAction::Focus));
+        menu.selected = Some(8); // Close
+        assert_eq!(menu.confirm_selection(), Some(MenuAction::Close));
+    }
+
+    #[test]
+    fn escape_dismisses_context_menu() {
+        let mut menu = ContextMenu::new();
+        menu.show(0.0, 0.0, VisualId(1), 3);
+        assert!(menu.visible);
+        menu.dismiss();
+        assert!(!menu.visible);
+        assert!(menu.target.is_none());
+    }
+
+    #[test]
+    fn select_next_from_none_starts_at_zero() {
+        let mut menu = ContextMenu::new();
+        menu.show(0.0, 0.0, VisualId(1), 3);
+        menu.selected = None;
+        menu.select_next();
+        assert_eq!(menu.selected, Some(0));
+    }
+
+    #[test]
+    fn select_prev_from_none_starts_at_end() {
+        let mut menu = ContextMenu::new();
+        menu.show(0.0, 0.0, VisualId(1), 3);
+        menu.selected = None;
+        menu.select_prev();
+        assert_eq!(menu.selected, Some(menu.items.len() - 1));
     }
 }

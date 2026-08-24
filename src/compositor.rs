@@ -1635,6 +1635,22 @@ impl LookingGlass {
 
         tracing::debug!(?linux_key, pressed, ctrl = self.ctrl_pressed, shift = self.shift_pressed, alt = self.alt_pressed, meta = self.meta_pressed, "KEY EVENT");
 
+        // If context menu is visible, route keyboard navigation to it
+        if self.context_menu.visible && pressed {
+            // Linux keycodes: 103=Up, 108=Down, 28=Enter, 1=Escape
+            match linux_key {
+                103 => { self.context_menu.select_prev(); return; }
+                108 => { self.context_menu.select_next(); return; }
+                28 => {
+                    if let Some(action) = self.context_menu.confirm_selection() {
+                        self.execute_menu_action(action);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         if pressed {
             // F1/F2/F3 -> switch workspaces 0/1/2 (X11 keycodes 67=F1, 68=F2, 69=F3)
             match linux_key {

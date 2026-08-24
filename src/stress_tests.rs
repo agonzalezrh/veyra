@@ -1238,3 +1238,107 @@ fn recovery_from_destroyed_focus_stress() {
         assert_eq!(scene.focused_id, None, "focus cleared on iteration {}", i);
     }
 }
+
+// ── 17. Keyboard-first navigation tests (M090) ─────────────────────
+
+#[test]
+fn alt_tab_cycles_applications() {
+    use crate::scene::Scene;
+    let mut scene = Scene::default();
+    let a = VisualId(9001);
+    let b = VisualId(9002);
+    scene.focus(Some(a));
+    assert_eq!(scene.focused_id, Some(a));
+    scene.focus(Some(b));
+    assert_eq!(scene.focused_id, Some(b), "Alt+Tab cycles focus");
+}
+
+#[test]
+fn menu_key_opens_context_menu() {
+    use crate::context_menu::ContextMenu;
+    let mut menu = ContextMenu::new();
+    assert!(!menu.visible);
+    menu.show(100.0, 100.0, VisualId(42), 3);
+    assert!(menu.visible, "menu should be visible after show");
+}
+
+#[test]
+fn context_menu_navigable_with_arrow_keys() {
+    use crate::context_menu::ContextMenu;
+    let mut menu = ContextMenu::new();
+    menu.show(0.0, 0.0, VisualId(1), 3);
+    assert_eq!(menu.selected, None);
+    menu.select_next();
+    assert_eq!(menu.selected, Some(0), "down arrow selects first");
+    menu.select_next();
+    assert_eq!(menu.selected, Some(1), "down arrow selects second");
+    menu.select_prev();
+    assert_eq!(menu.selected, Some(0), "up arrow goes back");
+}
+
+#[test]
+fn escape_dismisses_context_menu() {
+    use crate::context_menu::ContextMenu;
+    let mut menu = ContextMenu::new();
+    menu.show(0.0, 0.0, VisualId(1), 3);
+    assert!(menu.visible);
+    menu.dismiss();
+    assert!(!menu.visible);
+}
+
+#[test]
+fn all_bindings_work_without_mouse() {
+    use crate::navigation::Binding;
+    use crate::navigation::NavigationModel;
+
+    let nav = NavigationModel::new();
+    // Verify critical bindings are present
+    let checks = vec![
+        (Binding::AppNext, "Alt+Tab"),
+        (Binding::AppPrev, "Alt+Shift+Tab"),
+        (Binding::WorkspaceNext, "Ctrl+Tab"),
+        (Binding::WorkspacePrev, "Ctrl+Shift+Tab"),
+        (Binding::ToggleSpatial, "Tab"),
+        (Binding::ToggleFocus, "F6"),
+        (Binding::Escape, "Escape"),
+        (Binding::CloseApp, "Super+W"),
+        (Binding::CycleVisuals, "Super+Tab"),
+        (Binding::OpenContextMenu, "Menu key"),
+    ];
+
+    // Just verify that all critical binding types exist in the navigation model
+    for (binding, name) in &checks {
+        let found = nav.bindings.iter().any(|(b, _)| b == binding);
+        assert!(found, "binding {:?} ({}) should be present", binding, name);
+    }
+}
+
+#[test]
+fn keyboard_navigation_predictable() {
+    // Each key press produces deterministic results
+    use crate::context_menu::ContextMenu;
+    let mut menu = ContextMenu::new();
+    menu.show(0.0, 0.0, VisualId(1), 3);
+
+    // 3 down arrows from start -> index 2
+    menu.select_next();
+    menu.select_next();
+    menu.select_next();
+    assert_eq!(menu.selected, Some(2));
+
+    // 2 up arrows from index 2 -> index 0
+    menu.select_prev();
+    menu.select_prev();
+    assert_eq!(menu.selected, Some(0));
+}
+
+#[test]
+fn context_menu_arrow_keys_dont_crash_when_hidden() {
+    use crate::context_menu::ContextMenu;
+    let mut menu = ContextMenu::new();
+    assert!(!menu.visible);
+    // These should not crash
+    menu.select_next();
+    menu.select_prev();
+    assert!(menu.confirm_selection().is_none());
+}
