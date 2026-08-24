@@ -627,10 +627,11 @@ Desktop shell increasingly implemented as ordinary Wayland applications
 rather than compositor-specific UI.
 
 ### E-A — Interaction (E1–E4)
+**Status: ✅ Complete (284 tests)**
 ### E-B — Desktop UX (E5–E6)
+**Status: ✅ Complete (307 tests)**
 ### E-C — Session (E7–E8)
-
-**Status: ⬜ Not started**"
+**Status: ⬜ Not started**
 
 ---
 
