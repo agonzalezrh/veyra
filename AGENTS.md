@@ -631,7 +631,28 @@ rather than compositor-specific UI.
 ### E-B — Desktop UX (E5–E6)
 **Status: ✅ Complete (307 tests)**
 ### E-C — Session (E7–E8)
-**Status: ⬜ Not started**
+**Status: ✅ Complete (344 tests)**
+
+## Group F — Real-Application Compatibility Audit
+
+Diagnostic phase. Real GTK, Qt, Electron, Firefox, Chromium, SDL/XWayland
+applications tested against Veyra. No compositor code modified during audit.
+Results in `COMPATIBILITY_MATRIX.md` and `BUG_LIST.md`.
+
+## Group G — Compatibility Fix Campaign
+
+### G-A — First Fix Batch (G1–G5)
+
+Priority order from audit:
+- G1: XDG popup positioning (affects all toolkits)
+- G2: Proper XKB keyboard layout handling
+- G3: Clipboard / data-device
+- G4: Drag & drop
+- G5: Fullscreen protocol
+
+### G-B — Remaining Issues (G6–G10)
+
+To be defined after G-A lands.
 
 ---
 
