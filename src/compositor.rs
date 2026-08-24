@@ -48,6 +48,8 @@ use std::time::SystemTime;
 use cgmath::Matrix4;
 
 use crate::app_switcher::ApplicationSwitcher;
+use crate::config::Config;
+use crate::context_menu::{ContextMenu, MenuAction};
 use crate::focus::{CameraMode, FocusManager};
 use crate::input::Camera;
 use crate::input_router::{self, InputSink, KeyboardEvent, PointerEventKind};
@@ -204,6 +206,10 @@ pub struct LookingGlass {
     pub navigation: NavigationModel,
     /// Alt+Tab was active (releasing Alt commits selection).
     alt_tab_active: bool,
+    /// Context menu (right-click popup).
+    pub context_menu: ContextMenu,
+    /// Configuration (loaded at startup, no live reload).
+    pub config: Config,
 }
 
 /// Result of routing a pointer event to the selected visual's content.
@@ -221,6 +227,7 @@ impl LookingGlass {
     pub fn new(
         display_handle: &DisplayHandle,
         backend: Box<dyn PresentationBackend>,
+        config: Config,
     ) -> Self {
         let compositor_state = CompositorState::new::<Self>(display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
@@ -271,7 +278,7 @@ impl LookingGlass {
             scene: Scene::default(),
             camera: Camera::new(),
             spatial_mode: true,
-            workspace_manager: WorkspaceManager::new(3),
+            workspace_manager: WorkspaceManager::new(config.workspace.count),
             producers: Vec::new(),
             perf: PerfStats::new(),
             output: None,
@@ -300,6 +307,8 @@ impl LookingGlass {
             shelf: SpatialShelf::new(),
             navigation: NavigationModel::new(),
             alt_tab_active: false,
+            context_menu: ContextMenu::new(),
+            config,
             scheduler: RenderScheduler::new(),
         }
     }
@@ -802,7 +811,8 @@ impl LookingGlass {
         } else {
             self.scheduler.set_animating(false);
         }
-        if let Err(SwapBuffersError::ContextLost(e)) = renderer::render_scene(back, &self.scene, &view, &proj, &mut self.perf, ws_visible) {
+        let context_menu = if self.context_menu.visible { Some(&self.context_menu) } else { None };
+        if let Err(SwapBuffersError::ContextLost(e)) = renderer::render_scene(back, &self.scene, &view, &proj, &mut self.perf, ws_visible, context_menu) {
             error!(?e, "Context lost");
             self.backend = None;
         }
@@ -978,6 +988,117 @@ impl LookingGlass {
             }
         }
         None
+    }
+
+    /// Show a context menu at the given screen position for the selected visual.
+    /// Returns true if a menu was shown.
+    pub fn handle_context_menu(&mut self, x: f64, y: f64) -> bool {
+        // Dismiss any existing menu first
+        self.context_menu.dismiss();
+
+        // Pick the visual under cursor
+        let (w, h) = self.window_size;
+        let ndc_x = (x as f32 / w) * 2.0 - 1.0;
+        let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
+        let pv = self.proj_view();
+        let ws_ids = self.workspace_manager.active().visual_ids.as_slice();
+        let picked = self.scene.pick_visible(&pv, ndc_x, ndc_y, ws_ids);
+
+        if let Some((vid, _)) = picked {
+            let ws_count = self.workspace_manager.len();
+            self.context_menu.show(x, y, vid, ws_count);
+            info!(?vid, "context menu opened");
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Execute the action for a context menu item.
+    fn execute_menu_action(&mut self, action: MenuAction) {
+        let Some(target) = self.context_menu.target else {
+            self.context_menu.dismiss();
+            return;
+        };
+        match action {
+            MenuAction::Dismiss => {
+                self.context_menu.dismiss();
+            }
+            MenuAction::Focus => {
+                self.focus_manager.enter(&self.camera, target, &self.scene);
+                info!(?target, "context menu: focus");
+            }
+            MenuAction::Arrange => {
+                let ws = self.workspace_manager.active_mut();
+                let mode = ws.layout_mode;
+                let detached = self.scene.detached_set.clone();
+                let (ww, wh) = self.window_size;
+                layout::apply_layout(&mut self.scene, mode, &layout::LayoutConfig::default(), &detached, ww, wh);
+                info!(?target, "context menu: arrange");
+            }
+            MenuAction::MoveToWorkspace(ws_idx) => {
+                if ws_idx < self.workspace_manager.len() {
+                    if let Some(ws) = self.workspace_manager.get_mut(ws_idx) {
+                        ws.add(target);
+                    }
+                    let current_ws = self.workspace_manager.active_id();
+                    if let Some(ws) = self.workspace_manager.get_mut(current_ws) {
+                        ws.remove(target);
+                    }
+                    info!(?target, workspace = ws_idx, "context menu: move to workspace");
+                }
+            }
+            MenuAction::Group => {
+                self.scene.create_group(vec![target]);
+                info!(?target, "context menu: group");
+            }
+            MenuAction::Ungroup => {
+                let gid = self.scene.find_group_containing(target);
+                if let Some(gid) = gid {
+                    self.scene.remove_group(gid);
+                    info!(?target, "context menu: ungroup");
+                }
+            }
+            MenuAction::DeEmphasize => {
+                self.scene.de_emphasize(target);
+                info!(?target, "context menu: de-emphasize");
+            }
+            MenuAction::Restore => {
+                self.scene.restore_from_de_emphasis(target);
+                info!(?target, "context menu: restore");
+            }
+            MenuAction::ResetTransform => {
+                self.scene.reset_transform(target);
+                info!(?target, "context menu: reset transform");
+            }
+            MenuAction::Close => {
+                if let Some(wl_surface) = self.wayland_surfaces.get(&target).cloned() {
+                    // Send close to the client via XDG toplevel
+                    for t in &self.toplevels {
+                        if t.toplevel.wl_surface() == &wl_surface {
+                            t.toplevel.send_close();
+                            info!(?target, "context menu: close sent");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        self.context_menu.dismiss();
+    }
+
+    /// Handle a left-click on the context menu. Returns true if the click was handled by the menu.
+    pub fn handle_menu_click(&mut self, x: f64, y: f64) -> bool {
+        let menu_width = 220.0;
+        let item_height = 24.0;
+        if let Some(idx) = self.context_menu.item_at(x, y, menu_width, item_height) {
+            if idx < self.context_menu.items.len() {
+                let action = self.context_menu.items[idx].action;
+                self.execute_menu_action(action);
+                return true;
+            }
+        }
+        false
     }
 
     /// Public entry point for a pointer button press.

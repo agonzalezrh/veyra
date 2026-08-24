@@ -8,6 +8,7 @@ use smithay::backend::SwapBuffersError;
 use tracing::error;
 
 use crate::backend::PresentationBackend;
+use crate::context_menu::ContextMenu;
 use crate::perf::PerfStats;
 use crate::scene::Scene;
 
@@ -39,6 +40,9 @@ pub fn upload_texture_sub_region(
 /// Global DrawGl cache, created once per GL context lifetime.
 /// Reset on context loss.
 static DRAW_GL: Mutex<Option<DrawGl>> = Mutex::new(None);
+
+/// A small 1x1 white texture used as a "brush" for drawing colored overlays.
+static MENU_WHITE_TEX: Mutex<Option<u32>> = Mutex::new(None);
 
 const QUAD_VS: &str = "\
 attribute vec2 a_pos;
@@ -223,6 +227,7 @@ pub fn render_scene(
     proj: &Matrix4<f32>,
     perf: &mut PerfStats,
     visible_ids: Option<&[crate::scene::VisualId]>,
+    context_menu: Option<&ContextMenu>,
 ) -> Result<(), SwapBuffersError> {
     use crate::perf::PipelineStage;
 
@@ -281,6 +286,97 @@ pub fn render_scene(
         let _ = renderer.with_context(|gl| draw_textured_quad(gl, draw, &mvp, tex_id, visual.selected, visual.focused, title_h));
     }
     perf.record_stage(PipelineStage::RenderDraw, t_draw.elapsed().as_nanos() as u64);
+
+    // Render context menu overlay (if visible)
+    if let Some(menu) = context_menu {
+        if menu.visible {
+            let _ = renderer.with_context(|gl| unsafe {
+                gl.Disable(ffi::DEPTH_TEST);
+                gl.Enable(ffi::BLEND);
+                gl.BlendFunc(ffi::SRC_ALPHA, ffi::ONE_MINUS_SRC_ALPHA);
+
+                let (mx, my) = menu.position;
+                let menu_width = 220.0;
+                let item_height = 24.0;
+                let menu_height = menu.items.len() as f32 * item_height;
+
+                // Convert screen pixel coords to NDC [-1, 1]
+                let ndc_x = (mx as f32 / w as f32) * 2.0 - 1.0;
+                let ndc_y = -((my as f32 / h as f32) * 2.0 - 1.0);
+                let ndc_w = menu_width / w as f32 * 2.0;
+                let ndc_h = menu_height / h as f32 * 2.0;
+
+                // Render menu background using our shader with ortho projection
+                let ortho = cgmath::ortho(-1.0f32, 1.0, -1.0, 1.0, -1.0, 1.0);
+                let _ortho_mvp = &ortho;
+
+                gl.UseProgram(draw.program);
+
+                // Black background quad for the menu
+                gl.Uniform1f(draw.u_selected, 0.0);
+                gl.Uniform1f(draw.u_focused, 0.0);
+                gl.Uniform1f(draw.u_title_h, 0.0);
+
+                // Lazily create a 1x1 white texture for overlay rendering
+                {
+                    let mut guard = MENU_WHITE_TEX.lock().unwrap();
+                    if guard.is_none() {
+                        let mut tex = 0;
+                        gl.GenTextures(1, &mut tex);
+                        gl.BindTexture(ffi::TEXTURE_2D, tex);
+                        let white: [u8; 4] = [255, 255, 255, 255];
+                        gl.TexImage2D(ffi::TEXTURE_2D, 0, ffi::RGBA as i32, 1, 1, 0, ffi::RGBA, ffi::UNSIGNED_BYTE, white.as_ptr() as *const std::ffi::c_void);
+                        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
+                        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
+                        *guard = Some(tex);
+                    }
+                }
+                let white_tex = MENU_WHITE_TEX.lock().unwrap().unwrap_or(0);
+
+                gl.ActiveTexture(ffi::TEXTURE0);
+                gl.BindTexture(ffi::TEXTURE_2D, white_tex);
+                gl.Uniform1i(draw.u_tex, 0);
+
+                // Background quad
+                let bg_pos = ndc_x + ndc_w / 2.0;
+                let bg_pos_y = ndc_y - ndc_h / 2.0;
+                let bg_mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(bg_pos, bg_pos_y, 0.0))
+                    * cgmath::Matrix4::from_nonuniform_scale(ndc_w, ndc_h, 1.0);
+                gl.UniformMatrix4fv(draw.u_mvp, 1, 0, bg_mvp.as_ptr());
+
+                let stride = 4 * std::mem::size_of::<f32>() as i32;
+                gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
+                gl.EnableVertexAttribArray(draw.a_pos);
+                gl.VertexAttribPointer(draw.a_pos, 2, ffi::FLOAT, 0, stride, std::ptr::null());
+                gl.EnableVertexAttribArray(draw.a_uv);
+                gl.VertexAttribPointer(draw.a_uv, 2, ffi::FLOAT, 0, stride, (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void);
+                gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+
+                let ndc_ih = item_height / h as f32 * 2.0;
+                // Draw each menu item
+                for (i, _item) in menu.items.iter().enumerate() {
+                    let item_iy = -(my as f32 - (i as f32 * item_height)) / h as f32 * 2.0 + 1.0;
+                    let item_ix = (mx as f32 / w as f32) * 2.0 - 1.0 + ndc_w / 2.0;
+                    let item_iy_c = item_iy - ndc_ih / 2.0;
+                    let item_mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(item_ix, item_iy_c, 0.0))
+                        * cgmath::Matrix4::from_nonuniform_scale(ndc_w, ndc_ih, 1.0);
+
+                    let is_selected = menu.selected == Some(i);
+                    if is_selected {
+                        gl.Uniform1f(draw.u_selected, 1.0);
+                    } else {
+                        gl.Uniform1f(draw.u_selected, 0.0);
+                    }
+                    gl.UniformMatrix4fv(draw.u_mvp, 1, 0, item_mvp.as_ptr());
+                    gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+                }
+
+                gl.DisableVertexAttribArray(draw.a_pos);
+                gl.DisableVertexAttribArray(draw.a_uv);
+                gl.Enable(ffi::DEPTH_TEST);
+            });
+        }
+    }
 
     let t_submit = std::time::Instant::now();
     let r = backend.finish_frame();

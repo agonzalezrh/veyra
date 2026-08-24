@@ -154,6 +154,14 @@ impl Scene {
             .map(|g| g.visual_ids.as_slice())
     }
 
+    /// Find the first group containing a visual. Returns None if not in any group.
+    pub fn find_group_containing(&self, vid: VisualId) -> Option<GroupId> {
+        self.groups
+            .iter()
+            .find(|g| g.contains(vid))
+            .map(|g| g.id)
+    }
+
     /// Find which group(s) a visual belongs to.
     pub fn groups_for_visual(&self, vid: VisualId) -> Vec<GroupId> {
         self.groups

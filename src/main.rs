@@ -6,6 +6,7 @@ mod backend;
 mod capabilities;
 mod compositor;
 mod config;
+mod context_menu;
 mod drm_backend;
 mod focus;
 mod group;
@@ -33,6 +34,7 @@ mod workspace;
 use std::sync::Arc;
 
 use compositor::{ClientState, LookingGlass};
+use config::Config;
 use producer::{HostileCheckerboard, StaticColor};
 use smithay::backend::input::{AbsolutePositionEvent, Axis, InputEvent, KeyboardKeyEvent, MouseButton, PointerAxisEvent, PointerButtonEvent};
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -58,6 +60,10 @@ fn main() {
 
     tracing::info!("Veyra starting");
 
+    // Load configuration
+    let config = Config::load();
+    tracing::info!(workspaces = config.workspace.count, "config loaded");
+
     // Check for --native flag to use DRM backend
     let use_native = std::env::args().any(|a| a == "--native");
 
@@ -72,14 +78,14 @@ fn main() {
     let (backend, winit_source) =
         winit::init::<GlesRenderer>().expect("Failed to initialize winit backend");
 
-    let mut state = LookingGlass::new(&display_handle, Box::new(WinitPresentationBackend(backend)));
+    let mut state = LookingGlass::new(&display_handle, Box::new(WinitPresentationBackend(backend)), config.clone());
 
     // Handle --native flag: construct DrmGraphicsBackend instead
     if use_native {
         tracing::info!("Starting native DRM/KMS backend");
         match crate::drm_backend::DrmGraphicsBackend::try_new() {
             Ok(drm_backend) => {
-                state = LookingGlass::new(&display_handle, Box::new(drm_backend));
+                state = LookingGlass::new(&display_handle, Box::new(drm_backend), config.clone());
                 tracing::info!("Native backend initialized successfully");
             }
             Err(e) => {
@@ -211,12 +217,25 @@ fn main() {
                         match btn_code {
                             1 => {
                                 if pressed {
+                                    // If context menu is open, clicking outside dismisses it
+                                    if state.context_menu.visible {
+                                        if !state.handle_menu_click(mx, my) {
+                                            state.context_menu.dismiss();
+                                        }
+                                        state.scheduler.schedule_render();
+                                        return;
+                                    }
                                     state.handle_pointer_down(mx, my, false, false, false);
                                 } else {
                                     state.handle_pointer_up(mx, my);
                                 }
                             }
-                            2 | 3 => {}
+                            3 => {
+                                if pressed {
+                                    state.handle_context_menu(mx, my);
+                                }
+                            }
+                            2 => {}
                             _ => {}
                         }
                         state.scheduler.schedule_render();
