@@ -335,16 +335,26 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Run a test with a temporary config file set via VEYRA_CONFIG_PATH.
-    /// Uses a unique temp dir per call so parallel tests don't interfere.
-    fn with_config(toml_content: &str) -> Config {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+    /// Serializes all config tests that touch VEYRA_CONFIG_PATH (process-global env var).
+    static CONFIG_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_config_dir() -> (std::path::PathBuf, std::path::PathBuf) {
         let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("veyra_config_test_{}", id));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("config.toml");
+        (dir, path)
+    }
+
+    /// Run a test with a temporary config file set via VEYRA_CONFIG_PATH.
+    /// Uses a global mutex because VEYRA_CONFIG_PATH is process-global env var.
+    fn with_config(toml_content: &str) -> Config {
+        let _guard = CONFIG_TEST_LOCK.lock().unwrap();
+        let (dir, path) = unique_config_dir();
         let mut file = fs::File::create(&path).unwrap();
         write!(file, "{}", toml_content).unwrap();
 
@@ -392,12 +402,8 @@ sensitivity = 2.0
 
     #[test]
     fn invalid_toml_uses_defaults() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("veyra_config_test_invalid_{}", id));
-        let _ = fs::create_dir_all(&dir);
-        let path = dir.join("test_invalid.toml");
+        let _guard = CONFIG_TEST_LOCK.lock().unwrap();
+        let (dir, path) = unique_config_dir();
         fs::write(&path, "not valid toml {{{").unwrap();
 
         std::env::set_var("VEYRA_CONFIG_PATH", &path);
