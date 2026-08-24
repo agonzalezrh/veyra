@@ -578,7 +578,9 @@ Applications inhabit a navigable spatial desktop.
 
 Exit criteria: 210–240 tests, camera/overview/focus are camera-only
 operations (never scene mutations), arrangement produces transforms
-(never owns them), all Wayland clients remain unaware of the 3D desktop."
+(never owns them), all Wayland clients remain unaware of the 3D desktop.
+
+**Status: ✅ Complete (228 tests)**
 
 ## Group D — Production Architecture (M074–M080)
 
@@ -609,12 +611,26 @@ established.
 EGL/GLES capability detection is required before committing to native
 rendering.
 
-**Status: ⬜ Not started**
+**Status: ✅ Complete (247 tests)**
 
 Exit criteria: Wayland/spatial/renderer layers cleanly separated,
 presentation backend abstracted, damage tracking + frame scheduling,
 benchmark suite, DRM native session works reliably with clean failure
-diagnostics, long-running soak test, 240+ tests."
+diagnostics, long-running soak test, 240+ tests.
+
+## Group E — Desktop Shell & Human Interaction
+
+Application switching (Alt+Tab), launcher abstraction, spatial task shelf,
+coherent camera/input navigation, context menus, configuration system,
+session lifecycle, accessibility and recovery.
+Desktop shell increasingly implemented as ordinary Wayland applications
+rather than compositor-specific UI.
+
+### E-A — Interaction (E1–E4)
+### E-B — Desktop UX (E5–E6)
+### E-C — Session (E7–E8)
+
+**Status: ⬜ Not started**"
 
 ---
 
