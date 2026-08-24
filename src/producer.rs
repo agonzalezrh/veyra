@@ -193,16 +193,7 @@ impl FrameProducer for HostileCheckerboard {
         let w = self.width as i32;
         let h = self.height as i32;
         let tex_id = self.texture.tex_id();
-        let _ = renderer.with_context(|gl| unsafe {
-            gl.BindTexture(smithay::backend::renderer::gles::ffi::TEXTURE_2D, tex_id);
-            gl.TexSubImage2D(
-                smithay::backend::renderer::gles::ffi::TEXTURE_2D,
-                0, 0, 0, w, h,
-                smithay::backend::renderer::gles::ffi::BGRA_EXT,
-                smithay::backend::renderer::gles::ffi::UNSIGNED_BYTE,
-                pixels.as_ptr() as *const std::ffi::c_void,
-            );
-        });
+        crate::renderer::upload_texture_sub_region(renderer, tex_id, 0, 0, w, h, &pixels);
         FrameResult::Updated
     }
 

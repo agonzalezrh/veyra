@@ -11,6 +11,31 @@ use crate::backend::PresentationBackend;
 use crate::perf::PerfStats;
 use crate::scene::Scene;
 
+/// Update sub-region of a GL texture with pixel data.
+/// This is the narrow renderer-owned API for in-place texture updates.
+/// Producers call this instead of raw GL operations.
+pub fn upload_texture_sub_region(
+    renderer: &mut GlesRenderer,
+    tex_id: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    data: &[u8],
+) {
+    let _ = renderer.with_context(|gl| unsafe {
+        gl.BindTexture(ffi::TEXTURE_2D, tex_id);
+        gl.TexSubImage2D(
+            ffi::TEXTURE_2D,
+            0, x, y, w, h,
+            ffi::BGRA_EXT,
+            ffi::UNSIGNED_BYTE,
+            data.as_ptr() as *const std::ffi::c_void,
+        );
+    });
+}
+
+
 /// Global DrawGl cache, created once per GL context lifetime.
 /// Reset on context loss.
 static DRAW_GL: Mutex<Option<DrawGl>> = Mutex::new(None);
