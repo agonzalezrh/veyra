@@ -97,6 +97,12 @@ fn main() {
         }
     }
 
+    // Run session startup sequence
+    match state.session.startup_sequence(&mut state.workspace_manager) {
+        Ok(()) => tracing::info!("session startup complete"),
+        Err(e) => tracing::warn!(?e, "session startup issue (non-fatal)"),
+    }
+
     // Load saved workspace state (applies on top of config defaults)
     state.load_saved_state();
 
@@ -260,8 +266,11 @@ fn main() {
                 state.render();
             }
             WinitEvent::CloseRequested => {
-                tracing::info!("Close requested, saving workspace state");
+                tracing::info!("Close requested");
                 state.save_state();
+                let _ = state.session.shutdown_sequence(|| {
+                    // State already saved above
+                });
                 state.backend.take();
             }
             _ => {}
