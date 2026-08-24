@@ -43,6 +43,8 @@ use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use smithay::wayland::shm::ShmHandler;
 use smithay::wayland::shm::ShmState;
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::time::SystemTime;
 
 use cgmath::Matrix4;
@@ -247,8 +249,10 @@ impl LookingGlass {
         // Use new_wl_seat to register the wl_seat global (new_seat doesn't register it)
         let mut seat_actual = seat_state.new_wl_seat(display_handle, "default");
         let pointer_handle = Some(seat_actual.add_pointer());
-        // Keyboard handle may fail if no keymap is available; that's OK
-        let _keyboard_result = seat_actual.add_keyboard(smithay::input::keyboard::XkbConfig::default(), 0, 0);
+        // Load system keyboard configuration for proper non-US layout support
+        let xkb_config = load_system_xkb_config();
+        info!(layout = %xkb_config.layout, "keyboard: using xkb config");
+        let _keyboard_result = seat_actual.add_keyboard(xkb_config, 250, 50);
         let keyboard_handle = seat_actual.get_keyboard();
 
         // Create a wl_output global so clients see a monitor
@@ -2256,6 +2260,44 @@ impl BufferHandler for LookingGlass {
         _buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
     ) {
     }
+}
+
+/// Load system keyboard configuration from /etc/default/keyboard or environment.
+/// Falls back to XkbConfig::default() which uses XKB_DEFAULT_* env vars.
+fn load_system_xkb_config() -> smithay::input::keyboard::XkbConfig<'static> {
+    // Try /etc/default/keyboard first (Debian/Ubuntu)
+    let etc_path = Path::new("/etc/default/keyboard");
+    if etc_path.exists() {
+        if let Ok(content) = fs::read_to_string(etc_path) {
+            let mut layout = String::new();
+            let mut variant = String::new();
+            let mut options = String::new();
+            let mut model = String::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if let Some(val) = line.strip_prefix("XKBLAYOUT=") {
+                    layout = val.trim_matches('"').to_string();
+                } else if let Some(val) = line.strip_prefix("XKBVARIANT=") {
+                    variant = val.trim_matches('"').to_string();
+                } else if let Some(val) = line.strip_prefix("XKBOPTIONS=") {
+                    options = val.trim_matches('"').to_string();
+                } else if let Some(val) = line.strip_prefix("XKBMODEL=") {
+                    model = val.trim_matches('"').to_string();
+                }
+            }
+            if !layout.is_empty() {
+                return smithay::input::keyboard::XkbConfig {
+                    rules: "",
+                    model: Box::leak(model.into_boxed_str()),
+                    layout: Box::leak(layout.into_boxed_str()),
+                    variant: Box::leak(variant.into_boxed_str()),
+                    options: if options.is_empty() { None } else { Some(options) },
+                };
+            }
+        }
+    }
+    // Fallback to default (uses XKB_DEFAULT_* env vars or US layout)
+    smithay::input::keyboard::XkbConfig::default()
 }
 
 delegate_shm!(LookingGlass);
