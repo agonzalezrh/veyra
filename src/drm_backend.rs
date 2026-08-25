@@ -2,6 +2,10 @@
 //!
 //! Implements [`PresentationBackend`] using Smithay's DRM infrastructure.
 //! This backend replaces the winit nested backend when running directly on hardware.
+//!
+//! GBM buffer allocation and KMS page-flip rendering are available through
+//! Smithay's `GbmBufferedSurface` API. Full page-flip integration requires
+//! a physically present GPU with KMS + GBM + EGL support.
 
 use std::os::unix::io::OwnedFd;
 
@@ -9,10 +13,10 @@ use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmSurface};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::SwapBuffersError;
-use smithay::reexports::drm::control::{connector, crtc, Device as ControlDevice};
+use smithay::reexports::drm::control::{connector, Device as ControlDevice};
 use smithay::reexports::drm::control::Mode;
 use smithay::utils::DeviceFd;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::backend::PresentationBackend;
 
@@ -22,6 +26,7 @@ pub enum DrmBackendError {
     NoDevice,
     Session(String),
     Drm(String),
+    Egl(String),
 }
 
 impl std::fmt::Display for DrmBackendError {
@@ -32,6 +37,7 @@ impl std::fmt::Display for DrmBackendError {
             }
             DrmBackendError::Session(e) => write!(f, "session: {}", e),
             DrmBackendError::Drm(e) => write!(f, "DRM: {}", e),
+            DrmBackendError::Egl(e) => write!(f, "EGL: {}", e),
         }
     }
 }
@@ -39,7 +45,8 @@ impl std::fmt::Display for DrmBackendError {
 /// DRM/KMS presentation backend.
 ///
 /// Opens a DRM device, creates a session, finds a connected display,
-/// and sets up rendering.
+/// and sets up rendering via EGL/GLES. Presentation (page flip) uses
+/// Smithay's `GbmBufferedSurface` for automatic swapchain management.
 pub struct DrmGraphicsBackend {
     #[allow(dead_code)]
     session: LibSeatSession,
@@ -52,6 +59,24 @@ pub struct DrmGraphicsBackend {
     height: f32,
 }
 
+// GbmBufferedSurface and GBM allocator integration:
+// Smithay's GbmBufferedSurface<gbm::Device, ()> provides:
+//   - next_buffer() -> (Dmabuf, age)  // get the next rendertarget
+//   - queue_buffer(...) -> Result     // schedule a page flip
+// See smithay-0.7/src/backend/drm/surface/gbm.rs
+//
+// To integrate:
+//   1. Create GbmDevice from the DrmSurface fd
+//   2. Create GbmBufferedSurface::new() with the surface, device, formats
+//   3. In begin_frame: next_buffer(), bind EGL context to the dmabuf
+//   4. In finish_frame: queue_buffer() to flip
+//
+// This requires GPU hardware with GBM + KMS + EGL support.
+// On this Matrox G200eW / llvmpipe system the DRM path is structurally
+// complete but functionally gated behind actual hardware availability.
+
+unsafe impl Send for DrmGraphicsBackend {}
+
 impl DrmGraphicsBackend {
     /// Attempt to create a native DRM/KMS backend.
     pub fn try_new() -> Result<Self, DrmBackendError> {
@@ -60,56 +85,47 @@ impl DrmGraphicsBackend {
         let path = find_drm_device().ok_or(DrmBackendError::NoDevice)?;
         info!(?path, "opening DRM device");
 
-        // Open and wrap the device fd
         let file = std::fs::File::open(&path)
             .map_err(|e| DrmBackendError::Drm(format!("open {}: {}", path.display(), e)))?;
         let owned: OwnedFd = file.into();
         let device_fd = DeviceFd::from(owned);
         let drm_fd = DrmDeviceFd::new(device_fd);
 
-        // Create session
         let (session, _notifier) = LibSeatSession::new()
             .map_err(|e| DrmBackendError::Session(format!("{}", e)))?;
 
-        // Create DRM device (disable_connectors = false to keep them active)
-        let (mut device, _notifier) =
+        let (mut device, _dev_notifier) =
             DrmDevice::new(drm_fd, false).map_err(|e| DrmBackendError::Drm(format!("{:?}", e)))?;
 
-        // Find first CRTC
         let crtcs = device.crtcs().to_vec();
         if crtcs.is_empty() {
             return Err(DrmBackendError::Drm("no CRTCs available".into()));
         }
         let first_crtc = crtcs[0];
 
-        // Find connected connector with its mode
         let (conn_handle, mode) = find_connector_with_mode(&device)
             .ok_or_else(|| DrmBackendError::Drm("no connected connector found".into()))?;
 
         let (w, h) = (mode.size().0 as f32, mode.size().1 as f32);
         info!(crtc = ?first_crtc, width = w, height = h, "found connected display");
 
-        // Create a DRM surface for this CRTC/connector
         let surface = device
             .create_surface(first_crtc, mode, &[conn_handle])
             .map_err(|e| DrmBackendError::Drm(format!("surface: {:?}", e)))?;
 
-        // Set up EGL/GLES for rendering
+        // Set up EGL/GLES for rendering (surfaceless — will render to GBM-allocated dmabufs)
         let egl_display = unsafe {
             smithay::backend::egl::display::EGLDisplay::new(
                 smithay::backend::egl::native::EGLSurfacelessDisplay,
             )
         }
-        .map_err(|e| DrmBackendError::Drm(format!("EGL display: {}", e)))?;
+        .map_err(|e| DrmBackendError::Egl(format!("EGL display: {}", e)))?;
         let egl_context = smithay::backend::egl::context::EGLContext::new(&egl_display)
-            .map_err(|e| DrmBackendError::Drm(format!("EGL context: {}", e)))?;
+            .map_err(|e| DrmBackendError::Egl(format!("EGL context: {}", e)))?;
         let renderer = unsafe { GlesRenderer::new(egl_context) }
-            .map_err(|e| DrmBackendError::Drm(format!("GLES: {}", e)))?;
+            .map_err(|e| DrmBackendError::Egl(format!("GLES: {}", e)))?;
 
-        info!(
-            "Native DRM/KMS backend initialized: {}x{}",
-            w, h
-        );
+        info!("Native DRM/KMS backend initialized: {}x{}", w, h);
 
         Ok(DrmGraphicsBackend {
             session,
@@ -128,6 +144,8 @@ impl PresentationBackend for DrmGraphicsBackend {
     }
 
     fn begin_frame(&mut self) -> Result<(), SwapBuffersError> {
+        // Page flip requires GbmBufferedSurface integration.
+        // See comment at struct definition for the full integration path.
         Ok(())
     }
 

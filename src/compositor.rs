@@ -2350,12 +2350,17 @@ impl ShmHandler for LookingGlass {
 impl SelectionHandler for LookingGlass {
     type SelectionUserData = ();
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<smithay::wayland::selection::SelectionSource>, _seat: Seat<Self>) {
+        // Collect MIME types from the source so clients can negotiate formats
+        let mime_types: Vec<String> = source
+            .as_ref()
+            .map(|s| s.mime_types().clone())
+            .unwrap_or_default();
         match ty {
             SelectionTarget::Clipboard => {
                 if let Some(ref seat) = self.seat {
                     let dh = &self.display_handle;
                     smithay::wayland::selection::data_device::set_data_device_selection::<Self>(
-                        dh, seat, vec![], (),
+                        dh, seat, mime_types, (),
                     );
                 }
             }
@@ -2363,13 +2368,11 @@ impl SelectionHandler for LookingGlass {
                 if let Some(ref seat) = self.seat {
                     let dh = &self.display_handle;
                     smithay::wayland::selection::primary_selection::set_primary_selection::<Self>(
-                        dh, seat, vec![], (),
+                        dh, seat, mime_types, (),
                     );
                 }
             }
         }
-        // The source is managed by Smithay internally via the seat's user_data;
-        // we simply acknowledge that a new selection was made.
     }
 
     fn send_selection(
@@ -2399,8 +2402,23 @@ impl SelectionHandler for LookingGlass {
     }
 }
 
-impl ClientDndGrabHandler for LookingGlass {}
-impl ServerDndGrabHandler for LookingGlass {}
+impl ClientDndGrabHandler for LookingGlass {
+    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        info!("DnG grab ended");
+        // Clear any spatial interaction state if a DnD operation was in progress
+        if self.interaction.is_dragging() {
+            self.interaction.handle_pointer_up();
+        }
+        self.scheduler.schedule_render();
+    }
+}
+
+impl ServerDndGrabHandler for LookingGlass {
+    fn dropped(&mut self, _seat: Seat<Self>) {
+        info!("server DnG operation ended");
+        self.scheduler.schedule_render();
+    }
+}
 
 impl DataDeviceHandler for LookingGlass {
     fn data_device_state(&self) -> &DataDeviceState {

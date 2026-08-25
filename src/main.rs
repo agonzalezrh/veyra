@@ -177,18 +177,26 @@ fn main() {
         )
         .expect("Failed to init wayland server source");
 
-    // Periodic render timer — only renders when scheduler says so
+    // Event-driven render scheduler — no periodic timer.
+    // A single-shot timer fires only when the scheduler indicates a render
+    // is needed (dirty state). After rendering, if still animating, the
+    // timer reschedules itself for the next frame. Otherwise it idles.
     use smithay::reexports::calloop::timer::{Timer, TimeoutAction};
-    let render_timer = Timer::from_duration(std::time::Duration::from_millis(16));
+    let render_timer = Timer::from_duration(std::time::Duration::ZERO);
     handle
         .insert_source(render_timer, |_, _, state| {
             state.render();
-            // If animating, keep the timer going at full rate.
-            // Otherwise, use a longer interval to wake up less often
-            // (render() will early-return if nothing is dirty).
-            TimeoutAction::ToDuration(std::time::Duration::from_millis(16))
+            if state.scheduler.needs_render() {
+                // Still dirty or animating — schedule the next frame
+                TimeoutAction::ToDuration(std::time::Duration::from_millis(16))
+            } else {
+                // Idle — don't reschedule
+                TimeoutAction::Drop
+            }
         })
         .expect("Failed to register render timer");
+    // Ensure the initial frame renders
+    state.scheduler.schedule_render();
 
     // Winit event source
     handle
