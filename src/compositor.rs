@@ -270,7 +270,10 @@ impl LookingGlass {
         // Load system keyboard configuration for proper non-US layout support
         let xkb_config = load_system_xkb_config();
         info!(layout = %xkb_config.layout, "keyboard: using xkb config");
-        let _keyboard_result = seat_actual.add_keyboard(xkb_config, 250, 50);
+        let keyboard_result = seat_actual.add_keyboard(xkb_config, 250, 50);
+        if let Err(e) = &keyboard_result {
+            warn!(?e, "keyboard setup failed (xkb keymap may not be loaded)");
+        }
         let keyboard_handle = seat_actual.get_keyboard();
 
         // Create a wl_output global so clients see a monitor
@@ -1170,8 +1173,7 @@ impl LookingGlass {
             kh_handle.set_focus(self, Some(wl_surface), serial);
             // Winit on X11 reports keycodes with +8 offset; convert to evdev
             let evdev = if key > 8 { key - 8 } else { key };
-            info!(?vid, key, evdev, pressed, "sending key to Wayland client");
-            let result = kh_handle.input::<(), _>(
+            let _ = kh_handle.input::<(), _>(
                 self,
                 Keycode::new(evdev),
                 state,
@@ -1179,9 +1181,6 @@ impl LookingGlass {
                 time,
                 |_, _, _| FilterResult::Forward,
             );
-            if result.is_none() {
-                info!("kh_handle.input returned None");
-            }
             return;
         }
 
