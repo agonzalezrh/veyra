@@ -824,17 +824,25 @@ impl LookingGlass {
         Some(vid)
     }
 
+    /// Schedule a render and record the request in perf stats.
+    pub fn schedule_render(&mut self) {
+        self.perf.record_requested();
+        self.scheduler.schedule_render();
+    }
+
     pub fn render(&mut self) {
         use crate::perf::PipelineStage;
 
         // Check if a render is actually needed
         if !self.scheduler.needs_render() {
             self.perf.record_dropped();
+            self.perf.record_idle();
             return;
         }
 
         // Clear stale focus: if the focused visual has been destroyed, clean up
         self.clear_stale_focus();
+        self.perf.record_rendered();
         self.scheduler.clear();
 
         let t_frame = std::time::Instant::now();
@@ -982,6 +990,11 @@ impl LookingGlass {
         }
         if let Err(e) = back.finish_frame() {
             error!(?e, "finish_frame failed");
+        } else {
+            self.perf.record_presented();
+            if !updates.is_empty() {
+                self.perf.record_damage();
+            }
         }
 
         self.scene.clear_damage();
@@ -2430,14 +2443,14 @@ impl ClientDndGrabHandler for LookingGlass {
         if self.interaction.is_dragging() {
             self.interaction.handle_pointer_up();
         }
-        self.scheduler.schedule_render();
+        self.schedule_render();
     }
 }
 
 impl ServerDndGrabHandler for LookingGlass {
     fn dropped(&mut self, _seat: Seat<Self>) {
         info!("server DnG operation ended");
-        self.scheduler.schedule_render();
+        self.schedule_render();
     }
 }
 

@@ -170,8 +170,7 @@ fn main() {
                 let inner = unsafe { display.get_mut() };
                 let _ = inner.dispatch_clients(state);
                 let _ = inner.flush_clients();
-                state.scheduler.schedule_render();
-                state.render();
+                state.schedule_render();
                 Ok(PostAction::Continue)
             },
         )
@@ -196,7 +195,7 @@ fn main() {
         })
         .expect("Failed to register render timer");
     // Ensure the initial frame renders
-    state.scheduler.schedule_render();
+    state.schedule_render();
 
     // Winit event source
     handle
@@ -204,8 +203,7 @@ fn main() {
             WinitEvent::Resized { size, .. } => {
                 tracing::debug!("Window resized to {:?}", size);
                 state.window_size = (size.w as f32, size.h as f32);
-                state.scheduler.schedule_render();
-                state.render();
+                state.schedule_render();
             }
             WinitEvent::Input(event) => {
                 match event {
@@ -213,13 +211,13 @@ fn main() {
                         let key = event.key_code();
                         let pressed = event.state() == smithay::backend::input::KeyState::Pressed;
                         state.handle_key(u32::from(key), pressed);
-                        state.scheduler.schedule_render();
+                        state.schedule_render();
                     }
                     InputEvent::PointerMotionAbsolute { event } => {
                         let x = event.x();
                         let y = event.y();
                         state.handle_pointer_move(x, y);
-                        state.scheduler.schedule_render();
+                        state.schedule_render();
                     }
                     InputEvent::PointerButton { event } => {
                         let pressed = event.state() == smithay::backend::input::ButtonState::Pressed;
@@ -243,7 +241,7 @@ fn main() {
                                         if !state.handle_menu_click(mx, my) {
                                             state.context_menu.dismiss();
                                         }
-                                        state.scheduler.schedule_render();
+    state.schedule_render();
                                         return;
                                     }
                                     state.handle_pointer_down(mx, my, false, false, false);
@@ -259,7 +257,7 @@ fn main() {
                             2 => {}
                             _ => {}
                         }
-                        state.scheduler.schedule_render();
+                        state.schedule_render();
                     }
                     InputEvent::PointerAxis { event } => {
                         let v = event.amount(Axis::Vertical).unwrap_or(0.0);
@@ -269,11 +267,10 @@ fn main() {
                         } else {
                             state.handle_zoom(h);
                         }
-                        state.scheduler.schedule_render();
+                        state.schedule_render();
                     }
                     _ => {}
                 }
-                state.render();
             }
             WinitEvent::CloseRequested => {
                 tracing::info!("Close requested");

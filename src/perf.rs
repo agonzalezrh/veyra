@@ -19,6 +19,14 @@ pub struct PerfStats {
 
     pub consecutive_drops: u64,
     pub total_drops: u64,
+
+    // Instrumentation counters (reset every LOG_INTERVAL)
+    pub frame_requested: u64,      // schedule_render() called
+    pub frame_rendered: u64,       // render() actually rendered
+    pub frame_presented: u64,      // eglSwapBuffers succeeded
+    pub frame_dropped: u64,        // render() skipped (idle)
+    pub damage_frames: u64,        // frames with real content change
+    pub idle_frames: u64,          // consecutive idle frames
 }
 
 impl PerfStats {
@@ -36,6 +44,12 @@ impl PerfStats {
             frame_count_since_log: 0,
             consecutive_drops: 0,
             total_drops: 0,
+            frame_requested: 0,
+            frame_rendered: 0,
+            frame_presented: 0,
+            frame_dropped: 0,
+            damage_frames: 0,
+            idle_frames: 0,
         }
     }
 
@@ -55,9 +69,30 @@ impl PerfStats {
         }
     }
 
+    pub fn record_requested(&mut self) {
+        self.frame_requested += 1;
+    }
+
     pub fn record_dropped(&mut self) {
         self.consecutive_drops += 1;
         self.total_drops += 1;
+        self.frame_dropped += 1;
+    }
+
+    pub fn record_rendered(&mut self) {
+        self.frame_rendered += 1;
+    }
+
+    pub fn record_presented(&mut self) {
+        self.frame_presented += 1;
+    }
+
+    pub fn record_damage(&mut self) {
+        self.damage_frames += 1;
+    }
+
+    pub fn record_idle(&mut self) {
+        self.idle_frames += 1;
     }
 
     pub fn record_frame(&mut self) {
@@ -78,6 +113,12 @@ impl PerfStats {
         self.stage_render_draw_ns = 0;
         self.stage_render_submit_ns = 0;
         self.stage_total_ns = 0;
+        self.frame_requested = 0;
+        self.frame_rendered = 0;
+        self.frame_presented = 0;
+        self.frame_dropped = 0;
+        self.damage_frames = 0;
+        self.idle_frames = 0;
         self.last_log = Instant::now();
     }
 
@@ -106,6 +147,12 @@ impl PerfStats {
             draw_ms = to_ms(avg_draw),
             submit_ms = to_ms(avg_submit),
             drops = %self.total_drops,
+            requested = %self.frame_requested,
+            rendered = %self.frame_rendered,
+            presented = %self.frame_presented,
+            dropped_stats = %self.frame_dropped,
+            damage = %self.damage_frames,
+            idle = %self.idle_frames,
             "PROFILE"
         );
     }
