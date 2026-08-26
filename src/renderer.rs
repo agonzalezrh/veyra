@@ -361,13 +361,14 @@ unsafe fn ensure_font_atlas(gl: &ffi::Gles2) {
     ];
 
     let mut pixels = vec![0u8; (ATLAS_W * ATLAS_H) as usize];
-    for gi in 0..96 {
-        let col = gi % COLS;
-        let row = gi / COLS;
-        let gx = col * GW;
-        let gy = row * GH;
+    let glyph_count = FONT.len() / (GH as usize);
+    for gi in 0..glyph_count {
+        let col = gi % COLS as usize;
+        let row = gi / COLS as usize;
+        let gx = (col * GW as usize) as u32;
+        let gy = (row * GH as usize) as u32;
         for r in 0..GH {
-            let byte = FONT[(gi * 7 + r) as usize];
+            let byte = FONT[gi * (GH as usize) + r as usize];
             for c in 0..GW {
                 let bit = (byte >> (4 - c)) & 1;
                 let px = (gx + c) as usize;
