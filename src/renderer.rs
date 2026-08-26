@@ -839,7 +839,7 @@ pub fn render_scene(
                 // Draw each menu item
                 for (i, _item) in menu.items.iter().enumerate() {
                     let item_iy =
-                        -(my as f32 - (i as f32 * item_height)) / h as f32 * 2.0 + 1.0;
+                        -((my as f32 + (i as f32 * item_height)) / h as f32) * 2.0 + 1.0;
                     let item_ix =
                         (mx as f32 / w as f32) * 2.0 - 1.0 + ndc_w / 2.0;
                     let item_iy_c = item_iy - ndc_ih / 2.0;
