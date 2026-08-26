@@ -1132,10 +1132,12 @@ impl LookingGlass {
                     match kind {
                         PointerEventKind::Motion => {
                             ph.motion(self, Some((wl_surface.clone(), pos)), &mot_ev);
+                            info!(?vid, ?pos, "wl_pointer.motion");
                         }
                         PointerEventKind::Down | PointerEventKind::Up => {
                             ph.motion(self, Some((wl_surface.clone(), pos)), &mot_ev);
                             ph.button(self, &btn_ev);
+                            info!(?vid, ?pos, ?kind, "wl_pointer.enter + button");
                         }
                         PointerEventKind::Scroll(_, _) => {}
                     }
