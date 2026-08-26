@@ -84,7 +84,8 @@ unsafe fn draw_text(
 
     let stride = 4 * std::mem::size_of::<f32>() as i32;
     gl.UseProgram(draw.text_prog);
-    gl.Uniform4f(draw.text_u_color, color_r, color_g, color_b, 1.0);
+    let color = [color_r, color_g, color_b, 1.0f32];
+    gl.Uniform4fv(draw.text_u_color, 1, color.as_ptr());
     gl.ActiveTexture(ffi::TEXTURE0);
     gl.BindTexture(ffi::TEXTURE_2D, font_tex_id);
     gl.Uniform1i(draw.text_u_tex, 0);
@@ -383,14 +384,17 @@ unsafe fn ensure_font_atlas(gl: &ffi::Gles2) {
     let mut tex = 0;
     gl.GenTextures(1, &mut tex);
     gl.BindTexture(ffi::TEXTURE_2D, tex);
+    // Use ALPHA format for the font atlas (widely supported in ES 2.0).
+    // The pixel data is stored as luminance in the alpha channel, sampled
+    // as .r (which maps to alpha in the TEXT_FS sampler).
     gl.TexImage2D(
         ffi::TEXTURE_2D,
         0,
-        ffi::R8 as i32,
+        ffi::ALPHA as i32,
         ATLAS_W as i32,
         ATLAS_H as i32,
         0,
-        ffi::RED,
+        ffi::ALPHA,
         ffi::UNSIGNED_BYTE,
         pixels.as_ptr() as *const std::ffi::c_void,
     );
@@ -504,7 +508,7 @@ varying vec2 v_uv;
 uniform sampler2D u_tex;
 uniform vec4 u_color;
 void main() {
-    float a = texture2D(u_tex, v_uv).r;
+    float a = texture2D(u_tex, v_uv).a;
     gl_FragColor = vec4(u_color.rgb, u_color.a * a);
 }
 ";
