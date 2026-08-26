@@ -353,12 +353,17 @@ pub fn render_scene(
                 gl.Uniform1f(draw.u_title_h, 0.0);
 
                 // Lazily create a 1x1 white texture for overlay rendering
-                {
+                // Hold the lock for the entire read + potential init to avoid a
+                // double-lock pattern that could deadlock if the mutex is poisoned.
+                let white_tex = {
                     let mut guard = MENU_WHITE_TEX.lock().unwrap();
-                    if guard.is_none() {
-                        let mut tex = 0;
-                        gl.GenTextures(1, &mut tex);
-                        gl.BindTexture(ffi::TEXTURE_2D, tex);
+                    let tex = *guard;
+                    if let Some(t) = tex {
+                        t
+                    } else {
+                        let mut t = 0;
+                        gl.GenTextures(1, &mut t);
+                        gl.BindTexture(ffi::TEXTURE_2D, t);
                         let white: [u8; 4] = [255, 255, 255, 255];
                         gl.TexImage2D(
                             ffi::TEXTURE_2D,
@@ -373,10 +378,10 @@ pub fn render_scene(
                         );
                         gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
                         gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
-                        *guard = Some(tex);
+                        *guard = Some(t);
+                        t
                     }
-                }
-                let white_tex = MENU_WHITE_TEX.lock().unwrap().unwrap_or(0);
+                };
 
                 gl.ActiveTexture(ffi::TEXTURE0);
                 gl.BindTexture(ffi::TEXTURE_2D, white_tex);
@@ -423,12 +428,16 @@ pub fn render_scene(
                     } else {
                         gl.Uniform1f(draw.u_selected, 0.0);
                     }
+                    gl.Uniform1f(draw.u_focused, 0.0);
+                    gl.Uniform1f(draw.u_title_h, 0.0);
                     gl.UniformMatrix4fv(draw.u_mvp, 1, 0, item_mvp.as_ptr());
                     gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
                 }
 
                 gl.DisableVertexAttribArray(draw.a_pos);
                 gl.DisableVertexAttribArray(draw.a_uv);
+                // Restore GL state for subsequent main-render passes
+                gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
                 gl.Enable(ffi::DEPTH_TEST);
             });
         }
