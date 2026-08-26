@@ -1171,7 +1171,7 @@ impl LookingGlass {
             // Winit on X11 reports keycodes with +8 offset; convert to evdev
             let evdev = if key > 8 { key - 8 } else { key };
             info!(?vid, key, evdev, pressed, "sending key to Wayland client");
-            let _ = kh_handle.input::<(), _>(
+            let result = kh_handle.input::<(), _>(
                 self,
                 Keycode::new(evdev),
                 state,
@@ -1179,6 +1179,9 @@ impl LookingGlass {
                 time,
                 |_, _, _| FilterResult::Forward,
             );
+            if result.is_none() {
+                info!("kh_handle.input returned None");
+            }
             return;
         }
 
