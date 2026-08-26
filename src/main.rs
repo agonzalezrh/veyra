@@ -281,7 +281,7 @@ fn main() {
                 let _ = state.session.shutdown_sequence(|| {
                     // State already saved above
                 });
-                state.backend.take();
+                std::process::exit(0);
             }
             _ => {}
         })

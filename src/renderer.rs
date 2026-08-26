@@ -44,6 +44,363 @@ static DRAW_GL: Mutex<Option<DrawGl>> = Mutex::new(None);
 /// A small 1x1 white texture used as a "brush" for drawing colored overlays.
 static MENU_WHITE_TEX: Mutex<Option<u32>> = Mutex::new(None);
 
+/// Font atlas texture for bitmap text rendering.
+static FONT_ATLAS: Mutex<Option<FontAtlas>> = Mutex::new(None);
+
+struct FontAtlas {
+    tex_id: u32,
+    /// Glyph width in pixels
+    gw: u32,
+    /// Glyph height in pixels
+    gh: u32,
+    /// Columns in atlas
+    cols: u32,
+}
+
+/// Render a line of text using the font atlas.
+/// Uses the text_prog shader which applies a uniform color modulated by the font's alpha.
+/// # Safety
+/// Requires a current GL context with the text_prog program available.
+unsafe fn draw_text(
+    gl: &ffi::Gles2,
+    draw: &DrawGl,
+    text: &str,
+    x_ndc: f32,
+    y_ndc: f32,
+    char_w: f32,
+    char_h: f32,
+    color_r: f32,
+    color_g: f32,
+    color_b: f32,
+) {
+    let (font_tex_id, gw, gh, cols) = {
+        let atlas_guard = FONT_ATLAS.lock().unwrap();
+        let Some(ref font) = *atlas_guard else { return };
+        (font.tex_id, font.gw, font.gh, font.cols)
+    };
+    let total_rows = (95u32 / cols) + 1;
+    let atlas_w = (cols * gw) as f32;
+    let atlas_h = (total_rows * gh) as f32;
+
+    let stride = 4 * std::mem::size_of::<f32>() as i32;
+    gl.UseProgram(draw.text_prog);
+    gl.Uniform4f(draw.text_u_color, color_r, color_g, color_b, 1.0);
+    gl.ActiveTexture(ffi::TEXTURE0);
+    gl.BindTexture(ffi::TEXTURE_2D, font_tex_id);
+    gl.Uniform1i(draw.text_u_tex, 0);
+    gl.BindBuffer(ffi::ARRAY_BUFFER, draw.text_vbo);
+
+    for (i, ch) in text.chars().enumerate() {
+        let code = ch as u32;
+        if code < 32 || code > 127 { continue; }
+        let idx = code - 32;
+        let col = idx % cols;
+        let row = idx / cols;
+        let u = (col * gw) as f32 / atlas_w;
+        let v = (row * gh) as f32 / atlas_h;
+        let uw = gw as f32 / atlas_w;
+        let vh = gh as f32 / atlas_h;
+
+        let verts: [f32; 16] = [
+            -0.5, -0.5, u,       v + vh,
+             0.5, -0.5, u + uw,  v + vh,
+            -0.5,  0.5, u,       v,
+             0.5,  0.5, u + uw,  v,
+        ];
+
+        gl.BufferData(
+            ffi::ARRAY_BUFFER,
+            std::mem::size_of_val(&verts) as isize,
+            verts.as_ptr() as *const std::ffi::c_void,
+            ffi::STREAM_DRAW,
+        );
+
+        let cx = x_ndc + (i as f32) * char_w;
+        let cy = y_ndc;
+        let mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(cx + char_w / 2.0, cy + char_h / 2.0, 0.0))
+            * cgmath::Matrix4::from_nonuniform_scale(char_w, char_h, 1.0);
+        gl.UniformMatrix4fv(draw.text_u_mvp, 1, 0, mvp.as_ptr());
+
+        gl.EnableVertexAttribArray(draw.text_a_pos);
+        gl.VertexAttribPointer(draw.text_a_pos, 2, ffi::FLOAT, 0, stride, std::ptr::null());
+        gl.EnableVertexAttribArray(draw.text_a_uv);
+        gl.VertexAttribPointer(draw.text_a_uv, 2, ffi::FLOAT, 0, stride, (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void);
+        gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+        gl.DisableVertexAttribArray(draw.text_a_pos);
+        gl.DisableVertexAttribArray(draw.text_a_uv);
+    }
+
+    // Restore text VBO
+    let verts: [f32; 16] = [
+        -0.5, -0.5, 0.0, 1.0,
+         0.5, -0.5, 1.0, 1.0,
+        -0.5,  0.5, 0.0, 0.0,
+         0.5,  0.5, 1.0, 0.0,
+    ];
+    gl.BindBuffer(ffi::ARRAY_BUFFER, draw.text_vbo);
+    gl.BufferData(
+        ffi::ARRAY_BUFFER,
+        std::mem::size_of_val(&verts) as isize,
+        verts.as_ptr() as *const std::ffi::c_void,
+        ffi::STATIC_DRAW,
+    );
+}
+
+/// Build a font atlas from a hardcoded 5x7 pixel bitmap font.
+/// Contains 96 glyphs (ASCII 32-127), each 5 columns × 7 rows.
+/// Packed 8 columns × 12 rows in the atlas texture.
+/// # Safety
+/// Requires a current GL context.
+unsafe fn ensure_font_atlas(gl: &ffi::Gles2) {
+    let mut guard = FONT_ATLAS.lock().unwrap();
+    if guard.is_some() {
+        return;
+    }
+
+    const GW: u32 = 5;
+    const GH: u32 = 7;
+    const COLS: u32 = 16;
+    const ROWS: u32 = 6;
+    const ATLAS_W: u32 = COLS * GW;
+    const ATLAS_H: u32 = ROWS * GH;
+
+    // 96 glyphs × 5 columns × 7 rows, packed
+    // Each byte is one row of 5 pixels (bits), stored LSB → rightmost pixel
+    // Each glyph is 7 bytes
+    const FONT: &[u8] = &[
+        // 32 space
+        0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+        // 33 !
+        0x20,0x20,0x20,0x20,0x00,0x20,0x00,
+        // 34 "
+        0x50,0x50,0x00,0x00,0x00,0x00,0x00,
+        // 35 #
+        0x50,0x50,0xf8,0x50,0xf8,0x50,0x50,
+        // 36 $
+        0x20,0x78,0xa0,0x70,0x28,0xf0,0x20,
+        // 37 %
+        0x40,0xa4,0x48,0x10,0x24,0x4a,0x04,
+        // 38 &
+        0x60,0x90,0xa0,0x40,0xa8,0x90,0x68,
+        // 39 '
+        0x20,0x20,0x00,0x00,0x00,0x00,0x00,
+        // 40 (
+        0x10,0x20,0x40,0x40,0x40,0x20,0x10,
+        // 41 )
+        0x40,0x20,0x10,0x10,0x10,0x20,0x40,
+        // 42 *
+        0x00,0x20,0xa8,0x70,0xa8,0x20,0x00,
+        // 43 +
+        0x00,0x20,0x20,0xf8,0x20,0x20,0x00,
+        // 44 ,
+        0x00,0x00,0x00,0x00,0x20,0x20,0x40,
+        // 45 -
+        0x00,0x00,0x00,0xf8,0x00,0x00,0x00,
+        // 46 .
+        0x00,0x00,0x00,0x00,0x00,0x20,0x00,
+        // 47 /
+        0x00,0x08,0x10,0x20,0x40,0x80,0x00,
+        // 48 0
+        0x70,0x88,0x98,0xa8,0xc8,0x88,0x70,
+        // 49 1
+        0x20,0x60,0xa0,0x20,0x20,0x20,0xf8,
+        // 50 2
+        0x70,0x88,0x08,0x10,0x20,0x40,0xf8,
+        // 51 3
+        0x70,0x88,0x08,0x30,0x08,0x88,0x70,
+        // 52 4
+        0x10,0x30,0x50,0x90,0xf8,0x10,0x10,
+        // 53 5
+        0xf8,0x80,0xf0,0x08,0x08,0x88,0x70,
+        // 54 6
+        0x30,0x40,0x80,0xf0,0x88,0x88,0x70,
+        // 55 7
+        0xf8,0x08,0x10,0x20,0x40,0x40,0x40,
+        // 56 8
+        0x70,0x88,0x88,0x70,0x88,0x88,0x70,
+        // 57 9
+        0x70,0x88,0x88,0x78,0x08,0x10,0x60,
+        // 58 :
+        0x00,0x20,0x00,0x00,0x00,0x20,0x00,
+        // 59 ;
+        0x00,0x20,0x00,0x00,0x20,0x20,0x40,
+        // 60 <
+        0x00,0x08,0x10,0x20,0x10,0x08,0x00,
+        // 61 =
+        0x00,0x00,0xf8,0x00,0xf8,0x00,0x00,
+        // 62 >
+        0x00,0x80,0x40,0x20,0x40,0x80,0x00,
+        // 63 ?
+        0x70,0x88,0x08,0x10,0x20,0x00,0x20,
+        // 64 @
+        0x70,0x88,0xb8,0xa8,0xb0,0x80,0x78,
+        // 65 A
+        0x20,0x50,0x88,0x88,0xf8,0x88,0x88,
+        // 66 B
+        0xf0,0x88,0x88,0xf0,0x88,0x88,0xf0,
+        // 67 C
+        0x70,0x88,0x80,0x80,0x80,0x88,0x70,
+        // 68 D
+        0xf0,0x88,0x88,0x88,0x88,0x88,0xf0,
+        // 69 E
+        0xf8,0x80,0x80,0xf0,0x80,0x80,0xf8,
+        // 70 F
+        0xf8,0x80,0x80,0xf0,0x80,0x80,0x80,
+        // 71 G
+        0x78,0x80,0x80,0x98,0x88,0x88,0x78,
+        // 72 H
+        0x88,0x88,0x88,0xf8,0x88,0x88,0x88,
+        // 73 I
+        0xf8,0x20,0x20,0x20,0x20,0x20,0xf8,
+        // 74 J
+        0x08,0x08,0x08,0x08,0x08,0x88,0x70,
+        // 75 K
+        0x88,0x90,0xa0,0xc0,0xa0,0x90,0x88,
+        // 76 L
+        0x80,0x80,0x80,0x80,0x80,0x80,0xf8,
+        // 77 M
+        0x88,0xd8,0xa8,0x88,0x88,0x88,0x88,
+        // 78 N
+        0x88,0xc8,0xa8,0x98,0x88,0x88,0x88,
+        // 79 O
+        0x70,0x88,0x88,0x88,0x88,0x88,0x70,
+        // 80 P
+        0xf0,0x88,0x88,0xf0,0x80,0x80,0x80,
+        // 81 Q
+        0x70,0x88,0x88,0x88,0xa8,0x90,0x68,
+        // 82 R
+        0xf0,0x88,0x88,0xf0,0xa0,0x90,0x88,
+        // 83 S
+        0x70,0x88,0x80,0x70,0x08,0x88,0x70,
+        // 84 T
+        0xf8,0x20,0x20,0x20,0x20,0x20,0x20,
+        // 85 U
+        0x88,0x88,0x88,0x88,0x88,0x88,0x70,
+        // 86 V
+        0x88,0x88,0x88,0x88,0x50,0x50,0x20,
+        // 87 W
+        0x88,0x88,0x88,0xa8,0xa8,0xd8,0x88,
+        // 88 X
+        0x88,0x88,0x50,0x20,0x50,0x88,0x88,
+        // 89 Y
+        0x88,0x88,0x50,0x20,0x20,0x20,0x20,
+        // 90 Z
+        0xf8,0x08,0x10,0x20,0x40,0x80,0xf8,
+        // 91 [
+        0x70,0x40,0x40,0x40,0x40,0x40,0x70,
+        // 92 backslash
+        0x00,0x80,0x40,0x20,0x10,0x08,0x00,
+        // 93 ]
+        0x70,0x10,0x10,0x10,0x10,0x10,0x70,
+        // 94 ^
+        0x20,0x50,0x00,0x00,0x00,0x00,0x00,
+        // 95 _
+        0x00,0x00,0x00,0x00,0x00,0x00,0xf8,
+        // 96 `
+        0x40,0x20,0x00,0x00,0x00,0x00,0x00,
+        // 97 a
+        0x00,0x00,0x70,0x08,0x78,0x88,0x78,
+        // 98 b
+        0x80,0x80,0xf0,0x88,0x88,0x88,0xf0,
+        // 99 c
+        0x00,0x00,0x70,0x88,0x80,0x88,0x70,
+        // 100 d
+        0x08,0x08,0x78,0x88,0x88,0x88,0x78,
+        // 101 e
+        0x00,0x00,0x70,0x88,0xf8,0x80,0x78,
+        // 102 f
+        0x30,0x48,0x40,0xe0,0x40,0x40,0x40,
+        // 103 g
+        0x00,0x00,0x78,0x88,0x78,0x08,0x70,
+        // 104 h
+        0x80,0x80,0xf0,0x88,0x88,0x88,0x88,
+        // 105 i
+        0x20,0x00,0x60,0x20,0x20,0x20,0x70,
+        // 106 j
+        0x10,0x00,0x30,0x10,0x10,0x90,0x60,
+        // 107 k
+        0x80,0x80,0x88,0x90,0xe0,0x90,0x88,
+        // 108 l
+        0x60,0x20,0x20,0x20,0x20,0x20,0x70,
+        // 109 m
+        0x00,0x00,0xd0,0xa8,0xa8,0x88,0x88,
+        // 110 n
+        0x00,0x00,0xf0,0x88,0x88,0x88,0x88,
+        // 111 o
+        0x00,0x00,0x70,0x88,0x88,0x88,0x70,
+        // 112 p
+        0x00,0x00,0xf0,0x88,0xf0,0x80,0x80,
+        // 113 q
+        0x00,0x00,0x78,0x88,0x78,0x08,0x08,
+        // 114 r
+        0x00,0x00,0xb0,0xc8,0x80,0x80,0x80,
+        // 115 s
+        0x00,0x00,0x78,0x80,0x70,0x08,0xf0,
+        // 116 t
+        0x40,0x40,0xf0,0x40,0x40,0x48,0x30,
+        // 117 u
+        0x00,0x00,0x88,0x88,0x88,0x88,0x78,
+        // 118 v
+        0x00,0x00,0x88,0x88,0x88,0x50,0x20,
+        // 119 w
+        0x00,0x00,0x88,0x88,0xa8,0xa8,0x50,
+        // 120 x
+        0x00,0x00,0x88,0x50,0x20,0x50,0x88,
+        // 121 y
+        0x00,0x00,0x88,0x88,0x78,0x08,0x70,
+        // 122 z
+        0x00,0x00,0xf8,0x10,0x20,0x40,0xf8,
+        // 123 {
+        0x18,0x20,0x20,0xc0,0x20,0x20,0x18,
+        // 124 |
+        0x20,0x20,0x20,0x20,0x20,0x20,0x20,
+        // 125 }
+        0xc0,0x20,0x20,0x18,0x20,0x20,0xc0,
+        // 126 ~
+        0x00,0x00,0x40,0xa8,0x10,0x00,0x00,
+    ];
+
+    let mut pixels = vec![0u8; (ATLAS_W * ATLAS_H) as usize];
+    for gi in 0..96 {
+        let col = gi % COLS;
+        let row = gi / COLS;
+        let gx = col * GW;
+        let gy = row * GH;
+        for r in 0..GH {
+            let byte = FONT[(gi * 7 + r) as usize];
+            for c in 0..GW {
+                let bit = (byte >> (4 - c)) & 1;
+                let px = (gx + c) as usize;
+                let py = (gy + r) as usize;
+                if bit != 0 {
+                    pixels[py * ATLAS_W as usize + px] = 255;
+                }
+            }
+        }
+    }
+
+    let mut tex = 0;
+    gl.GenTextures(1, &mut tex);
+    gl.BindTexture(ffi::TEXTURE_2D, tex);
+    gl.TexImage2D(
+        ffi::TEXTURE_2D,
+        0,
+        ffi::R8 as i32,
+        ATLAS_W as i32,
+        ATLAS_H as i32,
+        0,
+        ffi::RED,
+        ffi::UNSIGNED_BYTE,
+        pixels.as_ptr() as *const std::ffi::c_void,
+    );
+    gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::NEAREST as i32);
+    gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::NEAREST as i32);
+    gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
+    gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+
+    *guard = Some(FontAtlas { tex_id: tex, gw: GW, gh: GH, cols: COLS });
+}
+
 const QUAD_VS: &str = "\
 attribute vec2 a_pos;
 attribute vec2 a_uv;
@@ -119,7 +476,37 @@ struct DrawGl {
     u_focused: i32,
     u_title_h: i32,
     vbo: u32,
+    /// Simple text shader: samples alpha from a texture, applies a solid color.
+    text_prog: u32,
+    text_a_pos: u32,
+    text_a_uv: u32,
+    text_u_mvp: i32,
+    text_u_tex: i32,
+    text_u_color: i32,
+    text_vbo: u32,
 }
+
+const TEXT_VS: &str = "\
+attribute vec2 a_pos;
+attribute vec2 a_uv;
+uniform mat4 u_mvp;
+varying vec2 v_uv;
+void main() {
+    gl_Position = u_mvp * vec4(a_pos, 0.0, 1.0);
+    v_uv = a_uv;
+}
+";
+
+const TEXT_FS: &str = "\
+precision mediump float;
+varying vec2 v_uv;
+uniform sampler2D u_tex;
+uniform vec4 u_color;
+void main() {
+    float a = texture2D(u_tex, v_uv).r;
+    gl_FragColor = vec4(u_color.rgb, u_color.a * a);
+}
+";
 
 impl DrawGl {
     fn new(gl: &ffi::Gles2) -> Self {
@@ -153,7 +540,39 @@ impl DrawGl {
             gl.BufferData(ffi::ARRAY_BUFFER, std::mem::size_of_val(&verts) as isize,
                 verts.as_ptr() as *const std::ffi::c_void, ffi::STATIC_DRAW);
         }
-        DrawGl { program, a_pos, a_uv, u_mvp, u_tex, u_selected, u_focused, u_title_h, vbo }
+
+        // Text shader
+        let tvs = Self::compile(gl, ffi::VERTEX_SHADER, TEXT_VS);
+        let tfs = Self::compile(gl, ffi::FRAGMENT_SHADER, TEXT_FS);
+        let text_prog = unsafe { gl.CreateProgram() };
+        unsafe {
+            gl.AttachShader(text_prog, tvs);
+            gl.AttachShader(text_prog, tfs);
+            gl.LinkProgram(text_prog);
+            gl.DeleteShader(tvs);
+            gl.DeleteShader(tfs);
+        }
+        let text_a_pos = unsafe { gl.GetAttribLocation(text_prog, b"a_pos\0".as_ptr() as *const i8) as u32 };
+        let text_a_uv = unsafe { gl.GetAttribLocation(text_prog, b"a_uv\0".as_ptr() as *const i8) as u32 };
+        let text_u_mvp = unsafe { gl.GetUniformLocation(text_prog, b"u_mvp\0".as_ptr() as *const i8) };
+        let text_u_tex = unsafe { gl.GetUniformLocation(text_prog, b"u_tex\0".as_ptr() as *const i8) };
+        let text_u_color = unsafe { gl.GetUniformLocation(text_prog, b"u_color\0".as_ptr() as *const i8) };
+        let mut text_vbo = 0;
+        unsafe { gl.GenBuffers(1, &mut text_vbo) };
+        let text_verts: [f32; 16] = [
+            -0.5, -0.5, 0.0, 1.0,
+             0.5, -0.5, 1.0, 1.0,
+            -0.5,  0.5, 0.0, 0.0,
+             0.5,  0.5, 1.0, 0.0,
+        ];
+        unsafe {
+            gl.BindBuffer(ffi::ARRAY_BUFFER, text_vbo);
+            gl.BufferData(ffi::ARRAY_BUFFER, std::mem::size_of_val(&text_verts) as isize,
+                text_verts.as_ptr() as *const std::ffi::c_void, ffi::STATIC_DRAW);
+        }
+
+        DrawGl { program, a_pos, a_uv, u_mvp, u_tex, u_selected, u_focused, u_title_h, vbo,
+                 text_prog, text_a_pos, text_a_uv, text_u_mvp, text_u_tex, text_u_color, text_vbo }
     }
 
     fn compile(gl: &ffi::Gles2, kind: u32, src: &str) -> u32 {
@@ -352,9 +771,10 @@ pub fn render_scene(
                 gl.Uniform1f(draw.u_focused, 0.0);
                 gl.Uniform1f(draw.u_title_h, 0.0);
 
+                // Ensure font atlas is initialized
+                ensure_font_atlas(gl);
+
                 // Lazily create a 1x1 white texture for overlay rendering
-                // Hold the lock for the entire read + potential init to avoid a
-                // double-lock pattern that could deadlock if the mutex is poisoned.
                 let white_tex = {
                     let mut guard = MENU_WHITE_TEX.lock().unwrap();
                     let tex = *guard;
@@ -432,6 +852,15 @@ pub fn render_scene(
                     gl.Uniform1f(draw.u_title_h, 0.0);
                     gl.UniformMatrix4fv(draw.u_mvp, 1, 0, item_mvp.as_ptr());
                     gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+
+                    // Render item label text
+                    // Text color: white for normal, gold for selected
+                    let (tr, tg, tb) = if is_selected { (1.0, 0.84, 0.0) } else { (1.0, 1.0, 1.0) };
+                    let text_x = item_ix - ndc_w / 2.0 + (2.0 / w as f32) * 2.0; // 2px left padding
+                    let text_y = item_iy_c - ndc_ih / 2.0 + (1.0 / h as f32) * 2.0; // 1px top padding
+                    let cw = (5.0f32 / w as f32) * 2.0; // 5px char width in NDC
+                    let ch = (7.0f32 / h as f32) * 2.0; // 7px char height in NDC
+                    draw_text(gl, draw, &_item.label, text_x, text_y, cw, ch, tr, tg, tb);
                 }
 
                 gl.DisableVertexAttribArray(draw.a_pos);
