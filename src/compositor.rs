@@ -1315,8 +1315,10 @@ impl LookingGlass {
         self.press_pos = (x, y);
         self.event_serial = self.event_serial.wrapping_add(1);
         self.interaction.window_size = self.window_size;
+        let ws_ids = self.workspace_manager.active().visual_ids.clone();
         let mode = self.interaction.handle_pointer_down(
             x, y, &mut self.scene, &self.camera, self.spatial_mode, shift, ctrl, alt,
+            Some(ws_ids),
         );
         // In overview mode, clicking a visual should focus it
         if matches!(self.focus_manager.camera_mode, CameraMode::Overview) {
@@ -1354,9 +1356,10 @@ impl LookingGlass {
                 match self.route_to_content(PointerEventKind::Down, x, y) {
                     ContentRouting::TitleBarHit => {
                         // Start a translate drag from the title bar
+                        let ws_ids = self.workspace_manager.active().visual_ids.clone();
                         self.interaction.handle_pointer_down(
                             x, y, &mut self.scene, &self.camera,
-                            self.spatial_mode, false, false, false,
+                            self.spatial_mode, false, false, false, Some(ws_ids),
                         );
                         // Force translate even though no modifier
                         self.interaction.force_translate(x, y, &mut self.scene,

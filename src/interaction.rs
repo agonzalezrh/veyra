@@ -132,6 +132,8 @@ impl InteractionController {
     /// Returns `Some(ManipMode)` if a drag was started, `None` otherwise.
     /// The caller (LookingGlass) uses this to decide whether to route the
     /// event to content input or scene manipulation.
+    /// `visible_ids` optionally restricts picking to a set of visual IDs
+    /// (e.g., the active workspace). If None, all visuals are pickable.
     pub fn handle_pointer_down(
         &mut self,
         x: f64,
@@ -142,6 +144,7 @@ impl InteractionController {
         shift: bool,
         ctrl: bool,
         alt: bool,
+        visible_ids: Option<Vec<crate::scene::VisualId>>,
     ) -> Option<ManipMode> {
         self.mouse_x = x;
         self.mouse_y = y;
@@ -152,7 +155,10 @@ impl InteractionController {
             return None;
         }
 
-        let picked = scene.pick(&pv, nx, ny);
+        let picked = match visible_ids {
+            Some(ref ids) => scene.pick_visible(&pv, nx, ny, ids),
+            None => scene.pick(&pv, nx, ny),
+        };
         let Some((vid, _dist)) = picked else {
             scene.select(None);
             return None;
