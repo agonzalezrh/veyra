@@ -1182,7 +1182,7 @@ impl LookingGlass {
                 time,
                 |_, _, _| FilterResult::Forward,
             );
-            self.display_handle.flush().ok();
+            let _ = self.display_handle.flush_clients();
             return;
         }
 
@@ -1378,8 +1378,7 @@ impl LookingGlass {
                 }
             }
         }
-        // Flush the Wayland display so input events reach clients
-        self.display_handle.flush().ok();
+        let _ = self.display_handle.flush_clients();
     }
 
     /// Public entry point for pointer button release.
@@ -1391,7 +1390,7 @@ impl LookingGlass {
         if !has_active {
             self.route_to_content(PointerEventKind::Up, x, y);
         }
-        self.display_handle.flush().ok();
+        let _ = self.display_handle.flush_clients();
     }
 
     /// Public entry point for pointer motion.
