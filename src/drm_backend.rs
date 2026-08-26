@@ -10,6 +10,7 @@
 use std::os::unix::io::OwnedFd;
 
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmSurface};
+use smithay::backend::egl::EGLSurface;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::SwapBuffersError;
@@ -155,6 +156,10 @@ impl PresentationBackend for DrmGraphicsBackend {
 
     fn size(&self) -> (f32, f32) {
         (self.width, self.height)
+    }
+
+    fn egl_surface(&self) -> Option<&EGLSurface> {
+        None
     }
 }
 

@@ -958,9 +958,30 @@ impl LookingGlass {
             self.scheduler.set_animating(false);
         }
         let context_menu = if self.context_menu.visible { Some(&self.context_menu) } else { None };
-        if let Err(SwapBuffersError::ContextLost(e)) = renderer::render_scene(back, &self.scene, &view, &proj, &mut self.perf, ws_visible, context_menu) {
-            error!(?e, "Context lost");
+        // Bind the EGL surface before rendering (makes rendering context current)
+        if let Err(e) = back.begin_frame() {
+            error!(?e, "begin_frame failed");
+            self.scheduler.clear();
+            self.perf.record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
+            self.perf.record_frame();
+            return;
+        }
+        let context_lost = match renderer::render_scene(back, &self.scene, &view, &proj, &mut self.perf, ws_visible, context_menu) {
+            Err(SwapBuffersError::ContextLost(e)) => {
+                error!(?e, "Context lost");
+                true
+            }
+            _ => false,
+        };
+        if context_lost {
             self.backend = None;
+            self.scheduler.clear();
+            self.perf.record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
+            self.perf.record_frame();
+            return;
+        }
+        if let Err(e) = back.finish_frame() {
+            error!(?e, "finish_frame failed");
         }
 
         self.scene.clear_damage();

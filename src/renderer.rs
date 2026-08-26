@@ -237,45 +237,80 @@ pub fn render_scene(
     backend.begin_frame()?;
     perf.record_stage(PipelineStage::RenderBind, t_bind.elapsed().as_nanos() as u64);
 
+    // Stash raw pointers to EGL context and surface so we can rebind the
+    // window surface inside with_context() closures. with_context() internally
+    // calls eglMakeCurrent with EGL_NO_SURFACE, which unbinds the window surface
+    // and causes GL_INVALID_FRAMEBUFFER_OPERATION on subsequent GL operations.
+    // Using raw pointers avoids borrow conflicts with with_context(&mut self).
+    // Stash the surface pointer BEFORE borrowing renderer (borrows backend).
+    let egl_surface_ptr: Option<*const smithay::backend::egl::EGLSurface> =
+        backend.egl_surface().map(|s| s as *const _);
+
     let renderer = backend.renderer();
+    let egl_ctx_ptr: *const smithay::backend::egl::EGLContext = renderer.egl_context();
+
+    // Helper to rebind the window surface as the current draw/read target.
+    // Must be called inside each with_context() closure before any GL operations.
+    let rebind_surface = |gl: &ffi::Gles2| unsafe {
+        if let Some(surface_ptr) = egl_surface_ptr {
+            (*egl_ctx_ptr)
+                .make_current_with_surface(&*surface_ptr)
+                .expect("make_current_with_surface");
+            gl.BindFramebuffer(ffi::FRAMEBUFFER, 0);
+        }
+    };
 
     // Initialize DrawGl once per GL context lifetime
-    let _ = renderer.with_context(|gl| { get_draw_gl(gl); });
+    let _ = renderer.with_context(|gl| {
+        rebind_surface(gl);
+        get_draw_gl(gl);
+    });
     let draw_guard = DRAW_GL.lock().unwrap();
     let draw = match draw_guard.as_ref() {
         Some(d) => d,
-        None => { error!("DrawGl not initialized"); return Ok(()); }
+        None => {
+            error!("DrawGl not initialized");
+            return Ok(());
+        }
     };
 
+    // Set up viewport, clear, and state in one with_context block
+    let t_clear = std::time::Instant::now();
     let _ = renderer.with_context(|gl| unsafe {
+        rebind_surface(gl);
         gl.Viewport(0, 0, w as i32, h as i32);
         gl.ClearColor(0.15, 0.15, 0.15, 1.0);
         gl.Clear(ffi::COLOR_BUFFER_BIT | ffi::DEPTH_BUFFER_BIT);
-    });
-    let _ = renderer.with_context(|gl| unsafe {
         gl.Enable(ffi::BLEND);
         gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
         gl.Enable(ffi::DEPTH_TEST);
         gl.DepthFunc(ffi::LESS);
     });
+    perf.record_stage(PipelineStage::RenderDraw, t_clear.elapsed().as_nanos() as u64);
 
     // Draw all visuals
     let t_draw = std::time::Instant::now();
     for visual in scene.iter() {
-        if visual.window_state == crate::scene::WindowState::Minimized { continue; }
+        if visual.window_state == crate::scene::WindowState::Minimized {
+            continue;
+        }
         if let Some(ids) = visible_ids {
-            if !ids.contains(&visual.id) { continue; }
+            if !ids.contains(&visual.id) {
+                continue;
+            }
         }
         let Some(texture) = visual.texture() else { continue };
         let tex_id = texture.tex_id();
         let gw = visual.total_width();
         let gh = visual.total_height();
-        let title_h = visual.decoration.title_bar_height / (1.0 + visual.decoration.title_bar_height);
+        let title_h =
+            visual.decoration.title_bar_height / (1.0 + visual.decoration.title_bar_height);
         let world = scene.world_matrix(visual.id);
-        let wx = world[3][0]; let wy = world[3][1]; let wz = world[3][2];
+        let wx = world[3][0];
+        let wy = world[3][1];
+        let wz = world[3][2];
         let m3 = cgmath::Matrix3::new(
-            world[0][0], world[0][1], world[0][2],
-            world[1][0], world[1][1], world[1][2],
+            world[0][0], world[0][1], world[0][2], world[1][0], world[1][1], world[1][2],
             world[2][0], world[2][1], world[2][2],
         );
         let rot = cgmath::Quaternion::from(m3);
@@ -283,7 +318,10 @@ pub fn render_scene(
             * Matrix4::from(rot)
             * Matrix4::from_nonuniform_scale(gw, gh, 1.0);
         let mvp = proj * view * model;
-        let _ = renderer.with_context(|gl| draw_textured_quad(gl, draw, &mvp, tex_id, visual.selected, visual.focused, title_h));
+        let _ = renderer.with_context(|gl| {
+            rebind_surface(gl);
+            draw_textured_quad(gl, draw, &mvp, tex_id, visual.selected, visual.focused, title_h)
+        });
     }
     perf.record_stage(PipelineStage::RenderDraw, t_draw.elapsed().as_nanos() as u64);
 
@@ -291,6 +329,7 @@ pub fn render_scene(
     if let Some(menu) = context_menu {
         if menu.visible {
             let _ = renderer.with_context(|gl| unsafe {
+                rebind_surface(gl);
                 gl.Disable(ffi::DEPTH_TEST);
                 gl.Enable(ffi::BLEND);
                 gl.BlendFunc(ffi::SRC_ALPHA, ffi::ONE_MINUS_SRC_ALPHA);
@@ -305,10 +344,6 @@ pub fn render_scene(
                 let ndc_y = -((my as f32 / h as f32) * 2.0 - 1.0);
                 let ndc_w = menu_width / w as f32 * 2.0;
                 let ndc_h = menu_height / h as f32 * 2.0;
-
-                // Render menu background using our shader with ortho projection
-                let ortho = cgmath::ortho(-1.0f32, 1.0, -1.0, 1.0, -1.0, 1.0);
-                let _ortho_mvp = &ortho;
 
                 gl.UseProgram(draw.program);
 
@@ -325,7 +360,17 @@ pub fn render_scene(
                         gl.GenTextures(1, &mut tex);
                         gl.BindTexture(ffi::TEXTURE_2D, tex);
                         let white: [u8; 4] = [255, 255, 255, 255];
-                        gl.TexImage2D(ffi::TEXTURE_2D, 0, ffi::RGBA as i32, 1, 1, 0, ffi::RGBA, ffi::UNSIGNED_BYTE, white.as_ptr() as *const std::ffi::c_void);
+                        gl.TexImage2D(
+                            ffi::TEXTURE_2D,
+                            0,
+                            ffi::RGBA as i32,
+                            1,
+                            1,
+                            0,
+                            ffi::RGBA,
+                            ffi::UNSIGNED_BYTE,
+                            white.as_ptr() as *const std::ffi::c_void,
+                        );
                         gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
                         gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
                         *guard = Some(tex);
@@ -340,8 +385,9 @@ pub fn render_scene(
                 // Background quad
                 let bg_pos = ndc_x + ndc_w / 2.0;
                 let bg_pos_y = ndc_y - ndc_h / 2.0;
-                let bg_mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(bg_pos, bg_pos_y, 0.0))
-                    * cgmath::Matrix4::from_nonuniform_scale(ndc_w, ndc_h, 1.0);
+                let bg_mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
+                    bg_pos, bg_pos_y, 0.0,
+                )) * cgmath::Matrix4::from_nonuniform_scale(ndc_w, ndc_h, 1.0);
                 gl.UniformMatrix4fv(draw.u_mvp, 1, 0, bg_mvp.as_ptr());
 
                 let stride = 4 * std::mem::size_of::<f32>() as i32;
@@ -349,17 +395,27 @@ pub fn render_scene(
                 gl.EnableVertexAttribArray(draw.a_pos);
                 gl.VertexAttribPointer(draw.a_pos, 2, ffi::FLOAT, 0, stride, std::ptr::null());
                 gl.EnableVertexAttribArray(draw.a_uv);
-                gl.VertexAttribPointer(draw.a_uv, 2, ffi::FLOAT, 0, stride, (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void);
+                gl.VertexAttribPointer(
+                    draw.a_uv,
+                    2,
+                    ffi::FLOAT,
+                    0,
+                    stride,
+                    (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void,
+                );
                 gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
 
                 let ndc_ih = item_height / h as f32 * 2.0;
                 // Draw each menu item
                 for (i, _item) in menu.items.iter().enumerate() {
-                    let item_iy = -(my as f32 - (i as f32 * item_height)) / h as f32 * 2.0 + 1.0;
-                    let item_ix = (mx as f32 / w as f32) * 2.0 - 1.0 + ndc_w / 2.0;
+                    let item_iy =
+                        -(my as f32 - (i as f32 * item_height)) / h as f32 * 2.0 + 1.0;
+                    let item_ix =
+                        (mx as f32 / w as f32) * 2.0 - 1.0 + ndc_w / 2.0;
                     let item_iy_c = item_iy - ndc_ih / 2.0;
-                    let item_mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(item_ix, item_iy_c, 0.0))
-                        * cgmath::Matrix4::from_nonuniform_scale(ndc_w, ndc_ih, 1.0);
+                    let item_mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
+                        item_ix, item_iy_c, 0.0,
+                    )) * cgmath::Matrix4::from_nonuniform_scale(ndc_w, ndc_ih, 1.0);
 
                     let is_selected = menu.selected == Some(i);
                     if is_selected {
