@@ -216,7 +216,7 @@ impl<D: SeatHandler + 'static> KeyboardTarget<D> for WlSurface {
         time: u32,
     ) {
         for_each_focused_kbds(seat, self, |kbd| {
-            kbd.key(serial.into(), time, key.raw_code().raw(), state.into())
+            kbd.key(serial.into(), time, key.raw_code().raw() - 8, state.into())
         })
     }
 
