@@ -1196,13 +1196,13 @@ impl LookingGlass {
             let state = if pressed { KeyState::Pressed } else { KeyState::Released };
             // Ensure keyboard focus is on the right surface
             kh_handle.set_focus(self, Some(wl_surface), serial);
-            // Smithay's WinitKeyboardInputEvent::key_code() already returns
-            // the evdev-compatible keycode (internally adds +8 to the raw
-            // scancode). Pass the key directly to Keycode::new() without
-            // further adjustment.
+            // Smithay's WinitKeyboardInputEvent::key_code() returns key+8
+            // (xkbcommon format). Keycode::new() expects raw evdev codes,
+            // so convert back by subtracting 8.
+            let evdev = if key > 8 { key - 8 } else { key };
             let _ = kh_handle.input::<(), _>(
                 self,
-                Keycode::new(key),
+                Keycode::new(evdev),
                 state,
                 serial,
                 time,
