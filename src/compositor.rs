@@ -270,21 +270,7 @@ impl LookingGlass {
         // Load system keyboard configuration for proper non-US layout support
         let xkb_config = load_system_xkb_config();
         info!(layout = %xkb_config.layout, "keyboard: using xkb config");
-        // Smithay 0.7.0 has a bug: it sends wl_keyboard.key with keycode - 8
-        // (evdev codes) but the keymap uses xkbcommon codes (evdev+8). This
-        // mismatch causes keys with evdev < 9 (q=16, w=17, 1=2, 2=3, etc.)
-        // to produce wrong characters on the client.
-        //
-        // Workaround: compile the keymap with an 8-keycode offset so the
-        // keymap's internal codes match what Smithay sends on the wire.
-        let xkb_config_offset = smithay::input::keyboard::XkbConfig {
-            rules: "",
-            model: "",
-            layout: "us",
-            variant: "",
-            options: None,
-        };
-        let keyboard_result = seat_actual.add_keyboard(xkb_config_offset, 250, 50);
+        let keyboard_result = seat_actual.add_keyboard(xkb_config, 250, 50);
         if let Err(e) = &keyboard_result {
             warn!(?e, "keyboard setup failed (xkb keymap may not be loaded)");
         }
@@ -1210,25 +1196,21 @@ impl LookingGlass {
             let state = if pressed { KeyState::Pressed } else { KeyState::Released };
             // Ensure keyboard focus is on the right surface
             kh_handle.set_focus(self, Some(wl_surface), serial);
-            // Smithay's KeyboardTarget::key() sends key.raw_code().raw() - 8
-            // on the wire. Since xkbcommon keycodes are evdev+8, the wire gets
-            // evdev codes (e.g. 16 for 'q'). But the client's keymap uses
-            // xkbcommon keycodes (24 for 'q'). To match, pass key+8 so the
-            // wire gets (key+8)-8 = key = xkbcommon code, matching the keymap.
-            let wire_keycode = key + 8;
+            let xkb_keycode = Keycode::new(key);
             let _ = kh_handle.input::<(), _>(
                 self,
-                Keycode::new(wire_keycode),
+                xkb_keycode,
                 state,
                 serial,
                 time,
                 |_, mods, sym| {
-                    let raw_keycode: u32 = key;
                     let sym_val: u32 = sym.modified_sym().into();
+                    let raw_keycode: u32 = key;
+                    let wl_keycode: u32 = raw_keycode - 8;
                     if let Some(ch) = char::from_u32(sym_val) {
-                        info!(key_code = %raw_keycode, sym = %ch, hex = %format!("{:x}", sym_val), pressed, mods = ?mods, "KEY");
+                        info!(raw_code = %raw_keycode, wl_code = %wl_keycode, sym = %ch, hex = %format!("{:x}", sym_val), pressed, mods = ?mods, "KEY");
                     } else {
-                        info!(key_code = %raw_keycode, hex = %format!("{:x}", sym_val), pressed, mods = ?mods, "KEY (no char)");
+                        info!(raw_code = %raw_keycode, wl_code = %wl_keycode, hex = %format!("{:x}", sym_val), pressed, mods = ?mods, "KEY (no char)");
                     }
                     FilterResult::Forward
                 },
