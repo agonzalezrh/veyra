@@ -1191,11 +1191,13 @@ impl LookingGlass {
             let state = if pressed { KeyState::Pressed } else { KeyState::Released };
             // Ensure keyboard focus is on the right surface
             kh_handle.set_focus(self, Some(wl_surface), serial);
-            // Winit on X11 reports keycodes with +8 offset; convert to evdev
-            let evdev = if key > 8 { key - 8 } else { key };
+            // Smithay's WinitKeyboardInputEvent::key_code() already returns
+            // the evdev-compatible keycode (internally adds +8 to the raw
+            // scancode). Pass the key directly to Keycode::new() without
+            // further adjustment.
             let _ = kh_handle.input::<(), _>(
                 self,
-                Keycode::new(evdev),
+                Keycode::new(key),
                 state,
                 serial,
                 time,
