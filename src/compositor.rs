@@ -1000,6 +1000,24 @@ impl LookingGlass {
             }
         }
 
+        // Complete pending frame callbacks for all mapped Wayland surfaces.
+        // Without this, clients that request wl_surface.frame() wait forever
+        // and never render their initial content.
+        let time = now_ms();
+        for toplevel in &self.toplevels {
+            if toplevel.lifecycle == SurfaceLifecycle::Mapped || toplevel.lifecycle == SurfaceLifecycle::Configured {
+                let surface = toplevel.toplevel.wl_surface();
+                let _ = with_states(surface, |states| {
+                    let attrs = states.cached_state.get::<SurfaceAttributes>();
+                    let callbacks = &mut attrs.current().frame_callbacks;
+                    for cb in callbacks.iter() {
+                        cb.done(time);
+                    }
+                    callbacks.clear();
+                });
+            }
+        }
+
         self.scene.clear_damage();
 
         self.perf.record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
