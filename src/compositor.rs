@@ -721,6 +721,11 @@ impl LookingGlass {
                 Some(Err(e)) => warn!(?e, "buffer import failed"),
                 None => warn!("buffer type not recognized by renderer"),
             }
+            // After processing a commit, schedule a render so any pending
+            // frame callbacks are completed promptly. Without this, the
+            // client waits for callback.done() before rendering the next
+            // frame, creating a latency bubble.
+            self.schedule_render();
         }
     }
 
