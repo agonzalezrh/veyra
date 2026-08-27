@@ -82,14 +82,17 @@ unsafe fn draw_text(
     let atlas_w = (cols * gw) as f32;
     let atlas_h = (total_rows * gh) as f32;
 
+    // Use the existing quad shader for text: set u_title_h=0, bind font atlas.
+    // This avoids needing text_u_color which triggers GL errors on some NVIDIA drivers.
     let stride = 4 * std::mem::size_of::<f32>() as i32;
-    gl.UseProgram(draw.text_prog);
-    let color = [color_r, color_g, color_b, 1.0f32];
-    gl.Uniform4fv(draw.text_u_color, 1, color.as_ptr());
+    gl.UseProgram(draw.program);
+    gl.Uniform1f(draw.u_selected, if color_r > 0.5 { 1.0 } else { 0.0 });
+    gl.Uniform1f(draw.u_focused, 0.0);
+    gl.Uniform1f(draw.u_title_h, 0.0);
     gl.ActiveTexture(ffi::TEXTURE0);
     gl.BindTexture(ffi::TEXTURE_2D, font_tex_id);
-    gl.Uniform1i(draw.text_u_tex, 0);
-    gl.BindBuffer(ffi::ARRAY_BUFFER, draw.text_vbo);
+    gl.Uniform1i(draw.u_tex, 0);
+    gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
 
     for (i, ch) in text.chars().enumerate() {
         let code = ch as u32;
@@ -120,25 +123,25 @@ unsafe fn draw_text(
         let cy = y_ndc;
         let mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(cx + char_w / 2.0, cy + char_h / 2.0, 0.0))
             * cgmath::Matrix4::from_nonuniform_scale(char_w, char_h, 1.0);
-        gl.UniformMatrix4fv(draw.text_u_mvp, 1, 0, mvp.as_ptr());
+        gl.UniformMatrix4fv(draw.u_mvp, 1, 0, mvp.as_ptr());
 
-        gl.EnableVertexAttribArray(draw.text_a_pos);
-        gl.VertexAttribPointer(draw.text_a_pos, 2, ffi::FLOAT, 0, stride, std::ptr::null());
-        gl.EnableVertexAttribArray(draw.text_a_uv);
-        gl.VertexAttribPointer(draw.text_a_uv, 2, ffi::FLOAT, 0, stride, (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void);
+        gl.EnableVertexAttribArray(draw.a_pos);
+        gl.VertexAttribPointer(draw.a_pos, 2, ffi::FLOAT, 0, stride, std::ptr::null());
+        gl.EnableVertexAttribArray(draw.a_uv);
+        gl.VertexAttribPointer(draw.a_uv, 2, ffi::FLOAT, 0, stride, (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void);
         gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
-        gl.DisableVertexAttribArray(draw.text_a_pos);
-        gl.DisableVertexAttribArray(draw.text_a_uv);
+        gl.DisableVertexAttribArray(draw.a_pos);
+        gl.DisableVertexAttribArray(draw.a_uv);
     }
 
-    // Restore text VBO
+    // Restore main VBO
     let verts: [f32; 16] = [
         -0.5, -0.5, 0.0, 1.0,
          0.5, -0.5, 1.0, 1.0,
         -0.5,  0.5, 0.0, 0.0,
          0.5,  0.5, 1.0, 0.0,
     ];
-    gl.BindBuffer(ffi::ARRAY_BUFFER, draw.text_vbo);
+    gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
     gl.BufferData(
         ffi::ARRAY_BUFFER,
         std::mem::size_of_val(&verts) as isize,
