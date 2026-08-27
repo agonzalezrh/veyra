@@ -273,6 +273,22 @@ impl LookingGlass {
         let keyboard_result = seat_actual.add_keyboard(xkb_config, 250, 50);
         if let Err(e) = &keyboard_result {
             warn!(?e, "keyboard setup failed (xkb keymap may not be loaded)");
+        } else {
+            // Log the keymap that will be sent to clients
+            let kh = seat_actual.get_keyboard();
+            if let Some(ref kh) = kh {
+                use smithay::input::keyboard::KeymapFile;
+                if let Some(kf) = kh.keymap_file() {
+                    let path = kf.path();
+                    info!("keymap fd path: {:?}", path);
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        // Log first 200 chars of keymap
+                        let preview: String = content.chars().take(200).collect();
+                        info!("keymap preview: {}", preview);
+                        info!("keymap total bytes: {}", content.len());
+                    }
+                }
+            }
         }
         let keyboard_handle = seat_actual.get_keyboard();
 
