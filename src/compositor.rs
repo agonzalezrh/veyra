@@ -1204,10 +1204,9 @@ impl LookingGlass {
                 serial,
                 time,
                 |_, mods, sym| {
-                    let name = std::ffi::CStr::from_ptr(unsafe {
-                        xkbcommon::xkb::keysym_get_name(sym.modified_sym())
-                    }).to_string_lossy().into_owned();
-                    info!(?key, code = %name, mods = ?mods, "xkb key");
+                    let utf8 = sym.utf8().unwrap_or_default();
+                    let sym_val = sym.modified_sym();
+                    info!(?key, sym = %sym_val, utf8 = %utf8, mods = ?mods, "xkb key");
                     FilterResult::Forward
                 },
             );
