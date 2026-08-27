@@ -273,22 +273,6 @@ impl LookingGlass {
         let keyboard_result = seat_actual.add_keyboard(xkb_config, 250, 50);
         if let Err(e) = &keyboard_result {
             warn!(?e, "keyboard setup failed (xkb keymap may not be loaded)");
-        } else {
-            // Log the keymap that will be sent to clients
-            let kh = seat_actual.get_keyboard();
-            if let Some(ref kh) = kh {
-                use smithay::input::keyboard::KeymapFile;
-                if let Some(kf) = kh.keymap_file() {
-                    let path = kf.path();
-                    info!("keymap fd path: {:?}", path);
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        // Log first 200 chars of keymap
-                        let preview: String = content.chars().take(200).collect();
-                        info!("keymap preview: {}", preview);
-                        info!("keymap total bytes: {}", content.len());
-                    }
-                }
-            }
         }
         let keyboard_handle = seat_actual.get_keyboard();
 
@@ -2573,13 +2557,21 @@ fn load_system_xkb_config() -> smithay::input::keyboard::XkbConfig<'static> {
         }
     }
     // Fallback to US layout if nothing else is configured
-    smithay::input::keyboard::XkbConfig {
+    let cfg = smithay::input::keyboard::XkbConfig {
         rules: "",
         model: "",
         layout: "us",
         variant: "",
         options: None,
+    };
+    // Dump the compiled keymap for debugging
+    if let Ok(keymap) = cfg.compile_keymap(&xkbcommon::xkb::Context::new()) {
+        if let Ok(keymap_str) = keymap.get_as_string(xkbcommon::xkb::KEYMAP_FORMAT_TEXT_V1) {
+            info!("dumping keymap to /tmp/veyra-keymap.xkb ({} bytes)", keymap_str.len());
+            let _ = std::fs::write("/tmp/veyra-keymap.xkb", &keymap_str);
+        }
     }
+    cfg
 }
 
 delegate_shm!(LookingGlass);
