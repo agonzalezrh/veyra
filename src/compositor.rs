@@ -2565,7 +2565,6 @@ fn load_system_xkb_config() -> smithay::input::keyboard::XkbConfig<'static> {
         options: None,
     }
 }
-}
 
 delegate_shm!(LookingGlass);
 delegate_output!(LookingGlass);
