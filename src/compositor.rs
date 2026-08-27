@@ -298,7 +298,7 @@ impl LookingGlass {
             refresh: 60000,
         });
 
-        LookingGlass {
+        let mut state = LookingGlass {
             display_handle: display_handle.clone(),
             compositor_state,
             xdg_shell_state,
@@ -350,7 +350,51 @@ impl LookingGlass {
             pointer_constraints: crate::pointer_constraints::PointerConstraints::new(display_handle),
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<LookingGlass>(display_handle),
             dmabuf_manager: crate::dmabuf::DmabufManager::new(display_handle),
+        };
+
+        // Patch the xkb keymap: shift all keycodes by -8 so they match the
+        // evdev codes on the wire. The compiled keymap uses xkbcommon codes
+        // (evdev+8), but Smithay sends evdev codes. We get the keymap text,
+        // subtract 8 from every keycode number, and install the patched version.
+        let kh = state.keyboard_handle.clone();
+        if let Some(ref kh) = kh {
+            let layout_str = load_system_xkb_config().layout.to_string();
+            use smithay::input::keyboard::xkb;
+            let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+            if let Some(keymap) = xkb::Keymap::new_from_names(&ctx, "", "", &layout_str, "", None, xkb::KEYMAP_COMPILE_NO_FLAGS) {
+                let text = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
+                let mut patched = String::with_capacity(text.len());
+                let mut in_xkb_keycodes = false;
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.contains("xkb_keycodes") { in_xkb_keycodes = true; }
+                    if in_xkb_keycodes && (trimmed.starts_with("xkb_types") || trimmed.starts_with("xkb_compat") || trimmed.starts_with("xkb_symbols")) {
+                        in_xkb_keycodes = false;
+                    }
+                    if in_xkb_keycodes {
+                        if let Some(eq_pos) = trimmed.find("= ") {
+                            let after_eq = trimmed[eq_pos + 2..].trim();
+                            if let Some(semi_pos) = after_eq.find(';') {
+                                if let Ok(val) = after_eq[..semi_pos].parse::<u32>() {
+                                    if val > 0 {
+                                        let new_val = if val >= 8 { val - 8 } else { 0 };
+                                        let indent = &line[..line.len() - line.trim_start().len()];
+                                        let name_part = &trimmed[..eq_pos];
+                                        patched.push_str(&format!("{}{}= {};\n", indent, name_part, new_val));
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    patched.push_str(line);
+                    patched.push('\n');
+                }
+                let _ = kh.set_keymap_from_string(&mut state, patched);
+                info!("keymap patched: shifted keycodes by -8 for evdev wire compatibility");
+            }
         }
+        state
     }
 
     /// Load saved workspace state from disk and apply to workspaces.
