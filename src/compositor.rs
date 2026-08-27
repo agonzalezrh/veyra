@@ -1205,10 +1205,12 @@ impl LookingGlass {
                 time,
                 |_, mods, sym| {
                     let sym_val: u32 = sym.modified_sym().into();
+                    let raw_keycode: u32 = key;
+                    let wl_keycode: u32 = raw_keycode - 8;
                     if let Some(ch) = char::from_u32(sym_val) {
-                        info!(?key, sym = %ch, hex = %format!("{:x}", sym_val), mods = ?mods, "xkb key");
+                        info!(raw_code = %raw_keycode, wl_code = %wl_keycode, sym = %ch, hex = %format!("{:x}", sym_val), pressed, mods = ?mods, "KEY");
                     } else {
-                        info!(?key, hex = %format!("{:x}", sym_val), mods = ?mods, "xkb key (no char)");
+                        info!(raw_code = %raw_keycode, wl_code = %wl_keycode, hex = %format!("{:x}", sym_val), pressed, mods = ?mods, "KEY (no char)");
                     }
                     FilterResult::Forward
                 },
