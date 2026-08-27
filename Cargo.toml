@@ -26,6 +26,5 @@ serde_json = "1"
 cgmath = "0.18"
 toml = "0.8"
 
-[patch.crates-io]
-smithay = { path = "smithay-patched" }
+
 
