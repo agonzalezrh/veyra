@@ -171,7 +171,6 @@ fn main() {
                 let _ = inner.dispatch_clients(state);
                 let _ = inner.flush_clients();
                 state.schedule_render();
-                state.render();
                 Ok(PostAction::Continue)
             },
         )
