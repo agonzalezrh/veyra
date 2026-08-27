@@ -161,7 +161,7 @@ pub(crate) fn for_each_focused_kbds<D: SeatHandler + 'static>(
 
 /// Serialize keycodes for the `WlKeyboard` interface
 pub fn serialize_pressed_keys(keys: impl Iterator<Item = Keycode>) -> Vec<u8> {
-    keys.flat_map(|key| (key.raw() - 8).to_ne_bytes()).collect()
+    keys.flat_map(|key| (key.raw()).to_ne_bytes()).collect()
 }
 
 impl<D: SeatHandler + 'static> KeyboardTarget<D> for WlSurface {
