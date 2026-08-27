@@ -1204,9 +1204,12 @@ impl LookingGlass {
                 serial,
                 time,
                 |_, mods, sym| {
-                    let utf8 = sym.utf8().unwrap_or_default();
-                    let sym_val = sym.modified_sym();
-                    info!(?key, sym = %sym_val, utf8 = %utf8, mods = ?mods, "xkb key");
+                    let sym_val: u32 = sym.modified_sym().into();
+                    if let Some(ch) = char::from_u32(sym_val) {
+                        info!(?key, sym = %ch, hex = %format!("{:x}", sym_val), mods = ?mods, "xkb key");
+                    } else {
+                        info!(?key, hex = %format!("{:x}", sym_val), mods = ?mods, "xkb key (no char)");
+                    }
                     FilterResult::Forward
                 },
             );
