@@ -194,7 +194,7 @@ fn main() {
             if state.scheduler.needs_render() {
                 TimeoutAction::ToDuration(std::time::Duration::from_millis(16))
             } else {
-                TimeoutAction::ToDuration(std::time::Duration::from_millis(100))
+                TimeoutAction::ToDuration(std::time::Duration::from_millis(16))
             }
         })
         .expect("Failed to register render timer");
