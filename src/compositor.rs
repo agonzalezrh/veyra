@@ -1127,8 +1127,9 @@ impl LookingGlass {
                             _ => smithay::backend::input::ButtonState::Pressed,
                         },
                     };
+                    let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
                     let mot_ev = MotionEvent {
-                        location: pos,
+                        location: global_pos,
                         serial,
                         time,
                     };
@@ -1538,8 +1539,9 @@ impl LookingGlass {
         // different surface = leave old + enter new. We always call
         // motion to update cursor position within the current surface.
         self.last_wayland_focus = Some(wl_surface.clone());
+        let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
         let mot_ev = MotionEvent {
-            location: pos,
+            location: global_pos,
             serial: self.next_serial(),
             time: now_ms(),
         };
