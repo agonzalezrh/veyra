@@ -2557,28 +2557,14 @@ fn load_system_xkb_config() -> smithay::input::keyboard::XkbConfig<'static> {
         }
     }
     // Fallback to US layout if nothing else is configured
-    let config = smithay::input::keyboard::XkbConfig {
+    smithay::input::keyboard::XkbConfig {
         rules: "",
         model: "",
         layout: "us",
         variant: "",
         options: None,
-    };
-    // Dump compiled keymap for debugging
-    #[cfg(feature = "wayland_frontend")]
-    {
-        use xkbcommon::xkb;
-        let context = xkb::Context::new();
-        if let Ok(keymap) = xkb::Keymap::new_from_names(
-            &context, "", "", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS,
-        ) {
-            if let Ok(text) = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1) {
-                info!("veyra keymap: {} bytes", text.len());
-                let _ = std::fs::write("/tmp/veyra-km.xkb", &text);
-            }
-        }
     }
-    config
+}
 }
 
 delegate_shm!(LookingGlass);
