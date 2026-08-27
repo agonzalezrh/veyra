@@ -2524,8 +2524,14 @@ fn load_system_xkb_config() -> smithay::input::keyboard::XkbConfig<'static> {
             }
         }
     }
-    // Fallback to default (uses XKB_DEFAULT_* env vars or US layout)
-    smithay::input::keyboard::XkbConfig::default()
+    // Fallback to US layout if nothing else is configured
+    smithay::input::keyboard::XkbConfig {
+        rules: "",
+        model: "",
+        layout: "us",
+        variant: "",
+        options: None,
+    }
 }
 
 delegate_shm!(LookingGlass);
