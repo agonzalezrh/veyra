@@ -62,34 +62,32 @@ pub struct NavigationModel {
 
 impl NavigationModel {
     pub fn new() -> Self {
-        // Linux keycodes:
-        // 23=Tab, 24=O, 25=P, 33=F, 56=Alt_L, 58=M,
+        // XKB keycodes (Linux evdev + 8):
+        // 23=Tab, 24=Q, 32=O, 33=P, 36=Enter, 40=D, 41=F, 66=M,
         // 67=F1, 68=F2, 69=F3, 71=F5, 72=F6,
-        // 102=Home, 105=Ctrl_R, 125=Meta/Super_L
+        // 110=Home, 111=Up, 116=Down, 135=Menu, 65=Space, 61=/
         use Binding::*;
         let bindings = vec![
             (ToggleSpatial,          KeyBinding::new(23)),               // Tab
             (ToggleSpatial,          KeyBinding::new(71)),               // F5
             (ToggleFocus,            KeyBinding::new(72)),               // F6
-            (ToggleOverview,         KeyBinding::new(24)),               // O
-            (ToggleWorkspaceOverview,KeyBinding::new(25)),               // P
+            (ToggleOverview,         KeyBinding::new(32)),               // O
+            (ToggleWorkspaceOverview,KeyBinding::new(33)),               // P
             (WorkspaceNext,          KeyBinding::ctrl(23)),              // Ctrl+Tab
             (WorkspacePrev,          KeyBinding::ctrl_shift(23)),        // Ctrl+Shift+Tab
             (AppNext,                KeyBinding::alt(23)),               // Alt+Tab
             (AppPrev,                KeyBinding::alt_shift(23)),         // Alt+Shift+Tab
-            (DeEmphasize,            KeyBinding::new(58)),               // M
-            (FrameSelected,          KeyBinding::new(33)),               // F
-            (FrameAll,               KeyBinding::new(102)),              // Home
-            (ToggleShelf,            KeyBinding::meta(32)),              // Meta+D (32=D)
-            (SendToShelf,            KeyBinding::meta(108)),             // Meta+Down (108=Down)
-            (Launcher,               KeyBinding::meta(57)),              // Meta+Space
-            (Escape,                 KeyBinding::new(1)),                // Escape
-            (CloseApp,               KeyBinding::meta(25)),              // Meta+W (25=W)
+            (DeEmphasize,            KeyBinding::new(66)),               // M
+            (FrameSelected,          KeyBinding::new(41)),               // F
+            (FrameAll,               KeyBinding::new(110)),              // Home
+            (ToggleShelf,            KeyBinding::meta(40)),              // Meta+D
+            (SendToShelf,            KeyBinding::meta(116)),             // Meta+Down
+            (Launcher,               KeyBinding::meta(65)),              // Meta+Space
+            (Escape,                 KeyBinding::new(9)),                // Escape
+            (CloseApp,               KeyBinding::meta(25)),              // Meta+W (25 = XKB W)
             (CycleVisuals,           KeyBinding::meta(23)),              // Meta+Tab
-            (OpenContextMenu,        KeyBinding::new(127)),              // Menu key (127 = menu/apps key)
-            (HelpOverlay,            KeyBinding::meta(19)),              // Meta+/ (19=/)
-            // F1 is hardcoded to workspace 0 above — don't override it
-            // Help is accessible via Meta+/
+            (OpenContextMenu,        KeyBinding::new(135)),              // Menu key
+            (HelpOverlay,            KeyBinding::meta(61)),              // Meta+/
         ];
         NavigationModel { bindings }
     }
@@ -189,7 +187,7 @@ mod tests {
     #[test]
     fn match_binding_escape() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(1, false, false, false, false), Some(Binding::Escape));
+        assert_eq!(nav.match_binding(9, false, false, false, false), Some(Binding::Escape));
     }
 
     #[test]
@@ -226,19 +224,19 @@ mod tests {
     #[test]
     fn match_binding_shelf_toggle() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(32, false, false, false, true), Some(Binding::ToggleShelf));
+        assert_eq!(nav.match_binding(40, false, false, false, true), Some(Binding::ToggleShelf));
     }
 
     #[test]
     fn match_binding_send_to_shelf() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(108, false, false, false, true), Some(Binding::SendToShelf));
+        assert_eq!(nav.match_binding(116, false, false, false, true), Some(Binding::SendToShelf));
     }
 
     #[test]
     fn match_binding_launcher() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(57, false, false, false, true), Some(Binding::Launcher));
+        assert_eq!(nav.match_binding(65, false, false, false, true), Some(Binding::Launcher));
     }
 
     #[test]
@@ -256,12 +254,12 @@ mod tests {
     #[test]
     fn match_binding_open_context_menu() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(127, false, false, false, false), Some(Binding::OpenContextMenu));
+        assert_eq!(nav.match_binding(135, false, false, false, false), Some(Binding::OpenContextMenu));
     }
 
     #[test]
     fn match_binding_help_overlay() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(19, false, false, false, true), Some(Binding::HelpOverlay));
+        assert_eq!(nav.match_binding(61, false, false, false, true), Some(Binding::HelpOverlay));
     }
 }

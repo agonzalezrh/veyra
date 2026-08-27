@@ -1791,21 +1791,19 @@ impl LookingGlass {
     /// Routes to the focused visual's InputSink.
     /// Uses NavigationModel for binding dispatch.
     pub fn handle_key(&mut self, linux_key: u32, pressed: bool) {
-        // Track modifier keys (Linux keycodes: 29=Left Ctrl, 97=Right Ctrl,
-        // 42=Left Shift, 54=Right Shift, 56=Left Alt, 100=Right Alt,
-        // 125=Left Meta/Super, 126=Right Meta/Super)
+        // Track modifier keys (XKB keycodes = evdev + 8:
+        // 37=Left Ctrl, 105=Right Ctrl, 50=Left Shift, 62=Right Shift,
+        // 64=Left Alt, 108=Right Alt, 133=Left Meta, 134=Right Meta)
         match linux_key {
-            29 | 97 => { self.ctrl_pressed = pressed; }
-            42 | 54 => { self.shift_pressed = pressed; }
-            56 | 100 => {
+            37 | 105 => { self.ctrl_pressed = pressed; }
+            50 | 62 => { self.shift_pressed = pressed; }
+            64 | 108 => {
                 self.alt_pressed = pressed;
                 if !pressed && self.alt_tab_active {
-                    // Alt released — commit the Alt+Tab selection
                     self.alt_tab_active = false;
-                    // Alt released after Alt+Tab — nothing else to do
                 }
             }
-            125 | 126 => {
+            133 | 134 => {
                 self.meta_pressed = pressed;
             }
             _ => {}
@@ -1835,11 +1833,11 @@ impl LookingGlass {
 
         // If context menu is visible, route keyboard navigation to it
         if self.context_menu.visible && pressed {
-            // Linux keycodes: 103=Up, 108=Down, 28=Enter, 1=Escape
+            // XKB keycodes: 111=Up, 116=Down, 36=Enter, 9=Escape
             match linux_key {
-                103 => { self.context_menu.select_prev(); return; }
-                108 => { self.context_menu.select_next(); return; }
-                28 => {
+                111 => { self.context_menu.select_prev(); return; }
+                116 => { self.context_menu.select_next(); return; }
+                36 => {
                     if let Some(action) = self.context_menu.confirm_selection() {
                         self.execute_menu_action(action);
                     }
@@ -1880,8 +1878,9 @@ impl LookingGlass {
 
         if pressed {
             // 1-9 — save bookmark; 0 — save slot 9
-            if linux_key >= 2 && linux_key <= 10 {
-                let slot = (linux_key - 2) as usize;
+            // XKB keycodes: 10='1', 11='2', ..., 18='9', 19='0'
+            if linux_key >= 10 && linux_key <= 18 {
+                let slot = (linux_key - 10) as usize;
                 if self.scene.selected_id.is_some() {
                     self.save_bookmark(slot);
                 } else {
@@ -1889,7 +1888,7 @@ impl LookingGlass {
                 }
                 return;
             }
-            if linux_key == 11 {
+            if linux_key == 19 {
                 if self.scene.selected_id.is_some() {
                     self.save_bookmark(9);
                 } else {
