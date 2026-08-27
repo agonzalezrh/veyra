@@ -1007,13 +1007,13 @@ impl LookingGlass {
         for toplevel in &self.toplevels {
             if toplevel.lifecycle == SurfaceLifecycle::Mapped || toplevel.lifecycle == SurfaceLifecycle::Configured {
                 let surface = toplevel.toplevel.wl_surface();
-                let _ = with_states(surface, |states| {
-                    let attrs = states.cached_state.get::<SurfaceAttributes>();
-                    let callbacks = &mut attrs.current().frame_callbacks;
-                    for cb in callbacks.iter() {
+                with_states(surface, |states| {
+                    let mut attrs = states.cached_state.get::<SurfaceAttributes>();
+                    let current = attrs.current();
+                    for cb in &current.frame_callbacks {
                         cb.done(time);
                     }
-                    callbacks.clear();
+                    current.frame_callbacks.clear();
                 });
             }
         }
