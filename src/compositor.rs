@@ -1196,13 +1196,20 @@ impl LookingGlass {
             let state = if pressed { KeyState::Pressed } else { KeyState::Released };
             // Ensure keyboard focus is on the right surface
             kh_handle.set_focus(self, Some(wl_surface), serial);
+            let xkb_keycode = Keycode::new(key);
             let _ = kh_handle.input::<(), _>(
                 self,
-                Keycode::new(key),
+                xkb_keycode,
                 state,
                 serial,
                 time,
-                |_, _, _| FilterResult::Forward,
+                |_, mods, sym| {
+                    let name = std::ffi::CStr::from_ptr(unsafe {
+                        xkbcommon::xkb::keysym_get_name(sym.modified_sym())
+                    }).to_string_lossy().into_owned();
+                    info!(?key, code = %name, mods = ?mods, "xkb key");
+                    FilterResult::Forward
+                },
             );
             let _ = self.display_handle.flush_clients();
             return;
