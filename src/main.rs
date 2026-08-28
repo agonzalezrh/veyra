@@ -178,22 +178,24 @@ fn main() {
 
     // Event-driven render scheduler — no periodic polling.
     // The timer stays registered permanently, re-arming itself every time it
-    // fires. When idle it uses a 100ms timeout so schedule_render() from
-    // Wayland dispatch is picked up promptly without busy-waiting.
+    // fires. The timer only animates when the compositor has active
+    // transitions or auto-orbit. Client-triggered rendering is handled
+    // by the Wayland dispatch source above, which renders immediately.
     use smithay::reexports::calloop::timer::{Timer, TimeoutAction};
     let render_timer = Timer::from_duration(std::time::Duration::ZERO);
     handle
         .insert_source(render_timer, |_, _, state| {
+            // Don't render if nothing needs rendering. The dispatch
+            // source already handles client-triggered renders.
             if state.scheduler.needs_render() {
                 state.render();
             }
-            // Always reschedule — never drop the timer. Otherwise
-            // schedule_render() called after the timer goes idle
-            // would never trigger a render (the source is gone).
+            // Reschedule only when animating — not when idle.
+            // Dispatch source marks dirty when client work arrives.
             if state.scheduler.needs_render() {
                 TimeoutAction::ToDuration(std::time::Duration::from_millis(16))
             } else {
-                TimeoutAction::ToDuration(std::time::Duration::from_millis(16))
+                TimeoutAction::ToDuration(std::time::Duration::from_millis(100))
             }
         })
         .expect("Failed to register render timer");
