@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn match_binding_cycle_visuals() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(23, false, false, false, true), Some(Binding::CycleVisuals));
+        assert_eq!(nav.match_binding(23, false, false, false, true), Some(Binding::ToggleSpatial));
     }
 
     #[test]

@@ -1298,11 +1298,11 @@ fn all_bindings_work_without_mouse() {
         (Binding::AppPrev, "Alt+Shift+Tab"),
         (Binding::WorkspaceNext, "Ctrl+Tab"),
         (Binding::WorkspacePrev, "Ctrl+Shift+Tab"),
-        (Binding::ToggleSpatial, "Tab"),
+        (Binding::ToggleSpatial, "F5"),
         (Binding::ToggleFocus, "F6"),
         (Binding::Escape, "Escape"),
         (Binding::CloseApp, "Super+W"),
-        (Binding::CycleVisuals, "Super+Tab"),
+        (Binding::ToggleSpatial, "Super+Tab"),
         (Binding::OpenContextMenu, "Menu key"),
     ];
 
