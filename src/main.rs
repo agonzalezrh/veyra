@@ -114,17 +114,11 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
-    // Always add the standard producers
-    if let Some(prod) = HostileCheckerboard::new(
-        state.backend.as_mut().map(|b| b.renderer()).unwrap(),
-    ) {
-        state.add_producer(Box::new(prod));
-    }
-    if let Some(prod) = simulated::SimulatedFrameProducer::new(
-        state.backend.as_mut().map(|b| b.renderer()).unwrap(),
-    ) {
-        state.add_producer(Box::new(prod));
-    }
+    // Standard producers are disabled when Wayland clients are connected.
+    // They were useful during development but add unnecessary rendering
+    // overhead (texture imports, scene changes, producer glitch errors)
+    // when real Wayland applications are running.
+    // Enable with environment variables if needed.
 
     // Create benchmark producers first, then add them to the state
     let mut bench_producers: Vec<Box<dyn producer::FrameProducer>> = Vec::new();
