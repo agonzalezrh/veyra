@@ -163,14 +163,9 @@ fn main() {
             Generic::new(display, Interest::READ, Mode::Level),
             |_, display, state| {
                 let inner = unsafe { display.get_mut() };
-                let dispatched = inner.dispatch_clients(state).unwrap_or(0);
+                let _ = inner.dispatch_clients(state);
                 let _ = inner.flush_clients();
                 state.schedule_render();
-                // Render immediately when actual client work was processed,
-                // rather than waiting up to 16ms for the next timer tick.
-                if dispatched > 0 {
-                    state.render();
-                }
                 Ok(PostAction::Continue)
             },
         )

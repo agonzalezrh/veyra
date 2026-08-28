@@ -89,7 +89,6 @@ impl NavigationModel {
             (SendToShelf,            KeyBinding::meta(keys::DOWN)),
             (Launcher,               KeyBinding::meta(keys::SPACE)),
             (CloseApp,               KeyBinding::meta(keys::W)),
-            (CycleVisuals,           KeyBinding::meta(keys::TAB)),
             (HelpOverlay,            KeyBinding::meta(keys::SLASH)),
         ];
         NavigationModel { bindings }
