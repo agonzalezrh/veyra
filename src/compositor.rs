@@ -1163,10 +1163,12 @@ impl LookingGlass {
                     };
                     match kind {
                         PointerEventKind::Motion => {
+                            self.last_wayland_focus = Some(wl_surface.clone());
                             ph.motion(self, Some((wl_surface.clone(), pos)), &mot_ev);
                             ph.frame(self);
                         }
                         PointerEventKind::Down | PointerEventKind::Up => {
+                            self.last_wayland_focus = Some(wl_surface.clone());
                             ph.motion(self, Some((wl_surface.clone(), pos)), &mot_ev);
                             ph.button(self, &btn_ev);
                             ph.frame(self);
@@ -1244,6 +1246,19 @@ impl LookingGlass {
             }
         }
         None
+    }
+
+    /// After the focused/selected visual was destroyed, transfer keyboard
+    /// focus and selection to the topmost remaining visual in the active
+    /// workspace so keyboard input keeps flowing to a real client.
+    fn refocus_after_close(&mut self) {
+        let ws_ids = self.workspace_manager.active().visual_ids.clone();
+        let replacement = self.scene.pick_focus_replacement(&ws_ids);
+        if replacement != self.scene.focused_id || replacement != self.scene.selected_id {
+            info!(?replacement, "refocusing after close");
+        }
+        self.scene.select(replacement);
+        self.set_keyboard_focus(replacement);
     }
 
     /// Show a context menu at the given screen position for the selected visual.
@@ -1514,67 +1529,75 @@ impl LookingGlass {
         }
     }
 
-    /// Route hover (pointer motion without button) to the visual under cursor.
-    /// Picks the visual via 3D ray cast, computes UV, emits Wayland pointer
-    /// motion events. Correctly handles enter/leave transitions via Smithay's
-    /// PointerHandle::motion (changing the focus surface triggers leave/enter).
-    /// Route hover (pointer motion without button) to Wayland surfaces.
-    /// Updates pointer focus based on 3D ray hit testing. Only emits
-    /// enter/leave transitions when the hovered surface ACTUALLY changes
-    /// (debounces against last_wayland_focus). Never clears focus from
-    /// hover alone — that avoids flickering with non-Wayland visuals.
-    fn route_hover(&mut self, x: f64, y: f64) {
+    /// Pick the Wayland surface under the given screen position via 3D ray cast.
+    /// Returns (visual id, surface, surface-local content position).
+    /// Returns None when the cursor is over empty space, a title bar, or a
+    /// non-Wayland visual.
+    fn pick_wayland_target(
+        &self,
+        x: f64,
+        y: f64,
+    ) -> Option<(VisualId, WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)> {
         let (w, h) = self.window_size;
-        if w <= 0.0 || h <= 0.0 { return; }
+        if w <= 0.0 || h <= 0.0 { return None; }
         let ndc_x = (x as f32 / w) * 2.0 - 1.0;
         let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
         let pv = self.proj_view();
 
+        let ws_visible = self.workspace_manager.active().visual_ids.as_slice();
+        let (vid, _) = self.scene.pick_visible(&pv, ndc_x, ndc_y, ws_visible)?;
+        if !self.scene.is_active(vid) { return None; }
+        let wl_surface = self.wayland_surfaces.get(&vid).cloned()?;
+        let v = self.scene.visuals.iter().find(|v| v.id == vid)?;
+        let transform = v.transform.clone();
+        let total_w = v.total_width();
+        let total_h = v.total_height();
+        let (u, uv) = input_router::screen_to_visual_uv(
+            &pv, ndc_x, ndc_y, &transform, total_w, total_h,
+        )?;
+        let title_frac = 0.06f64 / 1.06f64;
+        if uv < title_frac {
+            return None; // title bar — not content
+        }
+        let content_v = ((uv - title_frac) / (1.0 - title_frac)).clamp(0.0, 1.0);
+        let px = u.clamp(0.0, 1.0) * v.geometry.size.w as f64;
+        let py = content_v * v.geometry.size.h as f64;
+        Some((vid, wl_surface, (px, py).into()))
+    }
+
+    /// Route hover (pointer motion without button) to Wayland surfaces.
+    /// Updates pointer focus based on 3D ray hit testing. Only emits
+    /// enter/leave transitions when the hovered surface ACTUALLY changes.
+    /// Sends a pointer leave when the cursor moves off all surfaces so
+    /// clients do not believe the pointer is still inside them.
+    fn route_hover(&mut self, x: f64, y: f64) {
         let ph = match self.pointer_handle.clone() {
             Some(ph) => ph,
             None => return,
         };
 
-        // Pick the visual under cursor via 3D ray cast, filtered by active workspace
-        let ws_visible = self.workspace_manager.active().visual_ids.as_slice();
-        let picked = self.scene.pick_visible(&pv, ndc_x, ndc_y, ws_visible);
-        if let Some((vid, _)) = picked {
-            self.scene.hovered_id = Some(vid);
-        } else {
-            self.scene.hovered_id = None;
+        let target = self.pick_wayland_target(x, y);
+        match &target {
+            Some((vid, _, _)) => self.scene.hovered_id = Some(*vid),
+            None => self.scene.hovered_id = None,
         }
 
-        let (vid, wl_surface, pos) = match picked {
-            Some((vid, _)) if self.scene.is_active(vid) => {
-                if let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() {
-                    if let Some(v) = self.scene.visuals.iter().find(|v| v.id == vid) {
-                        let transform = v.transform.clone();
-                        let total_w = v.total_width();
-                        let total_h = v.total_height();
-                        if let Some((u, uv)) = input_router::screen_to_visual_uv(
-                            &pv, ndc_x, ndc_y, &transform, total_w, total_h,
-                        ) {
-                            let title_frac = 0.06f64 / 1.06f64;
-                            if uv < title_frac {
-                                self.scene.hovered_id = None;
-                                return;
-                            } // title bar
-                            let content_v = (uv - title_frac) / (1.0 - title_frac);
-                            let px = u.clamp(0.0, 1.0) * v.geometry.size.w as f64;
-                            let py = content_v.clamp(0.0, 1.0) * v.geometry.size.h as f64;
-                            let pos: smithay::utils::Point<f64, smithay::utils::Logical> = (px, py).into();
-                            (vid, wl_surface, pos)
-                        } else { return; }
-                    } else { return; }
-                } else { return; }
+        let Some((vid, wl_surface, pos)) = target else {
+            // Cursor left all client surfaces — emit pointer leave.
+            if self.last_wayland_focus.take().is_some() {
+                let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
+                let mot_ev = MotionEvent {
+                    location: global_pos,
+                    serial: self.next_serial(),
+                    time: now_ms(),
+                };
+                ph.motion(self, None, &mot_ev);
             }
-            _ => return, // no visual, no Wayland surface, or inactive
+            return;
         };
 
-        // Track last surface for later reference. PointerHandle::motion
-        // handles enter/leave internally — same surface = motion;
-        // different surface = leave old + enter new. We always call
-        // motion to update cursor position within the current surface.
+        // PointerHandle::motion handles enter/leave internally — same
+        // surface = motion; different surface = leave old + enter new.
         self.last_wayland_focus = Some(wl_surface.clone());
         let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
         let mot_ev = MotionEvent {
@@ -1669,6 +1692,44 @@ impl LookingGlass {
     /// Zoom camera (scroll).
     pub fn handle_zoom(&mut self, delta: f64) {
         self.camera.handle_zoom(delta);
+    }
+
+    /// Handle a pointer axis (scroll) event at the given screen position.
+    ///
+    /// Scroll is routed to the Wayland surface under the cursor (terminals,
+    /// browsers scroll their content). Only when no client surface is under
+    /// the cursor does the camera zoom (the pre-existing global behavior).
+    pub fn handle_axis(&mut self, x: f64, y: f64, dx: f64, dy: f64) {
+        let Some(ph) = self.pointer_handle.clone() else {
+            self.camera.handle_zoom(dy);
+            return;
+        };
+
+        if let Some((_, wl_surface, pos)) = self.pick_wayland_target(x, y) {
+            // Ensure pointer focus is on the target surface before axis events.
+            self.last_wayland_focus = Some(wl_surface.clone());
+            let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
+            let mot_ev = MotionEvent {
+                location: global_pos,
+                serial: self.next_serial(),
+                time: now_ms(),
+            };
+            ph.motion(self, Some((wl_surface, pos)), &mot_ev);
+
+            let time = now_ms();
+            let frame = smithay::input::pointer::AxisFrame::new(time)
+                .source(smithay::backend::input::AxisSource::Wheel)
+                .value(smithay::backend::input::Axis::Horizontal, dx)
+                .value(smithay::backend::input::Axis::Vertical, dy);
+            ph.axis(self, frame);
+            ph.frame(self);
+        } else {
+            if dx.abs() > dy.abs() {
+                self.camera.handle_zoom(dx);
+            } else {
+                self.camera.handle_zoom(dy);
+            }
+        }
     }
 
     /// Save camera bookmark.
@@ -1880,22 +1941,12 @@ impl LookingGlass {
         }
 
         if pressed {
-            use crate::keys;
-            // 1-9 — save bookmark; 0 — save slot 9
-            if linux_key >= keys::K1 && linux_key <= keys::K9 {
-                let slot = (linux_key - 10) as usize;
+            // Meta+1..9 — save bookmark (with selection); Meta+1..0 — restore
+            if let Some(slot) = crate::navigation::bookmark_slot(linux_key, self.meta_pressed) {
                 if self.scene.selected_id.is_some() {
                     self.save_bookmark(slot);
                 } else {
                     self.restore_bookmark(slot);
-                }
-                return;
-            }
-            if linux_key == 19 {
-                if self.scene.selected_id.is_some() {
-                    self.save_bookmark(9);
-                } else {
-                    self.restore_bookmark(9);
                 }
                 return;
             }
@@ -2317,9 +2368,14 @@ impl XdgShellHandler for LookingGlass {
             let mut info = self.toplevels.remove(idx);
             info.lifecycle = SurfaceLifecycle::Destroyed;
             if let Some(vid) = info.visual_id {
+                let was_focused = self.scene.focused_id == Some(vid)
+                    || self.scene.selected_id == Some(vid);
                 self.app_switcher.unregister_visual(&info.app_id, vid);
                 self.shelf.remove(vid);
                 cleanup_visual_permanently(self, vid);
+                if was_focused {
+                    self.refocus_after_close();
+                }
             }
             info!(
                 app_id = %info.app_id,

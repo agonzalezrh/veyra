@@ -590,6 +590,18 @@ impl Scene {
         }
     }
 
+    /// Pick a sensible focus replacement after the focused visual was
+    /// destroyed: the topmost remaining active visual (highest draw order,
+    /// i.e. most recently raised) among the given workspace members.
+    /// Returns None when the workspace has no remaining active visuals.
+    pub fn pick_focus_replacement(&self, workspace_ids: &[VisualId]) -> Option<VisualId> {
+        pick_replacement_from(
+            self.visuals.iter().map(|v| v.id),
+            workspace_ids,
+            |id| self.is_active(id),
+        )
+    }
+
     // ── Stacking order ────────────────────────────────────────────────
     //
     // Stacking order is determined by position in visuals[]:
@@ -1469,3 +1481,20 @@ mod scenario {
     }
 }
 
+
+/// Pure selection rule for focus replacement after a window closes:
+/// the topmost remaining visual in draw order (last wins) that belongs
+/// to the workspace and is active. Split from `Scene::pick_focus_replacement`
+/// so the rule is unit-testable without GPU-backed visuals.
+pub fn pick_replacement_from(
+    draw_order: impl IntoIterator<Item = VisualId>,
+    workspace_ids: &[VisualId],
+    is_active: impl Fn(VisualId) -> bool,
+) -> Option<VisualId> {
+    draw_order
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .find(|id| workspace_ids.contains(id) && is_active(*id))
+}

@@ -1430,3 +1430,103 @@ fn render_not_called_from_wayland_dispatch() {
     assert!(s.needs_render(),
         "Wayland dispatch should only schedule, not render");
 }
+
+// ── H6: Input & interaction completion regression tests ─────────────
+
+#[test]
+fn plain_q_w_digit_keys_are_not_compositor_bindings() {
+    // Regression for the q/w/1/2 shortcut collision: typing ordinary
+    // characters into a client must never trigger compositor actions.
+    // q(24) w(25) 1(10) 2(11) 0(19) with every modifier combination
+    // except Meta must match no binding.
+    let nav = crate::navigation::NavigationModel::new();
+    let plain_keys = [24u32, 25, 10, 11, 19];
+    for key in plain_keys {
+        assert_eq!(
+            nav.match_binding(key, false, false, false, false),
+            None,
+            "plain key {} must not be a compositor binding",
+            key
+        );
+        assert_eq!(
+            nav.match_binding(key, true, false, false, false),
+            None,
+            "ctrl+{} must be forwarded to clients",
+            key
+        );
+        assert_eq!(
+            nav.match_binding(key, false, true, false, false),
+            None,
+            "shift+{} must be forwarded to clients",
+            key
+        );
+        assert_eq!(
+            nav.match_binding(key, false, false, true, false),
+            None,
+            "alt+{} must be forwarded to clients",
+            key
+        );
+    }
+}
+
+#[test]
+fn bookmark_slots_require_meta_modifier() {
+    use crate::navigation::bookmark_slot;
+
+    // Plain digits are never intercepted (typed into clients).
+    assert_eq!(bookmark_slot(10, false), None, "plain 1 must reach client");
+    assert_eq!(bookmark_slot(11, false), None, "plain 2 must reach client");
+    assert_eq!(bookmark_slot(19, false), None, "plain 0 must reach client");
+
+    // Non-digit keys never map to bookmark slots, even with Meta.
+    assert_eq!(bookmark_slot(24, true), None, "meta+q is not a bookmark");
+    assert_eq!(bookmark_slot(25, true), None, "meta+w is not a bookmark");
+
+    // Meta+digit row maps to slots: 1->0 ... 9->8, 0->9.
+    assert_eq!(bookmark_slot(10, true), Some(0));
+    assert_eq!(bookmark_slot(11, true), Some(1));
+    assert_eq!(bookmark_slot(18, true), Some(8));
+    assert_eq!(bookmark_slot(19, true), Some(9));
+}
+
+#[test]
+fn focus_replacement_picks_topmost_remaining_in_workspace() {
+    use crate::scene::pick_replacement_from;
+
+    let a = VisualId(2001);
+    let b = VisualId(2002);
+    let c = VisualId(2003);
+    let all = [a, b, c];
+    let ws_ids = [a, b, c];
+
+    // Destroyed visual is already removed from the scene by cleanup:
+    // draw order [a, b] after losing the topmost visual c.
+    let remaining = [a, b];
+    let replacement = pick_replacement_from(remaining.iter().copied(), &ws_ids, |_| true);
+    assert_eq!(replacement, Some(b), "topmost remaining visual wins");
+
+    // Full draw order: topmost (last) wins.
+    assert_eq!(
+        pick_replacement_from(all.iter().copied(), &ws_ids, |_| true),
+        Some(c)
+    );
+
+    // Empty workspace → no replacement.
+    assert_eq!(
+        pick_replacement_from(std::iter::empty(), &ws_ids, |_| true),
+        None
+    );
+
+    // Visual from another workspace is not eligible.
+    let other_ws = [VisualId(9999)];
+    assert_eq!(
+        pick_replacement_from(all.iter().copied(), &other_ws, |_| true),
+        None
+    );
+
+    // Inactive (disconnected) visuals are not eligible.
+    assert_eq!(
+        pick_replacement_from(remaining.iter().copied(), &ws_ids, |id| id != b),
+        Some(a)
+    );
+}

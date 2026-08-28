@@ -252,11 +252,8 @@ fn main() {
                     InputEvent::PointerAxis { event } => {
                         let v = event.amount(Axis::Vertical).unwrap_or(0.0);
                         let h = event.amount(Axis::Horizontal).unwrap_or(0.0);
-                        if v.abs() > h.abs() {
-                            state.handle_zoom(v);
-                        } else {
-                            state.handle_zoom(h);
-                        }
+                        let (mx, my) = state.last_mouse;
+                        state.handle_axis(mx, my, h, v);
                         state.schedule_render();
                     }
                     _ => {}

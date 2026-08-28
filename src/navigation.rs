@@ -111,6 +111,28 @@ impl Default for NavigationModel {
     }
 }
 
+/// Determine which camera bookmark slot (0-9) a key activates, if any.
+///
+/// Bookmark keys are the digit row (XKB 10-18 for 1-9, 19 for 0) and
+/// REQUIRE the Meta modifier. Plain digits and Ctrl/Alt/Shift+digit
+/// combinations must be forwarded to the focused client.
+///
+/// The first 9 slots (1-9) save when a visual is selected and restore
+/// otherwise; slot 0 (key 0) is always available.
+pub fn bookmark_slot(key: u32, meta: bool) -> Option<usize> {
+    if !meta {
+        return None;
+    }
+    use crate::keys;
+    if key >= keys::K1 && key <= keys::K9 {
+        Some((key - keys::K1) as usize)
+    } else if key == keys::K0 {
+        Some(9)
+    } else {
+        None
+    }
+}
+
 /// The deterministic escape chain priority:
 /// 1. Cancel drag
 /// 2. Exit workspace overview
