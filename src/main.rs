@@ -3,6 +3,7 @@ mod app_switcher;
 mod arrange;
 mod bench;
 mod backend;
+mod keys;
 mod capabilities;
 mod compositor;
 mod config;

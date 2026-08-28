@@ -62,32 +62,29 @@ pub struct NavigationModel {
 
 impl NavigationModel {
     pub fn new() -> Self {
-        // XKB keycodes (Linux evdev + 8):
-        // 23=Tab, 24=Q, 32=O, 33=P, 36=Enter, 40=D, 41=F, 66=M,
-        // 67=F1, 68=F2, 69=F3, 71=F5, 72=F6,
-        // 110=Home, 111=Up, 116=Down, 135=Menu, 65=Space, 61=/
+        use crate::keys;
         use Binding::*;
         let bindings = vec![
-            (ToggleSpatial,          KeyBinding::new(23)),               // Tab
-            (ToggleSpatial,          KeyBinding::new(71)),               // F5
-            (ToggleFocus,            KeyBinding::new(72)),               // F6
-            (ToggleOverview,         KeyBinding::new(32)),               // O
-            (ToggleWorkspaceOverview,KeyBinding::new(33)),               // P
-            (WorkspaceNext,          KeyBinding::ctrl(23)),              // Ctrl+Tab
-            (WorkspacePrev,          KeyBinding::ctrl_shift(23)),        // Ctrl+Shift+Tab
-            (AppNext,                KeyBinding::alt(23)),               // Alt+Tab
-            (AppPrev,                KeyBinding::alt_shift(23)),         // Alt+Shift+Tab
-            (DeEmphasize,            KeyBinding::new(66)),               // M
-            (FrameSelected,          KeyBinding::new(41)),               // F
-            (FrameAll,               KeyBinding::new(110)),              // Home
-            (ToggleShelf,            KeyBinding::meta(40)),              // Meta+D
-            (SendToShelf,            KeyBinding::meta(116)),             // Meta+Down
-            (Launcher,               KeyBinding::meta(65)),              // Meta+Space
-            (Escape,                 KeyBinding::new(9)),                // Escape
-            (CloseApp,               KeyBinding::meta(25)),              // Meta+W (25 = XKB W)
-            (CycleVisuals,           KeyBinding::meta(23)),              // Meta+Tab
-            (OpenContextMenu,        KeyBinding::new(135)),              // Menu key
-            (HelpOverlay,            KeyBinding::meta(61)),              // Meta+/
+            (ToggleSpatial,          KeyBinding::new(keys::TAB)),
+            (ToggleSpatial,          KeyBinding::new(keys::F5)),
+            (ToggleFocus,            KeyBinding::new(keys::F6)),
+            (ToggleOverview,         KeyBinding::new(keys::O)),
+            (ToggleWorkspaceOverview,KeyBinding::new(keys::P)),
+            (WorkspaceNext,          KeyBinding::ctrl(keys::TAB)),
+            (WorkspacePrev,          KeyBinding::ctrl_shift(keys::TAB)),
+            (AppNext,                KeyBinding::alt(keys::TAB)),
+            (AppPrev,                KeyBinding::alt_shift(keys::TAB)),
+            (DeEmphasize,            KeyBinding::new(keys::M)),
+            (FrameSelected,          KeyBinding::new(keys::F)),
+            (FrameAll,               KeyBinding::new(keys::HOME)),
+            (ToggleShelf,            KeyBinding::meta(keys::D)),
+            (SendToShelf,            KeyBinding::meta(keys::DOWN)),
+            (Launcher,               KeyBinding::meta(keys::SPACE)),
+            (Escape,                 KeyBinding::new(keys::ESCAPE)),
+            (CloseApp,               KeyBinding::meta(keys::W)),
+            (CycleVisuals,           KeyBinding::meta(keys::TAB)),
+            (OpenContextMenu,        KeyBinding::new(keys::MENU)),
+            (HelpOverlay,            KeyBinding::meta(keys::SLASH)),
         ];
         NavigationModel { bindings }
     }
