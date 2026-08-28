@@ -180,11 +180,7 @@ fn main() {
     let render_timer = Timer::from_duration(std::time::Duration::ZERO);
     handle
         .insert_source(render_timer, |_, _, state| {
-            // Don't render if nothing needs rendering. The dispatch
-            // source already handles client-triggered renders.
-            if state.scheduler.needs_render() {
-                state.render();
-            }
+            state.render();
             TimeoutAction::ToDuration(std::time::Duration::from_millis(16))
         })
         .expect("Failed to register render timer");
