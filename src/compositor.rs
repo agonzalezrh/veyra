@@ -841,12 +841,10 @@ impl LookingGlass {
     pub fn render(&mut self) {
         use crate::perf::PipelineStage;
 
-        // Check if a render is actually needed
-        if !self.scheduler.needs_render() {
-            self.perf.record_dropped();
-            self.perf.record_idle();
-            return;
-        }
+        // Always render to complete pending wl_surface.frame callbacks.
+        // If nothing changed, begin_frame/render_scene/finish_frame are
+        // still required to send callback.done() to waiting clients.
+        // Without this, foot and other clients stall waiting for callbacks.
 
         // Clear stale focus: if the focused visual has been destroyed, clean up
         self.clear_stale_focus();
