@@ -1021,6 +1021,13 @@ impl LookingGlass {
             }
         }
 
+        // Flush protocol events generated during this frame (frame callbacks,
+        // input forwarding, configure events). libwayland buffers them; without
+        // an explicit flush they are only delivered when the client itself
+        // sends traffic, so clients pacing rendering with wl_surface.frame()
+        // (e.g. foot) stall until the next input event.
+        let _ = self.display_handle.flush_clients();
+
         self.scene.clear_damage();
 
         self.perf.record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
