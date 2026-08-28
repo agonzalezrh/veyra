@@ -64,26 +64,32 @@ impl NavigationModel {
     pub fn new() -> Self {
         use crate::keys;
         use Binding::*;
+        // Plain key bindings (no modifier required — safe for compositor):
+        // These interfere minimal with normal typing: Tab, F-keys, Escape,
+        // Home, Menu. All letter/number shortcuts require a modifier.
         let bindings = vec![
-            (ToggleSpatial,          KeyBinding::new(keys::TAB)),
             (ToggleSpatial,          KeyBinding::new(keys::F5)),
             (ToggleFocus,            KeyBinding::new(keys::F6)),
-            (ToggleOverview,         KeyBinding::new(keys::O)),
-            (ToggleWorkspaceOverview,KeyBinding::new(keys::P)),
             (WorkspaceNext,          KeyBinding::ctrl(keys::TAB)),
             (WorkspacePrev,          KeyBinding::ctrl_shift(keys::TAB)),
             (AppNext,                KeyBinding::alt(keys::TAB)),
             (AppPrev,                KeyBinding::alt_shift(keys::TAB)),
-            (DeEmphasize,            KeyBinding::new(keys::M)),
-            (FrameSelected,          KeyBinding::new(keys::F)),
+            (Escape,                 KeyBinding::new(keys::ESCAPE)),
             (FrameAll,               KeyBinding::new(keys::HOME)),
+            (OpenContextMenu,        KeyBinding::new(keys::MENU)),
+            // Modifier-required bindings — these use modifier keys to avoid
+            // intercepting ordinary typing. Meta is the primary compositor
+            // modifier, with Alt for window management.
+            (ToggleOverview,         KeyBinding::meta(keys::O)),
+            (ToggleWorkspaceOverview,KeyBinding::meta(keys::P)),
+            (ToggleSpatial,          KeyBinding::meta(keys::TAB)),
+            (DeEmphasize,            KeyBinding::meta(keys::M)),
+            (FrameSelected,          KeyBinding::meta(keys::F)),
             (ToggleShelf,            KeyBinding::meta(keys::D)),
             (SendToShelf,            KeyBinding::meta(keys::DOWN)),
             (Launcher,               KeyBinding::meta(keys::SPACE)),
-            (Escape,                 KeyBinding::new(keys::ESCAPE)),
             (CloseApp,               KeyBinding::meta(keys::W)),
             (CycleVisuals,           KeyBinding::meta(keys::TAB)),
-            (OpenContextMenu,        KeyBinding::new(keys::MENU)),
             (HelpOverlay,            KeyBinding::meta(keys::SLASH)),
         ];
         NavigationModel { bindings }
@@ -172,7 +178,7 @@ mod tests {
     #[test]
     fn match_binding_toggle_spatial() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(23, false, false, false, false), Some(Binding::ToggleSpatial));
+        assert_eq!(nav.match_binding(23, false, false, false, true), Some(Binding::ToggleSpatial));
     }
 
     #[test]
