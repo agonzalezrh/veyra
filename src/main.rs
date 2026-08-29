@@ -27,6 +27,7 @@ mod pointer_constraints;
 mod producer;
 mod recovery;
 mod renderer;
+mod resize;
 mod scene;
 mod scheduler;
 mod session;

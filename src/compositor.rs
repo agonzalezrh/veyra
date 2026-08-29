@@ -47,6 +47,7 @@ use smithay::wayland::shell::xdg::ToplevelSurface;
 use smithay::wayland::shell::xdg::XdgShellHandler;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
+use smithay::wayland::shell::xdg::SurfaceCachedState;
 use smithay::wayland::shm::ShmHandler;
 use smithay::wayland::shm::ShmState;
 use std::collections::HashMap;
@@ -239,6 +240,8 @@ pub struct LookingGlass {
     /// Veyra-owned intent for client geometry changes (I3a). Protocol
     /// state (configure serials, ACKs) remains owned by Smithay.
     pub client_resizes: crate::client_resize::ClientResizeCoordinator,
+    /// In-progress pointer resize session (I3b), None when idle.
+    pub resize_session: Option<crate::resize::ResizeSession>,
     /// Relative pointer manager for sending relative motion deltas.
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
     /// DMA-BUF buffer import state.
@@ -358,6 +361,7 @@ impl LookingGlass {
             closed_windows: crate::closed::ClosedWindowHistory::new(10),
             pending_reopen: None,
             client_resizes: crate::client_resize::ClientResizeCoordinator::default(),
+            resize_session: None,
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<LookingGlass>(display_handle),
             dmabuf_manager: crate::dmabuf::DmabufManager::new(display_handle),
         }
@@ -750,6 +754,9 @@ impl LookingGlass {
                         match self.client_resizes.note_commit(vid, (tex_size.w as i32, tex_size.h as i32)) {
                             crate::client_resize::CommitOutcome::Fulfilled => {
                                 info!(?vid, w = tex_size.w, h = tex_size.h, "client resize fulfilled");
+                                // Client pacing (I3b): continue with the
+                                // latest desired size, if the session moved on.
+                                self.flush_resize_desired(vid);
                             }
                             crate::client_resize::CommitOutcome::ClientOverride => {
                                 info!(?vid, w = tex_size.w, h = tex_size.h, "client overrode requested size; adopting committed geometry");
@@ -1174,13 +1181,28 @@ impl LookingGlass {
         let pv = self.proj_view();
 
         let data = self.scene.visuals.iter().find(|v| v.id == vid).map(|v| {
-            (v.transform.clone(), v.total_width(), v.total_height(), v.decoration.title_bar_height)
+            (v.transform.clone(), v.total_width(), v.total_height(), v.decoration.title_bar_height, v.geometry.size)
         });
-        let Some((transform, gw, gh, title_h)) = data else { return ContentRouting::NoTarget };
+        let Some((transform, gw, gh, title_h, geom_size)) = data else { return ContentRouting::NoTarget };
 
         if let Some((u, v)) = input_router::screen_to_visual_uv(
             &pv, ndc_x, ndc_y, &transform, gw, gh,
         ) {
+            // Resize zones win over title-bar/content routing on pointer
+            // down (I3b). An 8 logical-px band along the decorated border.
+            if kind == PointerEventKind::Down && self.resize_session.is_none() {
+                let band_u = 8.0 / geom_size.w.max(1) as f64;
+                let band_v = 8.0 / (geom_size.h.max(1) as f64 * (1.0 + title_h as f64));
+                if let Some(edges) = crate::resize::hit_test_resize_zone(u, v, band_u, band_v) {
+                    let is_toplevel = self.toplevels.iter().any(|t| t.visual_id == Some(vid));
+                    if is_toplevel {
+                        let start_local = ((u - 0.5) as f32, (0.5 - v) as f32);
+                        if self.begin_resize_session(vid, edges, start_local) {
+                            return ContentRouting::Routed;
+                        }
+                    }
+                }
+            }
             let title_frac = (title_h / (1.0 + title_h)) as f64;
             if v < title_frac {
                 return ContentRouting::TitleBarHit;
@@ -1366,15 +1388,13 @@ impl LookingGlass {
         Some(serial)
     }
 
-    /// Abort an outstanding client resize (pointer release, state reset).
+    /// End a client resize (pointer release).
     ///
-    /// Clears Veyra's intent; if a configure is still unacknowledged the
-    /// Resizing state bit is withdrawn via a follow-up configure so the
-    /// client does not keep an interactive-resize state forever.
+    /// Clears Veyra's intent and always withdraws the Resizing state bit
+    /// via a follow-up configure (size=None: the client keeps its current
+    /// size) so the client does not remain in interactive-resize state.
     pub fn abort_client_resize(&mut self, vid: VisualId) {
-        if !self.client_resizes.abort(vid) {
-            return;
-        }
+        let had_request = self.client_resizes.abort(vid);
         let wl_surface = self.wayland_surfaces.get(&vid).cloned();
         let toplevel = wl_surface.and_then(|wl_surface| {
             self.toplevels.iter()
@@ -1383,24 +1403,142 @@ impl LookingGlass {
         });
         if let Some(toplevel) = toplevel {
             if toplevel.alive() {
-                let unacked = with_states(toplevel.wl_surface(), |states| {
-                    let attrs = states
-                        .data_map
-                        .get::<XdgToplevelSurfaceData>()
-                        .expect("toplevel surface lacks xdg data")
-                        .lock()
-                        .unwrap();
-                    !attrs.pending_configures().is_empty()
+                toplevel.with_pending_state(|state| {
+                    state.size = None;
+                    state.states.unset(xdg_toplevel::State::Resizing);
                 });
-                if unacked {
-                    toplevel.with_pending_state(|state| {
-                        state.states.unset(xdg_toplevel::State::Resizing);
-                    });
-                    let _ = toplevel.send_configure();
-                }
+                let _ = toplevel.send_configure();
             }
         }
-        info!(?vid, "client resize aborted");
+        if had_request {
+            info!(?vid, "client resize aborted");
+        }
+    }
+
+    /// Begin a pointer resize session on a toplevel (I3b).
+    ///
+    /// Freezes the visual's plane frame, axes and client size constraints
+    /// so every later update is deterministic. The visual is detached from
+    /// automatic layout for the duration, like drags are.
+    pub fn begin_resize_session(
+        &mut self,
+        vid: VisualId,
+        edges: crate::resize::ResizeEdges,
+        start_local: (f32, f32),
+    ) -> bool {
+        if self.resize_session.is_some() {
+            return false;
+        }
+        let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() else { return false };
+        if !self.toplevels.iter().any(|t| t.toplevel.wl_surface() == &wl_surface) {
+            return false; // popups are transient and not resizable
+        }
+        let Some(visual) = self.scene.get(vid) else { return false };
+        let start_transform = visual.transform.clone();
+        let start_total = (visual.total_width(), visual.total_height());
+        let start_size = (visual.geometry.size.w, visual.geometry.size.h);
+        if start_total.0 <= 0.0 || start_total.1 <= 0.0 || start_size.0 <= 0 || start_size.1 <= 0 {
+            return false;
+        }
+        let right_axis = start_transform.rotation * cgmath::Vector3::new(1.0, 0.0, 0.0);
+        let up_axis = start_transform.rotation * cgmath::Vector3::new(0.0, 1.0, 0.0);
+
+        // Client-requested size constraints from the surface's cached state.
+        let (min_w, min_h, max_w, max_h) = with_states(&wl_surface, |states| {
+            let attrs = states.cached_state.get::<SurfaceCachedState>().current().clone();
+            (
+                attrs.min_size.w.max(1),
+                attrs.min_size.h.max(1),
+                if attrs.max_size.w > 0 { attrs.max_size.w } else { i32::MAX },
+                if attrs.max_size.h > 0 { attrs.max_size.h } else { i32::MAX },
+            )
+        });
+        let max_size = if max_w == i32::MAX && max_h == i32::MAX {
+            None
+        } else {
+            Some((max_w, max_h))
+        };
+
+        if !self.scene.detached_set.contains(&vid) {
+            self.scene.detached_set.push(vid);
+        }
+        self.resize_session = Some(crate::resize::ResizeSession {
+            vid,
+            edges,
+            start_local,
+            start_total,
+            start_size,
+            start_transform,
+            right_axis,
+            up_axis,
+            min_size: (min_w, min_h),
+            max_size,
+            desired: start_size,
+        });
+        info!(?vid, ?edges, "resize session started");
+        true
+    }
+
+    /// Update the active resize session from a pointer motion event.
+    ///
+    /// Computes the desired size from the frozen session frame, applies the
+    /// anchor-preserving position delta, and sends a configure only when the
+    /// previous transaction has completed (client pacing).
+    fn update_resize_session(&mut self, x: f64, y: f64) {
+        let Some(session) = self.resize_session.clone() else { return };
+        let (w, h) = self.window_size;
+        if w <= 0.0 || h <= 0.0 { return; }
+        let ndc_x = (x as f32 / w) * 2.0 - 1.0;
+        let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
+        let pv = self.proj_view();
+        // Unproject against the FROZEN start transform: the session frame
+        // does not follow the visual as its geometry evolves.
+        let Some(local) = input_router::screen_to_visual_local_point(
+            &pv, ndc_x, ndc_y,
+            &session.start_transform,
+            session.start_total.0,
+            session.start_total.1,
+        ) else { return };
+        let upd = session.update(local);
+        let vid = session.vid;
+
+        // Anchor-preserving position update from the frozen start position.
+        let base = session.start_transform.position;
+        if let Some(visual) = self.scene.get_mut(vid) {
+            visual.transform.position = base + upd.position_delta;
+        }
+
+        if !self.client_resizes.awaiting_ack(vid) {
+            let outstanding = self.client_resizes.entry(vid).map(|e| e.requested);
+            if outstanding != Some(upd.size) {
+                self.begin_client_resize(vid, upd.size.0, upd.size.1);
+            }
+        }
+        if let Some(s) = self.resize_session.as_mut() {
+            s.desired = upd.size;
+        }
+    }
+
+    /// Send the session's pending desired size once the previous configure
+    /// transaction completed (called from ack_configure and handle_commit).
+    fn flush_resize_desired(&mut self, vid: VisualId) {
+        let Some(session) = self.resize_session.as_ref() else { return };
+        if session.vid != vid { return; }
+        if self.client_resizes.awaiting_ack(vid) { return; }
+        let desired = session.desired;
+        let outstanding = self.client_resizes.entry(vid).map(|e| e.requested);
+        if outstanding != Some(desired) {
+            self.begin_client_resize(vid, desired.0, desired.1);
+        }
+    }
+
+    /// Terminate the resize session on pointer release.
+    /// Returns true when a session was active.
+    pub fn finish_resize_session(&mut self) -> bool {
+        let Some(session) = self.resize_session.take() else { return false };
+        self.abort_client_resize(session.vid);
+        info!(vid = ?session.vid, "resize session finished");
+        true
     }
 
     /// Show a context menu at the given screen position for the selected visual.
@@ -1580,6 +1718,11 @@ impl LookingGlass {
     pub fn handle_pointer_up(&mut self, x: f64, y: f64) {
         self.event_serial = self.event_serial.wrapping_add(1);
         self.last_down_vid = None;
+        // Finish a pointer resize before any content routing (I3b).
+        if self.finish_resize_session() {
+            self.schedule_render();
+            return;
+        }
         let has_active = self.interaction.is_dragging();
         self.interaction.handle_pointer_up();
         if !has_active {
@@ -1625,6 +1768,13 @@ impl LookingGlass {
         if self.nav_button == 2 {
             self.workspace_manager.active_mut().auto_orbit = false;
             self.handle_pan(dx, dy);
+            return;
+        }
+        // Pointer resize session (I3b): suppress drag/hover routing while
+        // resizing so pointer focus stays on the resized surface.
+        if self.resize_session.is_some() {
+            self.update_resize_session(x, y);
+            self.schedule_render();
             return;
         }
         self.interaction.window_size = self.window_size;
@@ -1907,6 +2057,10 @@ impl LookingGlass {
         // to the target workspace, leaving stale drag state behind.
         if self.interaction.is_dragging() {
             self.interaction.handle_pointer_up();
+        }
+        // Same for an in-progress resize session (I3b).
+        if let Some(session) = self.resize_session.take() {
+            self.abort_client_resize(session.vid);
         }
 
         let old_id = self.workspace_manager.active_id();
@@ -2499,7 +2653,7 @@ impl XdgShellHandler for LookingGlass {
         info!(?vid, "unfullscreen requested");
     }
 
-    fn ack_configure(&mut self, _surface: WlSurface, configure: Configure) {
+    fn ack_configure(&mut self, surface: WlSurface, configure: Configure) {
         // I3a: mark our outstanding geometry request acknowledged when the
         // serial matches. Smithay remains authoritative for the protocol
         // queue; this only updates Veyra's intent.
@@ -2509,6 +2663,16 @@ impl XdgShellHandler for LookingGlass {
             }
         }
         info!(?configure, "configure acknowledged");
+        // Client pacing (I3b): the completed transaction frees the surface
+        // for the next configure when the session's desired size moved on.
+        if let Configure::Toplevel(_) = &configure {
+            let vid = self.toplevels.iter()
+                .find(|t| t.toplevel.wl_surface() == &surface)
+                .and_then(|t| t.visual_id);
+            if let Some(vid) = vid {
+                self.flush_resize_desired(vid);
+            }
+        }
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
@@ -2649,6 +2813,10 @@ fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
     cleanup_popups_by_vid(state, vid);
     // Drop any outstanding client geometry request (I3a)
     state.client_resizes.abort(vid);
+    // Drop a resize session targeting the removed visual (I3b)
+    if state.resize_session.as_ref().map_or(false, |s| s.vid == vid) {
+        state.resize_session = None;
+    }
     // Remove from all workspaces
     for i in 0..state.workspace_manager.len() {
         if let Some(ws) = state.workspace_manager.get_mut(i) {

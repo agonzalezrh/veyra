@@ -122,15 +122,20 @@ pub fn classify_pointer_target(
     }
 }
 
-/// Convert screen coordinates to visual-local normalized UV coordinates.
-pub fn screen_to_visual_uv(
+/// Convert screen coordinates to a point in the visual's frozen local
+/// frame: (x, y) in world-local units, x right, y up, z the plane normal.
+/// The point is NOT bounds-checked — callers decide whether it lies
+/// within the quad (resize tracking must see the cursor travel past the
+/// original window borders). Returns None when the cursor ray is
+/// parallel to the visual's plane or hits it behind the camera.
+pub fn screen_to_visual_local_point(
     proj_view: &Matrix4<f32>,
     ndc_x: f32,
     ndc_y: f32,
     visual_transform: &crate::scene::Transform3D,
     geom_w: f32,
     geom_h: f32,
-) -> Option<(f64, f64)> {
+) -> Option<(f32, f32)> {
     let inv_pv = proj_view.invert().unwrap_or(Matrix4::identity());
     let near = inv_pv * Vector4::new(ndc_x, ndc_y, -1.0, 1.0);
     let far = inv_pv * Vector4::new(ndc_x, ndc_y, 1.0, 1.0);
@@ -156,12 +161,26 @@ pub fn screen_to_visual_uv(
         return None;
     }
     let hit = lo + ld * t;
-    if hit.x.abs() > 0.5 || hit.y.abs() > 0.5 {
+    Some((hit.x, hit.y))
+}
+
+/// Convert screen coordinates to visual-local normalized UV coordinates.
+pub fn screen_to_visual_uv(
+    proj_view: &Matrix4<f32>,
+    ndc_x: f32,
+    ndc_y: f32,
+    visual_transform: &crate::scene::Transform3D,
+    geom_w: f32,
+    geom_h: f32,
+) -> Option<(f64, f64)> {
+    let hit = screen_to_visual_local_point(
+        proj_view, ndc_x, ndc_y, visual_transform, geom_w, geom_h,
+    )?;
+    if hit.0.abs() > 0.5 || hit.1.abs() > 0.5 {
         return None;
     }
-
-    let u = (hit.x + 0.5) as f64;
-    let v = (1.0 - (hit.y + 0.5)) as f64;
+    let u = (hit.0 + 0.5) as f64;
+    let v = (1.0 - (hit.1 + 0.5)) as f64;
     Some((u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)))
 }
 
