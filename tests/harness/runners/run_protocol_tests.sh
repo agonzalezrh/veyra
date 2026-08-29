@@ -20,7 +20,7 @@ ok "veyra started on $VEYRA_SOCKET"
 
 # ── t1: toplevel lifecycle ───────────────────────────────────────────
 say "t1_lifecycle"
-WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --duration 2500 > "$TMP_DIR/t1.json" 2>"$TMP_DIR/t1.err" &
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --duration 2500 > "$TMP_DIR/t1.json" 2>"$TMP_DIR/t1.err" &
 T1_PID=$!
 wait_process_exit $T1_PID 10
 assert_log "$TMP_DIR/veyra.log" "surface mapped" "t1: veyra mapped the toplevel"
@@ -36,7 +36,7 @@ assert_json "$TMP_DIR/t1.json" \
 
 # ── t2: client owns geometry ─────────────────────────────────────────
 say "t2_client_geometry_authority"
-WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --resize-to 800x600 --after-commits 3 --duration 2500 \
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --resize-to 800x600 --after-commits 3 --duration 2500 \
     > "$TMP_DIR/t2.json" 2>"$TMP_DIR/t2.err" &
 T2_PID=$!
 wait_process_exit $T2_PID 10
@@ -51,11 +51,11 @@ assert_json "$TMP_DIR/t2.json" \
 
 # ── t3: client exit → cleanup + focus replacement ────────────────────
 say "t3_client_exit_cleanup"
-WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --duration 6000 \
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --duration 6000 \
     > "$TMP_DIR/t3a.json" 2>"$TMP_DIR/t3a.err" &
 T3A_PID=$!
 sleep 1.5
-WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --exit-after-commits 1 --duration 3000 \
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --exit-after-commits 1 --duration 3000 \
     > "$TMP_DIR/t3.json" 2>"$TMP_DIR/t3.err" &
 T3_PID=$!
 wait_process_exit $T3_PID 10
@@ -74,7 +74,7 @@ for c in foot weston-terminal weston-simple-shm weston-simple-egl; do
         continue
     fi
     LINES_BEFORE=$(wc -l < "$TMP_DIR/veyra.log")
-    WAYLAND_DISPLAY="$VEYRA_SOCKET" "$c" > "$TMP_DIR/$c.log" 2>&1 &
+    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$c" > "$TMP_DIR/$c.log" 2>&1 &
     CPID=$!
     sleep 3
     if kill -0 $CPID 2>/dev/null; then ok "t4: $c stayed alive"; else bad "t4: $c died"; fi

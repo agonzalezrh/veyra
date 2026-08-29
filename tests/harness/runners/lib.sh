@@ -96,6 +96,14 @@ wait_process_exit() { # pid timeout_s
     return 1
 }
 
+# Private runtime dir for veyra: isolates its wayland socket and
+# persisted state (veyra-state.json) from the host session — otherwise
+# saved window positions break the harness's geometry assumptions.
+setup_veerya_runtime() {
+    VEYRA_RUNTIME="$TMP_DIR/runtime"
+    mkdir -p "$VEYRA_RUNTIME" && chmod 700 "$VEYRA_RUNTIME"
+}
+
 start_weston_headless() { # socket_name
     weston --backend=headless --socket="$1" --width=1280 --height=720 \
         > "$TMP_DIR/weston.log" 2>&1 &
@@ -111,7 +119,11 @@ start_weston_headless() { # socket_name
 strip_ansi() { sed 's/\x1b\[[0-9;]*m//g' "$1" 2>/dev/null; }
 
 start_veyra_nested() { # parent_socket log_file
-    WAYLAND_DISPLAY="$1" "$BIN/veyra" > "$2" 2>&1 &
+    setup_veerya_runtime
+    # veyra is a client of the parent compositor: expose the parent's
+    # socket inside the private runtime dir.
+    ln -sf "$RT/$1" "$VEYRA_RUNTIME/$1"
+    env XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$1" "$BIN/veyra" > "$2" 2>&1 &
     VEYRA_PID=$!
     for _ in $(seq 1 40); do
         VEYRA_SOCKET=$(strip_ansi "$2" | grep -oE "Listening on wayland socket: wayland-[a-z0-9-]+" | tail -1 | awk '{print $NF}')
@@ -124,7 +136,8 @@ start_veyra_nested() { # parent_socket log_file
 
 start_veyra_x11() { # log_file
     # X11 mode: winit must not see a stale WAYLAND_DISPLAY
-    env -u WAYLAND_DISPLAY DISPLAY=:99 "$BIN/veyra" > "$1" 2>&1 &
+    setup_veerya_runtime
+    env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$VEYRA_RUNTIME" DISPLAY=:99 "$BIN/veyra" > "$1" 2>&1 &
     VEYRA_PID=$!
     for _ in $(seq 1 40); do
         VEYRA_SOCKET=$(strip_ansi "$1" | grep -oE "Listening on wayland socket: wayland-[a-z0-9-]+" | tail -1 | awk '{print $NF}')

@@ -69,7 +69,7 @@ xdotool_wid() {
 
 # ── t5: q/w/1/2 regression — compositor must not steal plain keys ────
 say "t5_keyboard_plain_keys_reach_client"
-WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" keyboard --expect q1w2 --duration 8000 \
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" keyboard --expect q1w2 --duration 8000 \
     > "$TMP_DIR/t5.json" 2>"$TMP_DIR/t5.err" &
 T5_PID=$!
 sleep 1.5   # window mapped
@@ -96,7 +96,7 @@ fi
 # scene.focus). This test pins that policy: keys reach the fresh window
 # without any click, and the keyboard focus event precedes key events.
 say "t6_focus_on_map_policy"
-WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" keyboard --duration 4000 > "$TMP_DIR/t6.json" 2>"$TMP_DIR/t6.err" &
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" keyboard --duration 4000 > "$TMP_DIR/t6.json" 2>"$TMP_DIR/t6.err" &
 T6_PID=$!
 sleep 1.5
 DISPLAY=:99 xdotool type z
@@ -107,7 +107,7 @@ assert_json "$TMP_DIR/t6.json" \
 
 # ── t7: pointer events routed to the client surface ──────────────────
 say "t7_pointer_routing"
-WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" pointer --duration 4000 > "$TMP_DIR/t7.json" 2>"$TMP_DIR/t7.err" &
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" pointer --duration 4000 > "$TMP_DIR/t7.json" 2>"$TMP_DIR/t7.err" &
 T7_PID=$!
 sleep 1.5
 DISPLAY=:99 xdotool mousemove $CX $CY
@@ -143,7 +143,7 @@ drag() { # x1 y1 x2 y2
 
 say "t8_resize_edges"
 JSON_DUMP=1
-WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" resizer --duration 9000 --min 300x200 \
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" resizer --duration 9000 --min 300x200 \
     > "$TMP_DIR/t8.json" 2>"$TMP_DIR/t8.err" &
 T8_PID=$!
 sleep 1.5   # mapped at 640x480 → screen rect computed above
@@ -174,7 +174,7 @@ echo "  ---- t8 veyra sessions ----"
 grep -E "resize session" "$TMP_DIR/veyra.log" | sed 's/\x1b\[[0-9;]*m//g' | tail -10 | sed 's/^/    /' 
 
 # typed input still works after resizing (no corrupted state)
-WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" keyboard --expect a --duration 5000 > "$TMP_DIR/t8b.json" 2>/dev/null &
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" keyboard --expect a --duration 5000 > "$TMP_DIR/t8b.json" 2>/dev/null &
 T8B_PID=$!
 sleep 1.5
 WID=$(xdotool_wid)
@@ -189,7 +189,7 @@ assert_json "$TMP_DIR/t8b.json" \
 # ── t9: resize corners (NE, NW, SE, SW) ──────────────────────────────
 say "t9_resize_corners"
 JSON_DUMP=1
-WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" resizer --duration 9000 --min 300x200 \
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" resizer --duration 9000 --min 300x200 \
     > "$TMP_DIR/t9.json" 2>"$TMP_DIR/t9.err" &
 T9_PID=$!
 sleep 1.5
