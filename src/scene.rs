@@ -792,7 +792,6 @@ fn pick_visual_items(
     let near = Vector3::new(near.x / near.w, near.y / near.w, near.z / near.w);
     let far = Vector3::new(far.x / far.w, far.y / far.w, far.z / far.w);
     let dir = (far - near).normalize();
-
     let mut closest: Option<(VisualId, f32)> = None;
     for (id, transform, (gw, gh)) in items {
         let model = Matrix4::from_translation(transform.position)

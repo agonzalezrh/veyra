@@ -6,6 +6,10 @@ rust-version = "1.85"
 description = "A spatial Wayland compositor"
 license = "MIT"
 
+[workspace]
+members = ["tests/harness"]
+resolver = "2"
+
 [dependencies]
 smithay = { version = "0.7", default-features = false, features = [
     "backend_winit",

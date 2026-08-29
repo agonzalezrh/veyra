@@ -180,6 +180,7 @@ impl InteractionController {
             Some(ref ids) => scene.pick_visible(&pv, nx, ny, ids),
             None => scene.pick(&pv, nx, ny),
         };
+
         let Some((vid, _dist)) = picked else {
             scene.select(None);
             return None;

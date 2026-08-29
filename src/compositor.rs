@@ -1334,9 +1334,7 @@ impl LookingGlass {
     fn refocus_after_close(&mut self) {
         let ws_ids = self.workspace_manager.active().visual_ids.clone();
         let replacement = self.scene.pick_focus_replacement(&ws_ids);
-        if replacement != self.scene.focused_id || replacement != self.scene.selected_id {
-            info!(?replacement, "refocusing after close");
-        }
+        info!(?replacement, "refocusing after close");
         self.scene.select(replacement);
         self.set_keyboard_focus(replacement);
     }
