@@ -1789,6 +1789,11 @@ impl LookingGlass {
         if self.pointer_constraints.pointer_locked {
             self.pointer_constraints.unlock();
         }
+        // Terminate any in-progress drag: the dragged visual may not belong
+        // to the target workspace, leaving stale drag state behind.
+        if self.interaction.is_dragging() {
+            self.interaction.handle_pointer_up();
+        }
 
         let old_id = self.workspace_manager.active_id();
         // Save current state into the old workspace

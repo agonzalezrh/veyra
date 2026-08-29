@@ -124,6 +124,27 @@ impl InteractionController {
         Some(ray_origin + ray_dir * t)
     }
 
+    /// Compute the drag translation plane normal.
+    ///
+    /// The plane is vertical and perpendicular to the camera's horizontal
+    /// view direction so drags slide windows along a wall facing the camera.
+    /// When that plane is edge-on to the view ray (front-facing camera,
+    /// e.g. normal 2D mode with yaw = 0), it falls back to a screen-parallel
+    /// plane (normal = camera forward) so drags still start and the window
+    /// follows the cursor at constant depth.
+    fn drag_plane_normal(fwd: Vector3<f32>, ray_dir: Vector3<f32>) -> Vector3<f32> {
+        let mut n = Vector3::new(fwd.z, 0.0, -fwd.x);
+        if n.magnitude2() < 1e-12 {
+            n = fwd;
+        }
+        let n = n.normalize();
+        if n.dot(ray_dir).abs() < 1e-4 {
+            fwd.normalize()
+        } else {
+            n
+        }
+    }
+
     /// Handle a pointer button press.
     ///
     /// Always picks and selects the visual under the cursor (if any).
@@ -184,7 +205,7 @@ impl InteractionController {
         if let Some(visual) = scene.visuals.iter().find(|v| v.id == vid) {
             let pos = visual.transform.position;
             let fwd = camera.forward();
-            let plane_normal = Vector3::new(fwd.z, 0.0, -fwd.x).normalize();
+            let plane_normal = Self::drag_plane_normal(fwd, ray_dir);
 
             // Mark as detached from layout when user starts manipulating
             if !scene.detached_set.contains(&vid) {
@@ -237,8 +258,7 @@ impl InteractionController {
             let pos = visual.transform.position;
             // Compute camera forward in world space using camera orientation
             let fwd = camera.forward();
-            let plane_normal = Vector3::new(fwd.z, 0.0, -fwd.x).normalize();
-            // Use a vertical plane for dragging to match expected behavior
+            let plane_normal = Self::drag_plane_normal(fwd, ray_dir);
 
             let plane_point = pos;
             if !scene.detached_set.contains(&vid) {
@@ -396,5 +416,278 @@ mod tests {
         let (nx, ny) = ctrl.ndc(0.0, 0.0);
         assert!(approx_eq(nx, -1.0, 1e-4));
         assert!(approx_eq(ny, 1.0, 1e-4));
+    }
+
+    #[test]
+    fn drag_plane_normal_front_facing_camera_falls_back_to_forward() {
+        // Regression: with a front-facing camera (yaw = 0) the vertical
+        // wall plane is edge-on to the view ray; the fallback keeps drags
+        // working by using a screen-parallel plane.
+        let fwd = Vector3::new(0.0, 0.0, -1.0);
+        let ray = Vector3::new(0.0, 0.0, -1.0);
+        let n = InteractionController::drag_plane_normal(fwd, ray);
+        assert!(
+            n.dot(ray).abs() > 0.5,
+            "plane must not be parallel to the view ray"
+        );
+        // Orbited camera with an off-center ray keeps the vertical wall plane.
+        let yaw = 0.5f32;
+        let fwd2 = Vector3::new(-yaw.sin(), 0.0, -yaw.cos());
+        let right2 = Vector3::new(yaw.cos(), 0.0, -yaw.sin());
+        let ray2 = (fwd2 + right2 * 0.3).normalize();
+        let n2 = InteractionController::drag_plane_normal(fwd2, ray2);
+        assert!(approx_eq(n2.y, 0.0, 1e-6), "wall plane stays vertical");
+        assert!(
+            n2.dot(ray2).abs() > 1e-3,
+            "wall plane intersects an off-center view ray"
+        );
+    }
+
+    // ── I2: interaction state machine regression tests ──────────────
+
+    /// Two 400x300 visuals in front of a straight-on camera: left at
+    /// (-220, 0, 0), right at (220, 0, 0). Screen x=420 hits the left
+    /// visual, x=860 the right (ortho 1:1 with 1280 px width).
+    /// Returns (scene, [left, right]).
+    fn two_visual_scene() -> (Scene, [VisualId; 2]) {
+        let mut scene = Scene::default();
+        let mut left = crate::scene::Visual::new_test(400, 300);
+        left.transform.position = Vector3::new(-220.0, 0.0, 0.0);
+        let mut right = crate::scene::Visual::new_test(400, 300);
+        right.transform.position = Vector3::new(220.0, 0.0, 0.0);
+        let ids = [left.id, right.id];
+        scene.add(left);
+        scene.add(right);
+        (scene, ids)
+    }
+
+    /// Front-facing camera matching normal (2D) mode: z = 500, yaw = 0.
+    fn front_camera() -> Camera {
+        let mut cam = Camera::new();
+        cam.position = cgmath::Point3::new(0.0, 0.0, 500.0);
+        cam.yaw = 0.0;
+        cam.pitch = 0.0;
+        cam
+    }
+
+    #[test]
+    fn pointer_down_without_modifiers_selects_but_does_not_drag() {
+        let (mut scene, ids) = two_visual_scene();
+        let mut ctrl = InteractionController::new();
+        let mode = ctrl.handle_pointer_down(
+            420.0, 360.0, &mut scene, &front_camera(), false, false, false, false,
+            Some(ids.to_vec()),
+        );
+        assert_eq!(mode, None, "no modifier — event is for content, not scene");
+        assert!(!ctrl.is_dragging());
+        assert_eq!(scene.selected_id, Some(ids[0]), "left visual picked");
+    }
+
+    #[test]
+    fn pointer_down_respects_workspace_visible_ids() {
+        let (mut scene, ids) = two_visual_scene();
+        // Overlapping duplicate directly in front of the left visual.
+        let mut decoy = crate::scene::Visual::new_test(400, 300);
+        decoy.transform.position = Vector3::new(-220.0, 0.0, 10.0);
+        let decoy_id = decoy.id;
+        scene.add(decoy);
+
+        // Restrict to the right visual only: its screen position must pick it.
+        let mut ctrl = InteractionController::new();
+        ctrl.handle_pointer_down(
+            860.0, 360.0, &mut scene, &front_camera(), false, false, false, false,
+            Some(vec![ids[1]]),
+        );
+        assert_eq!(scene.selected_id, Some(ids[1]));
+
+        // Restrict to the decoy: same ray as the left visual must select the decoy.
+        let mut ctrl = InteractionController::new();
+        ctrl.handle_pointer_down(
+            420.0, 360.0, &mut scene, &front_camera(), false, false, false, false,
+            Some(vec![decoy_id]),
+        );
+        assert_eq!(scene.selected_id, Some(decoy_id));
+    }
+
+    #[test]
+    fn pointer_down_on_empty_space_deselects() {
+        let (mut scene, ids) = two_visual_scene();
+        scene.select(Some(ids[0]));
+        let mut ctrl = InteractionController::new();
+        ctrl.handle_pointer_down(
+            10.0, 10.0, &mut scene, &front_camera(), false, false, false, false,
+            Some(ids.to_vec()),
+        );
+        assert_eq!(scene.selected_id, None, "miss clears selection");
+    }
+
+    #[test]
+    fn modifier_drag_starts_only_with_modifier() {
+        let (mut scene, ids) = two_visual_scene();
+        let mut ctrl = InteractionController::new();
+        let mode = ctrl.handle_pointer_down(
+            420.0, 360.0, &mut scene, &front_camera(), false, true, false, false,
+            Some(ids.to_vec()),
+        );
+        assert!(matches!(mode, Some(ManipMode::RotateY)), "shift starts rotate drag");
+        assert!(ctrl.is_dragging());
+        ctrl.handle_pointer_up();
+        assert!(!ctrl.is_dragging(), "release terminates drag");
+    }
+
+    #[test]
+    fn front_facing_title_bar_drag_moves_window() {
+        // Regression for the front-facing camera drag deadlock.
+        let (mut scene, ids) = two_visual_scene();
+        let camera = front_camera();
+        let mut ctrl = InteractionController::new();
+        ctrl.handle_pointer_down(
+            420.0, 360.0, &mut scene, &camera, false, false, false, false,
+            Some(ids.to_vec()),
+        );
+        let start = scene.get(ids[0]).unwrap().transform.position;
+        ctrl.force_translate(420.0, 360.0, &mut scene, &camera, false);
+        assert!(ctrl.is_dragging(), "drag must start with a front-facing camera");
+
+        ctrl.handle_pointer_move(520.0, 360.0, &mut scene, &camera, false);
+        let after = scene.get(ids[0]).unwrap().transform.position;
+        assert!(
+            (after.x - (start.x + 100.0)).abs() < 1.0,
+            "ortho 1:1: +100 px screen = +100 world x, got {} -> {}",
+            start.x,
+            after.x
+        );
+        assert!(approx_eq(after.z, start.z, 1e-4), "depth unchanged (screen-parallel plane)");
+        assert!(approx_eq(after.y, start.y, 1e-4), "no vertical drift");
+    }
+
+    #[test]
+    fn drag_moves_only_target_visual_and_never_camera() {
+        let (mut scene, ids) = two_visual_scene();
+        let camera = front_camera();
+        let mut ctrl = InteractionController::new();
+        ctrl.handle_pointer_down(
+            860.0, 360.0, &mut scene, &camera, false, false, false, false,
+            Some(ids.to_vec()),
+        );
+        ctrl.force_translate(860.0, 360.0, &mut scene, &camera, false);
+        let other_before = scene.get(ids[0]).unwrap().transform.position;
+        let cam_before = (
+            camera.position,
+            camera.yaw,
+            camera.pitch,
+        );
+
+        ctrl.handle_pointer_move(400.0, 300.0, &mut scene, &camera, false);
+
+        let other_after = scene.get(ids[0]).unwrap().transform.position;
+        assert_eq!(other_before, other_after, "non-dragged visual untouched");
+        assert_eq!(
+            cam_before,
+            (camera.position, camera.yaw, camera.pitch),
+            "camera is passed by shared reference and must never move"
+        );
+    }
+
+    #[test]
+    fn drag_at_depth_stays_in_visual_plane() {
+        let mut scene = Scene::default();
+        let mut v = crate::scene::Visual::new_test(400, 300);
+        v.transform.position = Vector3::new(0.0, 0.0, 300.0);
+        let vid = v.id;
+        scene.add(v);
+        let camera = front_camera();
+        let mut ctrl = InteractionController::new();
+        ctrl.handle_pointer_down(
+            640.0, 360.0, &mut scene, &camera, false, false, false, false,
+            Some(vec![vid]),
+        );
+        ctrl.force_translate(640.0, 360.0, &mut scene, &camera, false);
+        ctrl.handle_pointer_move(840.0, 460.0, &mut scene, &camera, false);
+        let after = scene.get(vid).unwrap().transform.position;
+        assert!(
+            approx_eq(after.z, 300.0, 1e-3),
+            "visual keeps its own depth, got z={}",
+            after.z
+        );
+    }
+
+    #[test]
+    fn no_movement_after_pointer_release() {
+        let (mut scene, ids) = two_visual_scene();
+        let camera = front_camera();
+        let mut ctrl = InteractionController::new();
+        ctrl.handle_pointer_down(
+            420.0, 360.0, &mut scene, &camera, false, false, false, false,
+            Some(ids.to_vec()),
+        );
+        ctrl.force_translate(420.0, 360.0, &mut scene, &camera, false);
+        ctrl.handle_pointer_move(520.0, 360.0, &mut scene, &camera, false);
+        ctrl.handle_pointer_up();
+        let frozen = scene.get(ids[0]).unwrap().transform.position;
+        ctrl.handle_pointer_move(1200.0, 100.0, &mut scene, &camera, false);
+        ctrl.handle_pointer_move(0.0, 700.0, &mut scene, &camera, false);
+        assert_eq!(
+            frozen,
+            scene.get(ids[0]).unwrap().transform.position,
+            "no movement after release"
+        );
+    }
+
+    #[test]
+    fn drag_of_removed_visual_is_safe_noop() {
+        let (mut scene, ids) = two_visual_scene();
+        let camera = front_camera();
+        let mut ctrl = InteractionController::new();
+        ctrl.handle_pointer_down(
+            420.0, 360.0, &mut scene, &camera, false, false, false, false,
+            Some(ids.to_vec()),
+        );
+        ctrl.force_translate(420.0, 360.0, &mut scene, &camera, false);
+        scene.remove(ids[0]); // window closed mid-drag
+        let other_before = scene.get(ids[1]).unwrap().transform.position;
+        ctrl.handle_pointer_move(900.0, 500.0, &mut scene, &camera, false);
+        assert_eq!(other_before, scene.get(ids[1]).unwrap().transform.position);
+        ctrl.handle_pointer_up();
+        assert!(!ctrl.is_dragging());
+    }
+
+    #[test]
+    fn orbited_camera_drag_stays_on_drag_plane() {
+        let mut scene = Scene::default();
+        let mut v = crate::scene::Visual::new_test(400, 300);
+        v.transform.position = Vector3::new(-220.0, 0.0, 0.0);
+        let vid = v.id;
+        scene.add(v);
+        let mut camera = Camera::new();
+        camera.position = cgmath::Point3::new(0.0, 0.0, 800.0);
+        camera.yaw = 0.5;
+        camera.pitch = 0.2;
+        let mut ctrl = InteractionController::new();
+        scene.select(Some(vid));
+        ctrl.force_translate(640.0, 360.0, &mut scene, &camera, true);
+        assert!(ctrl.is_dragging(), "orbited camera drags start");
+        let start = scene.get(vid).unwrap().transform.position;
+        ctrl.handle_pointer_move(800.0, 420.0, &mut scene, &camera, true);
+        ctrl.handle_pointer_move(500.0, 250.0, &mut scene, &camera, true);
+        let after = scene.get(vid).unwrap().transform.position;
+        // Translation moves along the drag plane captured at drag start, so
+        // the delta from the start position must be perpendicular to it.
+        let fwd = camera.forward();
+        let center_ray = {
+            let (near, far) = ctrl.world_ray(0.0, 0.0, &camera, true);
+            (far - near).normalize()
+        };
+        let normal = InteractionController::drag_plane_normal(fwd, center_ray);
+        let drift = (after - start).dot(normal);
+        assert!(
+            drift.abs() < 1.0,
+            "drag delta drifted off the drag plane, drift={}",
+            drift
+        );
+        assert!(
+            (after - start).magnitude() > 1.0,
+            "drag actually moved the visual"
+        );
     }
 }

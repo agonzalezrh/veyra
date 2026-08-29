@@ -150,6 +150,10 @@ impl Transform3D {
 pub enum VisualContent {
     WaylandSurface(GlesTexture),
     ExternalTexture(GlesTexture),
+    /// Test-only content without a GPU texture, enabling scene-graph and
+    /// interaction unit tests without an EGL context.
+    #[cfg(test)]
+    Test,
 }
 
 /// Compositor-owned chrome data for a visual.
@@ -210,6 +214,18 @@ impl Visual {
         }
     }
 
+    /// Test-only constructor: a plain pickable visual without GPU content.
+    #[cfg(test)]
+    pub fn new_test(width: i32, height: i32) -> Self {
+        Visual::new(
+            VisualContent::Test,
+            Rectangle::new(
+                smithay::utils::Point::new(0, 0),
+                smithay::utils::Size::new(width, height),
+            ),
+        )
+    }
+
     /// Returns true if the visual has active content (not disconnected/error).
     pub fn has_active_content(&self) -> bool {
         matches!(self.content_state, ContentState::Ready | ContentState::Connecting)
@@ -250,12 +266,16 @@ impl Visual {
     pub fn texture(&self) -> Option<&GlesTexture> {
         match &self.content {
             VisualContent::WaylandSurface(t) | VisualContent::ExternalTexture(t) => Some(t),
+            #[cfg(test)]
+            VisualContent::Test => None,
         }
     }
 
     pub fn texture_mut(&mut self) -> Option<&mut GlesTexture> {
         match &mut self.content {
             VisualContent::WaylandSurface(t) | VisualContent::ExternalTexture(t) => Some(t),
+            #[cfg(test)]
+            VisualContent::Test => None,
         }
     }
 }
@@ -546,6 +566,11 @@ impl Scene {
 
     pub fn get_mut(&mut self, id: VisualId) -> Option<&mut Visual> {
         self.visuals.iter_mut().find(|v| v.id == id)
+    }
+
+    /// Immutable lookup by id.
+    pub fn get(&self, id: VisualId) -> Option<&Visual> {
+        self.visuals.iter().find(|v| v.id == id)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Visual> {
