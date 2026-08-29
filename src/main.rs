@@ -8,6 +8,7 @@ mod capabilities;
 mod compositor;
 mod config;
 mod context_menu;
+mod client_resize;
 mod closed;
 mod dmabuf;
 mod drm_backend;

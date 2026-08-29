@@ -236,6 +236,9 @@ pub struct LookingGlass {
     pub closed_windows: crate::closed::ClosedWindowHistory,
     /// A reopen in progress: waiting for the relaunched app to map.
     pub pending_reopen: Option<crate::closed::PendingReopen>,
+    /// Veyra-owned intent for client geometry changes (I3a). Protocol
+    /// state (configure serials, ACKs) remains owned by Smithay.
+    pub client_resizes: crate::client_resize::ClientResizeCoordinator,
     /// Relative pointer manager for sending relative motion deltas.
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
     /// DMA-BUF buffer import state.
@@ -354,6 +357,7 @@ impl LookingGlass {
             pointer_constraints: crate::pointer_constraints::PointerConstraints::new(display_handle),
             closed_windows: crate::closed::ClosedWindowHistory::new(10),
             pending_reopen: None,
+            client_resizes: crate::client_resize::ClientResizeCoordinator::default(),
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<LookingGlass>(display_handle),
             dmabuf_manager: crate::dmabuf::DmabufManager::new(display_handle),
         }
@@ -738,9 +742,35 @@ impl LookingGlass {
                             }
                         }
                     } else if let Some(vid) = existing_vid {
+                        use smithay::backend::renderer::Texture;
+                        let tex_size = texture.size();
+                        // Resolve any outstanding geometry request (I3a).
+                        // A mismatched buffer means the client overrode us —
+                        // committed geometry always wins.
+                        match self.client_resizes.note_commit(vid, (tex_size.w as i32, tex_size.h as i32)) {
+                            crate::client_resize::CommitOutcome::Fulfilled => {
+                                info!(?vid, w = tex_size.w, h = tex_size.h, "client resize fulfilled");
+                            }
+                            crate::client_resize::CommitOutcome::ClientOverride => {
+                                info!(?vid, w = tex_size.w, h = tex_size.h, "client overrode requested size; adopting committed geometry");
+                            }
+                            crate::client_resize::CommitOutcome::NotResizing => {}
+                        }
                         if let Some(visual) = self.scene.get_mut(vid) {
                             if let Some(dst) = visual.texture_mut() {
                                 *dst = texture;
+                            }
+                            // Adopt committed buffer dimensions: the client
+                            // decides geometry. Transform (position/rotation/
+                            // scale) is spatial state and is never touched.
+                            if visual.geometry.size.w != tex_size.w as i32
+                                || visual.geometry.size.h != tex_size.h as i32
+                            {
+                                visual.geometry = smithay::utils::Rectangle::new(
+                                    smithay::utils::Point::new(0, 0),
+                                    smithay::utils::Size::new(tex_size.w as i32, tex_size.h as i32),
+                                );
+                                info!(?vid, w = tex_size.w, h = tex_size.h, "visual geometry adopted from client buffer");
                             }
                             visual.damage = DamageKind::Content;
                         }
@@ -1287,6 +1317,90 @@ impl LookingGlass {
         }
         self.scene.select(replacement);
         self.set_keyboard_focus(replacement);
+    }
+
+    /// Request a client surface to resize to the given logical size (I3a).
+    ///
+    /// Sends one xdg_toplevel.configure(size, Resizing) and records the
+    /// intent in `client_resizes`. Refuses while any configure — ours or
+    /// Smithay's queue — is unacknowledged, so at most one configure per
+    /// surface is ever outstanding. The client decides geometry by what
+    /// it commits; see `ClientResizeCoordinator`.
+    pub fn begin_client_resize(&mut self, vid: VisualId, w: i32, h: i32) -> Option<smithay::utils::Serial> {
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        if self.client_resizes.awaiting_ack(vid) {
+            return None;
+        }
+        let wl_surface = self.wayland_surfaces.get(&vid).cloned()?;
+        let toplevel = self.toplevels.iter()
+            .find(|t| t.toplevel.wl_surface() == &wl_surface)
+            .map(|t| t.toplevel.clone())?;
+        if !toplevel.alive() {
+            return None;
+        }
+
+        // Never stack a second configure while Smithay's queue still holds
+        // unacknowledged configures for this surface.
+        let unacked = with_states(&wl_surface, |states| {
+            let attrs = states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .expect("toplevel surface lacks xdg data")
+                .lock()
+                .unwrap();
+            !attrs.pending_configures().is_empty()
+        });
+        if unacked {
+            return None;
+        }
+
+        toplevel.with_pending_state(|state| {
+            state.size = Some(smithay::utils::Size::new(w, h));
+            state.states.set(xdg_toplevel::State::Resizing);
+        });
+        let serial = toplevel.send_configure();
+        self.client_resizes.mark_sent(vid, serial, (w, h));
+        info!(?vid, w, h, ?serial, "client resize requested");
+        Some(serial)
+    }
+
+    /// Abort an outstanding client resize (pointer release, state reset).
+    ///
+    /// Clears Veyra's intent; if a configure is still unacknowledged the
+    /// Resizing state bit is withdrawn via a follow-up configure so the
+    /// client does not keep an interactive-resize state forever.
+    pub fn abort_client_resize(&mut self, vid: VisualId) {
+        if !self.client_resizes.abort(vid) {
+            return;
+        }
+        let wl_surface = self.wayland_surfaces.get(&vid).cloned();
+        let toplevel = wl_surface.and_then(|wl_surface| {
+            self.toplevels.iter()
+                .find(|t| t.toplevel.wl_surface() == &wl_surface)
+                .map(|t| t.toplevel.clone())
+        });
+        if let Some(toplevel) = toplevel {
+            if toplevel.alive() {
+                let unacked = with_states(toplevel.wl_surface(), |states| {
+                    let attrs = states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .expect("toplevel surface lacks xdg data")
+                        .lock()
+                        .unwrap();
+                    !attrs.pending_configures().is_empty()
+                });
+                if unacked {
+                    toplevel.with_pending_state(|state| {
+                        state.states.unset(xdg_toplevel::State::Resizing);
+                    });
+                    let _ = toplevel.send_configure();
+                }
+            }
+        }
+        info!(?vid, "client resize aborted");
     }
 
     /// Show a context menu at the given screen position for the selected visual.
@@ -2386,6 +2500,14 @@ impl XdgShellHandler for LookingGlass {
     }
 
     fn ack_configure(&mut self, _surface: WlSurface, configure: Configure) {
+        // I3a: mark our outstanding geometry request acknowledged when the
+        // serial matches. Smithay remains authoritative for the protocol
+        // queue; this only updates Veyra's intent.
+        if let Configure::Toplevel(configure) = &configure {
+            if self.client_resizes.note_ack(configure.serial) {
+                info!(serial = ?configure.serial, "client resize acknowledged");
+            }
+        }
         info!(?configure, "configure acknowledged");
     }
 
@@ -2446,6 +2568,8 @@ impl XdgShellHandler for LookingGlass {
             if let Some(vid) = info.visual_id {
                 let was_focused = self.scene.focused_id == Some(vid)
                     || self.scene.selected_id == Some(vid);
+                // Drop any outstanding geometry request for the dead surface (I3a).
+                self.client_resizes.abort(vid);
                 // Record a tombstone before cleanup so the window can be
                 // reopened with its transform and workspace (I1).
                 let transform = self.scene.get_mut(vid).map(|v| v.transform.clone());
@@ -2523,6 +2647,8 @@ fn cleanup_popups_by_vid(state: &mut LookingGlass, vid: VisualId) {
 fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
     // Clean up child popups first
     cleanup_popups_by_vid(state, vid);
+    // Drop any outstanding client geometry request (I3a)
+    state.client_resizes.abort(vid);
     // Remove from all workspaces
     for i in 0..state.workspace_manager.len() {
         if let Some(ws) = state.workspace_manager.get_mut(i) {
