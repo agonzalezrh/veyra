@@ -30,6 +30,18 @@ preflight() {
             echo "        → run: cargo build && cargo build -p client-kit"
             echo "        → (or point VEYRA_HARNESS_BIN at your build dir, e.g. target/release)"
             rc=1
+            continue
+        fi
+        # Stale-binary detection: sources newer than the binary.
+        local stale
+        case "$bin" in
+            */veyra)      stale=$(find "$ROOT_DIR/src" -name '*.rs' -newer "$bin" 2>/dev/null | head -1) ;;
+            */client-kit) stale=$(find "$ROOT_DIR/tests/harness/src" -name '*.rs' -newer "$bin" 2>/dev/null | head -1) ;;
+        esac
+        if [ -n "$stale" ]; then
+            bad "stale binary: $bin (source $stale is newer)"
+            echo "        → run: cargo build && cargo build -p client-kit"
+            rc=1
         fi
     done
     for tool in weston Xvfb xdotool python3; do
