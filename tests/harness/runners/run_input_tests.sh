@@ -71,11 +71,11 @@ derive_rect_from_map() {
     local MAP_LINE
     MAP_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -F "surface mapped" | tail -1)
     local POS_X POS_Y TW TH
-    POS_X=$(echo "$MAP_LINE" | sed -E 's/.*pos = Vector3 \[([^,]+),.*/\1/')
-    POS_Y=$(echo "$MAP_LINE" | sed -E 's/.*pos = Vector3 \[[^,]+, ([^,]+),.*/\1/')
-    TW=$(echo "$MAP_LINE" | sed -E 's/.*total_w = ([0-9.]+).*/\1/')
-    TH=$(echo "$MAP_LINE" | sed -E 's/.*total_h = ([0-9.]+).*/\1/')
-    if echo "$MAP_LINE" | grep -q "pos = Vector3" && [ -n "$TW" ] && [ "$TW" != "$MAP_LINE" ] && [ -n "$TH" ] && [ "$TH" != "$MAP_LINE" ]; then
+    POS_X=$(echo "$MAP_LINE" | sed -E 's/.*pos=Vector3 \[([^,]+),.*/\1/')
+    POS_Y=$(echo "$MAP_LINE" | sed -E 's/.*pos=Vector3 \[[^,]+, ([^,]+),.*/\1/')
+    TW=$(echo "$MAP_LINE" | sed -E 's/.*total_w=([0-9.]+).*/\1/')
+    TH=$(echo "$MAP_LINE" | sed -E 's/.*total_h=([0-9.]+).*/\1/')
+    if echo "$MAP_LINE" | grep -q "pos=Vector3" && [ -n "$TW" ] && [ "$TW" != "$MAP_LINE" ] && [ -n "$TH" ] && [ "$TH" != "$MAP_LINE" ]; then
         CX=$(python3 -c "print(round($WIN_W/2 + $POS_X))")
         CY=$(python3 -c "print(round($WIN_H/2 - $POS_Y))")
         XL=$(python3 -c "print(round($WIN_W/2 + $POS_X - $TW/2))")
