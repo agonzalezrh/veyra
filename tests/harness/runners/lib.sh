@@ -10,9 +10,39 @@ export XDG_RUNTIME_DIR="$RT"
 PASS=0
 FAIL=0
 
+# Binary dir override: VEYRA_HARNESS_BIN (defaults to debug build).
+BIN="${VEYRA_HARNESS_BIN:-$ROOT_DIR/target/debug}"
+
 say()  { echo "[harness] $*"; }
 ok()   { PASS=$((PASS+1)); echo "  PASS: $1"; }
 bad()  { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
+tail_log() { [ -f "$1" ] && { echo "  ---- $1 (last lines) ----"; tail -5 "$1" | sed 's/\x1b\[[0-9;]*m//g'; }; }
+
+# Pre-flight: verify everything the harness needs exists, with actionable
+# errors. Call after TMP_DIR is set. Returns non-zero to abort the suite.
+preflight() {
+    local rc=0
+    for bin in "$BIN/veyra" "$BIN/client-kit"; do
+        if [ ! -x "$bin" ]; then
+            bad "missing binary: $bin"
+            echo "        → run: cargo build && cargo build -p client-kit"
+            echo "        → (or point VEYRA_HARNESS_BIN at your build dir, e.g. target/release)"
+            rc=1
+        fi
+    done
+    for tool in weston Xvfb xdotool python3; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            bad "missing tool: $tool"
+            case "$tool" in
+                Xvfb)   echo "        → debian/ubuntu: sudo apt install xvfb" ;;
+                weston) echo "        → debian/ubuntu: sudo apt install weston" ;;
+                xdotool) echo "        → debian/ubuntu: sudo apt install xdotool" ;;
+            esac
+            rc=1
+        fi
+    done
+    return $rc
+}
 
 # Assert a substring appears in a file (grep -F).
 assert_log() { # file pattern message
@@ -58,6 +88,7 @@ start_weston_headless() { # socket_name
         [ -S "$RT/$1" ] && return 0
         sleep 0.25
     done
+    tail_log "$TMP_DIR/weston.log"
     return 1
 }
 
@@ -71,6 +102,7 @@ start_veyra_nested() { # parent_socket log_file
         [ -n "$VEYRA_SOCKET" ] && [ -S "$RT/$VEYRA_SOCKET" ] && return 0
         sleep 0.25
     done
+    tail_log "$2"
     return 1
 }
 
@@ -83,16 +115,19 @@ start_veyra_x11() { # log_file
         [ -n "$VEYRA_SOCKET" ] && [ -S "$RT/$VEYRA_SOCKET" ] && return 0
         sleep 0.25
     done
+    tail_log "$1"
     return 1
 }
 
 start_xvfb() {
+    rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
     Xvfb :99 -screen 0 1280x720x24 > "$TMP_DIR/xvfb.log" 2>&1 &
     XVFB_PID=$!
     for _ in $(seq 1 40); do
         [ -S /tmp/.X11-unix/X99 ] && return 0
         sleep 0.25
     done
+    tail_log "$TMP_DIR/xvfb.log"
     return 1
 }
 

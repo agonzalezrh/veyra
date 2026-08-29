@@ -9,6 +9,7 @@ TMP_DIR=$(mktemp -d /tmp/veyra-harness.XXXXXX)
 trap stop_stack EXIT
 
 cleanup_all
+preflight || { say "pre-flight failed — fix the issues above and rerun"; exit 1; }
 
 # Client window geometry: the first visual is placed at world (300, 0, 0).
 # The harness pins normal (2D) mode by injecting F5 right after veyra

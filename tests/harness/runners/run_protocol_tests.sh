@@ -10,6 +10,7 @@ TMP_DIR=$(mktemp -d /tmp/veyra-harness.XXXXXX)
 trap stop_stack EXIT
 
 cleanup_all
+preflight || { say "pre-flight failed — fix the issues above and rerun"; exit 1; }
 
 say "starting stack: weston-headless → veyra"
 start_weston_headless wayland-harness || { bad "weston-headless started"; exit 1; }
