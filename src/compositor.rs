@@ -721,6 +721,10 @@ impl LookingGlass {
                                     visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
                                 }
                                 let visual_id = visual.id;
+                                let map_pos = visual.transform.position;
+                                let map_total_w = visual.total_width();
+                                let map_total_h = visual.total_height();
+                                let map_scale = visual.transform.scale;
                                 let reopen_workspace = reopened.as_ref().map(|pr| pr.workspace);
                                 self.toplevels[idx].visual_id = Some(visual_id);
                                 self.wayland_surfaces.insert(visual_id, surface.clone());
@@ -742,7 +746,12 @@ impl LookingGlass {
                                     &self.toplevels[idx].app_id,
                                     visual_id,
                                 );
-                                info!(?visual_id, app_id = %self.toplevels[idx].app_id, "surface mapped");
+                                info!(?visual_id, app_id = %self.toplevels[idx].app_id,
+                                       pos = ?map_pos,
+                                       total_w = map_total_w,
+                                       total_h = map_total_h,
+                                       scale = ?map_scale,
+                                       "surface mapped");
                             }
                         }
                     } else if let Some(vid) = existing_vid {

@@ -60,8 +60,33 @@ else
 fi
 say "veyra render size: ${WIN_W}x${WIN_H}"
 
+# Fallback placement: first visual at world (300, 0).
 CX=$((WIN_W/2 + 300)); CY=$((WIN_H/2))
 XL=$((CX-320)); XR=$((CX+320)); YT=$((CY-255)); YB=$((CY+255))
+
+# Derive the CURRENT client window's screen rect from veyra's map log
+# (position + decorated size in world space, ortho 1:1 onto the screen).
+# Call after a client has mapped (its "surface mapped" line is the last one).
+derive_rect_from_map() {
+    local MAP_LINE
+    MAP_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -F "surface mapped" | tail -1)
+    local POS_X POS_Y TW TH
+    POS_X=$(echo "$MAP_LINE" | sed -E 's/.*pos = Vector3 \[([^,]+),.*/\1/')
+    POS_Y=$(echo "$MAP_LINE" | sed -E 's/.*pos = Vector3 \[[^,]+, ([^,]+),.*/\1/')
+    TW=$(echo "$MAP_LINE" | sed -E 's/.*total_w = ([0-9.]+).*/\1/')
+    TH=$(echo "$MAP_LINE" | sed -E 's/.*total_h = ([0-9.]+).*/\1/')
+    if echo "$MAP_LINE" | grep -q "pos = Vector3" && [ -n "$TW" ] && [ "$TW" != "$MAP_LINE" ] && [ -n "$TH" ] && [ "$TH" != "$MAP_LINE" ]; then
+        CX=$(python3 -c "print(round($WIN_W/2 + $POS_X))")
+        CY=$(python3 -c "print(round($WIN_H/2 - $POS_Y))")
+        XL=$(python3 -c "print(round($WIN_W/2 + $POS_X - $TW/2))")
+        XR=$(python3 -c "print(round($WIN_W/2 + $POS_X + $TW/2))")
+        YT=$(python3 -c "print(round($WIN_H/2 - $POS_Y - $TH/2))")
+        YB=$(python3 -c "print(round($WIN_H/2 - $POS_Y + $TH/2))")
+        say "client rect from map log: x[$XL..$XR] y[$YT..$YB]"
+    else
+        say "map line unusable; using placement defaults x[$XL..$XR] y[$YT..$YB]"
+    fi
+}
 
 xdotool_wid() {
     DISPLAY=:99 xdotool search --onlyvisible --name . 2>/dev/null | head -1
@@ -73,6 +98,7 @@ XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-ki
     > "$TMP_DIR/t5.json" 2>"$TMP_DIR/t5.err" &
 T5_PID=$!
 sleep 1.5   # window mapped
+derive_rect_from_map
 WID=$(xdotool_wid)
 DISPLAY=:99 xdotool mousemove $CX $CY click 1   # click → focus
 sleep 1
@@ -146,7 +172,8 @@ JSON_DUMP=1
 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" resizer --duration 9000 --min 300x200 \
     > "$TMP_DIR/t8.json" 2>"$TMP_DIR/t8.err" &
 T8_PID=$!
-sleep 1.5   # mapped at 640x480 → screen rect computed above
+sleep 1.5
+derive_rect_from_map
 
 E_END=$((XR-4+14)); [ $E_END -ge $((WIN_W-4)) ] && E_END=$((WIN_W-6))
 drag $((XR-4)) $CY $E_END $CY               # EAST: width grows
