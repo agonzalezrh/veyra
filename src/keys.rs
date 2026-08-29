@@ -56,5 +56,6 @@ pub const M: u32 = 66;
 pub const O: u32 = 32;
 pub const P: u32 = 33;
 pub const Q: u32 = 24;
+pub const T: u32 = 28;
 pub const W: u32 = 25;
 pub const SLASH: u32 = 61;

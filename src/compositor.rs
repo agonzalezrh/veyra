@@ -232,6 +232,10 @@ pub struct LookingGlass {
     pub recovery: Recovery,
     /// Pointer constraints (lock/confine) state.
     pub pointer_constraints: crate::pointer_constraints::PointerConstraints,
+    /// Tombstones of recently closed windows for reopen support (I1).
+    pub closed_windows: crate::closed::ClosedWindowHistory,
+    /// A reopen in progress: waiting for the relaunched app to map.
+    pub pending_reopen: Option<crate::closed::PendingReopen>,
     /// Relative pointer manager for sending relative motion deltas.
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
     /// DMA-BUF buffer import state.
@@ -348,6 +352,8 @@ impl LookingGlass {
             recovery: Recovery::new(),
             scheduler: RenderScheduler::new(),
             pointer_constraints: crate::pointer_constraints::PointerConstraints::new(display_handle),
+            closed_windows: crate::closed::ClosedWindowHistory::new(10),
+            pending_reopen: None,
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<LookingGlass>(display_handle),
             dmabuf_manager: crate::dmabuf::DmabufManager::new(display_handle),
         }
@@ -670,6 +676,16 @@ impl LookingGlass {
                                 visual.chrome.title = self.toplevels[idx].title.clone();
                                 visual.chrome.app_id = self.toplevels[idx].app_id.clone();
                                 let app_id = &self.toplevels[idx].app_id;
+                                // Pending reopen (I1): reattach saved transform
+                                // when the relaunched app's toplevel maps.
+                                let mut reopened: Option<crate::closed::PendingReopen> = None;
+                                if self.pending_reopen.as_ref().map_or(false, |pr| pr.app_id == *app_id) {
+                                    reopened = self.pending_reopen.take();
+                                    if let Some(pr) = &reopened {
+                                        visual.transform = pr.transform.clone();
+                                        info!(app_id = %app_id, workspace = pr.workspace, "pending reopen applied");
+                                    }
+                                }
                                 let restored = self.saved_state.as_ref().and_then(|s| {
                                     s.find_visual(app_id).map(|(_, vs)| {
                                         visual.transform.position.x = vs.x;
@@ -687,7 +703,7 @@ impl LookingGlass {
                                         }
                                     })
                                 });
-                                if restored.is_none() {
+                                if restored.is_none() && reopened.is_none() {
                                     let pos = layout::place_new_visual(
                                         tex_size.w as f32 * visual.transform.scale.x,
                                         tex_size.h as f32 * visual.transform.scale.y,
@@ -697,10 +713,22 @@ impl LookingGlass {
                                     visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
                                 }
                                 let visual_id = visual.id;
+                                let reopen_workspace = reopened.as_ref().map(|pr| pr.workspace);
                                 self.toplevels[idx].visual_id = Some(visual_id);
                                 self.wayland_surfaces.insert(visual_id, surface.clone());
                                 self.scene.add(visual);
                                 self.workspace_manager.active_mut().add(visual_id);
+                                // Reopen targets a specific workspace: move the
+                                // visual there if it differs from the active one.
+                                if let Some(ws_idx) = reopen_workspace {
+                                    if ws_idx < self.workspace_manager.len() && ws_idx != self.workspace_manager.active_id() {
+                                        if let Some(ws) = self.workspace_manager.get_mut(ws_idx) {
+                                            ws.add(visual_id);
+                                        }
+                                        self.workspace_manager.active_mut().remove(visual_id);
+                                        info!(?visual_id, workspace = ws_idx, "reopened window restored to workspace");
+                                    }
+                                }
                                 self.scene.focus(Some(visual_id));
                                 self.app_switcher.register_visual(
                                     &self.toplevels[idx].app_id,
@@ -2042,6 +2070,9 @@ impl LookingGlass {
             CloseApp => {
                 self.close_focused_app();
             }
+            ReopenClosed => {
+                self.reopen_last_closed();
+            }
             CycleVisuals => {
                 self.cycle_visuals();
             }
@@ -2114,6 +2145,46 @@ impl LookingGlass {
                     info!(?vid, "close sent to focused app");
                     return;
                 }
+            }
+        }
+    }
+
+    /// Reopen the most recently closed window (I1).
+    ///
+    /// Relaunches the application via the launcher (matched by app id) and
+    /// arms a pending reopen. When the new toplevel maps, its saved 3D
+    /// transform and workspace are reattached (see handle_commit).
+    pub fn reopen_last_closed(&mut self) -> bool {
+        let Some(entry) = self.closed_windows.take_most_recent() else {
+            info!("no closed window to reopen");
+            return false;
+        };
+        // Re-scan desktop files if the launcher cache is empty.
+        if self.launcher.applications.is_empty() {
+            self.launcher.discover();
+        }
+        let match_idx = self.launcher.applications.iter().position(|e| {
+            crate::closed::app_id_matches_entry(&entry.app_id, &e.app_id, &e.name)
+        });
+        let Some(idx) = match_idx else {
+            info!(app_id = %entry.app_id, "no desktop file matches closed window, cannot reopen");
+            return false;
+        };
+        let app_id = entry.app_id.clone();
+        self.pending_reopen = Some(crate::closed::PendingReopen {
+            app_id: app_id.clone(),
+            transform: entry.transform.clone(),
+            workspace: entry.workspace,
+        });
+        match self.launcher.launch(idx) {
+            Some(_child) => {
+                info!(app_id = %app_id, workspace = entry.workspace, "reopen launched");
+                true
+            }
+            None => {
+                warn!(app_id = %app_id, "reopen launch failed");
+                self.pending_reopen = None;
+                false
             }
         }
     }
@@ -2370,6 +2441,20 @@ impl XdgShellHandler for LookingGlass {
             if let Some(vid) = info.visual_id {
                 let was_focused = self.scene.focused_id == Some(vid)
                     || self.scene.selected_id == Some(vid);
+                // Record a tombstone before cleanup so the window can be
+                // reopened with its transform and workspace (I1).
+                let transform = self.scene.get_mut(vid).map(|v| v.transform.clone());
+                if let Some(transform) = transform {
+                    let ws_idx = self.workspace_for_visual(vid)
+                        .unwrap_or_else(|| self.workspace_manager.active_id());
+                    self.closed_windows.record(crate::closed::ClosedWindow {
+                        app_id: info.app_id.clone(),
+                        title: info.title.clone(),
+                        workspace: ws_idx,
+                        transform,
+                        closed_at_ms: now_ms() as u64,
+                    });
+                }
                 self.app_switcher.unregister_visual(&info.app_id, vid);
                 self.shelf.remove(vid);
                 cleanup_visual_permanently(self, vid);

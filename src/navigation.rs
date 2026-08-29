@@ -18,6 +18,7 @@ pub enum Binding {
     FrameAll,
     Escape,
     CloseApp,
+    ReopenClosed,
     CycleVisuals,
     OpenContextMenu,
     HelpOverlay,
@@ -51,6 +52,9 @@ impl KeyBinding {
     }
     pub const fn meta(key: u32) -> Self {
         KeyBinding { key, ctrl: false, shift: false, alt: false, meta: true }
+    }
+    pub const fn meta_shift(key: u32) -> Self {
+        KeyBinding { key, ctrl: false, shift: true, alt: false, meta: true }
     }
 }
 
@@ -89,6 +93,7 @@ impl NavigationModel {
             (SendToShelf,            KeyBinding::meta(keys::DOWN)),
             (Launcher,               KeyBinding::meta(keys::SPACE)),
             (CloseApp,               KeyBinding::meta(keys::W)),
+            (ReopenClosed,           KeyBinding::meta_shift(keys::T)),
             (HelpOverlay,            KeyBinding::meta(keys::SLASH)),
         ];
         NavigationModel { bindings }
@@ -285,5 +290,14 @@ mod tests {
     fn match_binding_help_overlay() {
         let nav = NavigationModel::new();
         assert_eq!(nav.match_binding(61, false, false, false, true), Some(Binding::HelpOverlay));
+    }
+
+    #[test]
+    fn match_binding_reopen_closed() {
+        let nav = NavigationModel::new();
+        // Meta+Shift+T reopens; plain T and Meta+T must not.
+        assert_eq!(nav.match_binding(28, false, true, false, true), Some(Binding::ReopenClosed));
+        assert_eq!(nav.match_binding(28, false, false, false, false), None);
+        assert_eq!(nav.match_binding(28, false, false, false, true), None);
     }
 }
