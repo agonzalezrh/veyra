@@ -46,10 +46,14 @@ sleep 0.5
 # Veyra's own Resized event is authoritative when present (the X window
 # geometry can differ from the logical size winit reports). Some stacks
 # never emit it — fall back to veyra's initial window_size (1280x720).
-WIN_GEOM=$(strip_ansi "$TMP_DIR/veyra.log" | grep -oE "Window resized to \(([0-9]+), ([0-9]+)\)" | tail -1)
-if [ -n "$WIN_GEOM" ]; then
-    WIN_W=$(echo "$WIN_GEOM" | sed -E 's/.*\(([0-9]+), ([0-9]+)\)/\1/')
-    WIN_H=$(echo "$WIN_GEOM" | sed -E 's/.*\(([0-9]+), ([0-9]+)\)/\2/')
+# The Debug format of the size varies; grab the last two integers on the
+# line (after the log timestamp).
+RAW_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -F "Window resized to" | tail -1)
+if [ -n "$RAW_LINE" ]; then
+    say "resized event: $RAW_LINE"
+    NUMS=$(echo "$RAW_LINE" | grep -oE "[0-9]+" | tail -2)
+    WIN_W=$(echo "$NUMS" | sed -n 1p)
+    WIN_H=$(echo "$NUMS" | sed -n 2p)
 else
     WIN_W=1280; WIN_H=720
     say "no Resized event; using default window_size 1280x720"
