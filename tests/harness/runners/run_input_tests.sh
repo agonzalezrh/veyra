@@ -142,6 +142,7 @@ drag() { # x1 y1 x2 y2
 }
 
 say "t8_resize_edges"
+JSON_DUMP=1
 WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" resizer --duration 9000 --min 300x200 \
     > "$TMP_DIR/t8.json" 2>"$TMP_DIR/t8.err" &
 T8_PID=$!
@@ -185,6 +186,7 @@ assert_json "$TMP_DIR/t8b.json" \
 
 # ── t9: resize corners (NE, NW, SE, SW) ──────────────────────────────
 say "t9_resize_corners"
+JSON_DUMP=1
 WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" resizer --duration 9000 --min 300x200 \
     > "$TMP_DIR/t9.json" 2>"$TMP_DIR/t9.err" &
 T9_PID=$!
