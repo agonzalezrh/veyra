@@ -194,7 +194,7 @@ fn main() {
     handle
         .insert_source(winit_source, |event, _, state| match event {
             WinitEvent::Resized { size, .. } => {
-                tracing::debug!("Window resized to {:?}", size);
+                tracing::info!("Window resized to {:?}", size);
                 state.window_size = (size.w as f32, size.h as f32);
                 state.schedule_render();
             }

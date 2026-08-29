@@ -9,6 +9,7 @@ export XDG_RUNTIME_DIR="$RT"
 
 PASS=0
 FAIL=0
+SKIP=0
 
 # Binary dir override: VEYRA_HARNESS_BIN (defaults to debug build).
 BIN="${VEYRA_HARNESS_BIN:-$ROOT_DIR/target/debug}"
@@ -16,6 +17,7 @@ BIN="${VEYRA_HARNESS_BIN:-$ROOT_DIR/target/debug}"
 say()  { echo "[harness] $*"; }
 ok()   { PASS=$((PASS+1)); echo "  PASS: $1"; }
 bad()  { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
+skip() { SKIP=$((SKIP+1)); echo "  SKIP: $1"; }
 tail_log() { [ -f "$1" ] && { echo "  ---- $1 (last lines) ----"; tail -5 "$1" | sed 's/\x1b\[[0-9;]*m//g'; }; }
 
 # Pre-flight: verify everything the harness needs exists, with actionable

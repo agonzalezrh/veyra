@@ -69,6 +69,10 @@ wait $T3A_PID 2>/dev/null
 # ── t4: real clients smoke ───────────────────────────────────────────
 say "t4_real_clients"
 for c in foot weston-terminal weston-simple-shm weston-simple-egl; do
+    if ! command -v "$c" >/dev/null 2>&1; then
+        skip "t4: $c not installed (optional real-client smoke)"
+        continue
+    fi
     LINES_BEFORE=$(wc -l < "$TMP_DIR/veyra.log")
     WAYLAND_DISPLAY="$VEYRA_SOCKET" "$c" > "$TMP_DIR/$c.log" 2>&1 &
     CPID=$!
@@ -85,5 +89,5 @@ done
 
 say "protocol tests done"
 echo "-------------------------------------"
-echo "protocol: $PASS passed, $FAIL failed"
+echo "protocol: $PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]

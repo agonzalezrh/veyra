@@ -14,29 +14,50 @@ preflight || { say "pre-flight failed — fix the issues above and rerun"; exit 
 # Client window geometry: the first visual is placed at world (300, 0, 0).
 # The harness pins normal (2D) mode by injecting F5 right after veyra
 # starts (the F5 binding toggles spatial mode), so the ortho projection
-# maps world→screen 1:1. The winit X11 window is 1280x800 (its own
-# default), so world y=0 is screen y=400. Default probe window is
-# 640x480 + 6% title bar → decorated 640x509 world units.
-# Screen rect: x [620..1260], y [106..614], resize band = 8 px.
-CX=940; CY=360
-XL=620; XR=1260; YT=106; YB=614
-
+# maps world→screen 1:1 across the ACTUAL winit window size (which
+# differs per machine — queried below). Default probe window is
+# 640x480 + 6% title bar → decorated 640x509 world units; resize band
+# is 8 px.
 say "starting stack: Xvfb → veyra"
 start_xvfb || { bad "Xvfb started"; exit 1; }
 ok "Xvfb started"
 start_veyra_x11 "$TMP_DIR/veyra.log" || { bad "veyra started"; exit 1; }
 ok "veyra started on $VEYRA_SOCKET"
 
-# Deterministic camera state for all pointer-injection tests:
-# - F5 toggles spatial mode OFF (ortho 1:1 mapping) and stops auto-orbit
-#   (any key press clears it, but it freezes at an arbitrary angle)
-# - Escape runs the escape chain → ResetCamera (yaw/pitch = 0)
-# Render then pins the normal-mode camera to z=500 with ortho(±640,±360).
-WID0=$(DISPLAY=:99 xdotool search --onlyvisible --name . 2>/dev/null | head -1)
+# Wait for veyra's X window to be visible (race with startup).
+WID0=""
+for _ in $(seq 1 20); do
+    WID0=$(DISPLAY=:99 xdotool search --onlyvisible --name . 2>/dev/null | head -1)
+    [ -n "$WID0" ] && break
+    sleep 0.25
+done
+if [ -z "$WID0" ]; then
+    bad "veyra X window not found for injection"
+    echo "input: $PASS passed, $FAIL failed, $SKIP skipped"
+    exit 1
+fi
 DISPLAY=:99 xdotool windowfocus "$WID0"
 DISPLAY=:99 xdotool key F5
 DISPLAY=:99 xdotool key Escape
 sleep 0.5
+
+# Veyra's own Resized event is authoritative (the X window geometry can
+# differ from the logical size winit reports — trust the log).
+# Veyra's own Resized event is authoritative when present (the X window
+# geometry can differ from the logical size winit reports). Some stacks
+# never emit it — fall back to veyra's initial window_size (1280x720).
+WIN_GEOM=$(strip_ansi "$TMP_DIR/veyra.log" | grep -oE "Window resized to \(([0-9]+), ([0-9]+)\)" | tail -1)
+if [ -n "$WIN_GEOM" ]; then
+    WIN_W=$(echo "$WIN_GEOM" | sed -E 's/.*\(([0-9]+), ([0-9]+)\)/\1/')
+    WIN_H=$(echo "$WIN_GEOM" | sed -E 's/.*\(([0-9]+), ([0-9]+)\)/\2/')
+else
+    WIN_W=1280; WIN_H=720
+    say "no Resized event; using default window_size 1280x720"
+fi
+say "veyra render size: ${WIN_W}x${WIN_H}"
+
+CX=$((WIN_W/2 + 300)); CY=$((WIN_H/2))
+XL=$((CX-320)); XR=$((CX+320)); YT=$((CY-255)); YB=$((CY+255))
 
 xdotool_wid() {
     DISPLAY=:99 xdotool search --onlyvisible --name . 2>/dev/null | head -1
@@ -122,7 +143,8 @@ WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" resizer --duration 9000 --min 
 T8_PID=$!
 sleep 1.5   # mapped at 640x480 → screen rect computed above
 
-drag $((XR-4)) $CY $((XR-4+14)) $CY          # EAST: +~28 px
+E_END=$((XR-4+14)); [ $E_END -ge $((WIN_W-4)) ] && E_END=$((WIN_W-6))
+drag $((XR-4)) $CY $E_END $CY               # EAST: width grows
 drag $((XL+4)) $CY $((XL+4-80)) $CY          # WEST: +160 px
 drag $CX $((YT+4)) $CX $((YT+4-70))          # NORTH: +140 px
 drag $CX $((YB-4)) $CX $((YB-4+70))          # SOUTH: +140 px
@@ -164,9 +186,11 @@ WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" resizer --duration 9000 --min 
 T9_PID=$!
 sleep 1.5
 
-drag $((XR-4)) $((YT+4)) $((XR-4+12)) $((YT+4-60))    # NE
+E_END=$((XR-4+12)); [ $E_END -ge $((WIN_W-4)) ] && E_END=$((WIN_W-6))
+drag $((XR-4)) $((YT+4)) $E_END $((YT+4-60))          # NE
 drag $((XL+4)) $((YT+4)) $((XL+4-60)) $((YT+4-60))    # NW
-drag $((XR-4)) $((YB-4)) $((XR-4+12)) $((YB-4+60))    # SE
+E_END=$((XR-4+12)); [ $E_END -ge $((WIN_W-4)) ] && E_END=$((WIN_W-6))
+drag $((XR-4)) $((YB-4)) $E_END $((YB-4+60))          # SE
 drag $((XL+4)) $((YB-4)) $((XL+4-60)) $((YB-4+60))    # SW
 wait_process_exit $T9_PID 14
 
@@ -179,5 +203,5 @@ assert_json "$TMP_DIR/t9.json" \
 
 say "input tests done"
 echo "-------------------------------------"
-echo "input: $PASS passed, $FAIL failed"
+echo "input: $PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]
