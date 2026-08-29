@@ -70,8 +70,10 @@ s.exit(0 if ok else 1)
 " "$2" 2>/dev/null; then ok "$3"; else
         bad "$3 (json expr failed: $2)"
         if [ -n "${JSON_DUMP:-}" ] && [ -f "$1" ]; then
-            echo "  ---- events in $1 (last 12 config/commit) ----"
-            grep -E '"ev":"(config|commit)"' "$1" | tail -12 | sed 's/^/    /'
+            echo "  ---- config events in $1 (resizing only, last 10) ----"
+            grep -E '"ev":"config"' "$1" | grep -E '"resizing":true' | tail -10 | sed 's/^/    /'
+            echo "  ---- distinct committed sizes in $1 ----"
+            grep -E '"ev":"commit"' "$1" | sort | uniq -c | sort -rn | head -8 | sed 's/^/    /'
         fi
     fi
 }
