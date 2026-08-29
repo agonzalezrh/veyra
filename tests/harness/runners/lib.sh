@@ -48,7 +48,13 @@ preflight() {
 
 # Assert a substring appears in a file (grep -F).
 assert_log() { # file pattern message
-    if grep -qF "$2" "$1" 2>/dev/null; then ok "$3"; else bad "$3 (pattern '$2' not in $1)"; fi
+    if grep -qF "$2" "$1" 2>/dev/null; then ok "$3"; else
+        bad "$3 (pattern '$2' not in $1)"
+        if [ -n "${JSON_DUMP:-}" ] && [ -f "$1" ]; then
+            echo "  ---- resize sessions in $1 ----"
+            grep -E "resize session" "$1" | sed 's/\x1b\[[0-9;]*m//g' | tail -8 | sed 's/^/    /'
+        fi
+    fi
 }
 
 # Assert a bash condition on the JSON event list of a client log.
@@ -61,7 +67,13 @@ events = [json.loads(l) for l in open('$1') if l.strip()]
 import sys as s
 ok = bool(eval(sys.argv[1], {'events': events}))
 s.exit(0 if ok else 1)
-" "$2" 2>/dev/null; then ok "$3"; else bad "$3 (json expr failed: $2)"; fi
+" "$2" 2>/dev/null; then ok "$3"; else
+        bad "$3 (json expr failed: $2)"
+        if [ -n "${JSON_DUMP:-}" ] && [ -f "$1" ]; then
+            echo "  ---- events in $1 (last 12 config/commit) ----"
+            grep -E '"ev":"(config|commit)"' "$1" | tail -12 | sed 's/^/    /'
+        fi
+    fi
 }
 
 wait_for_log() { # file pattern timeout_s
