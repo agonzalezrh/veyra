@@ -231,6 +231,10 @@ pub struct LookingGlass {
     pub navigation: NavigationModel,
     /// Alt+Tab was active (releasing Alt commits selection).
     alt_tab_active: bool,
+    /// Key whose press was consumed by the compositor (binding or context
+    /// menu); its release must be swallowed instead of leaking an unpaired
+    /// release to the focused client.
+    swallow_release: Option<u32>,
     /// Context menu (right-click popup).
     pub context_menu: ContextMenu,
     /// Configuration (loaded at startup, no live reload).
@@ -364,6 +368,7 @@ impl LookingGlass {
             shelf: SpatialShelf::new(),
             navigation: NavigationModel::new(),
             alt_tab_active: false,
+            swallow_release: None,
             context_menu: ContextMenu::new(),
             config: config.clone(),
             session: Session::new(config.clone()),
@@ -1704,6 +1709,11 @@ impl LookingGlass {
             info!(?source, "maximize toggle ignored: no focused visual");
             return;
         };
+        self.toggle_maximize_for(vid, source);
+    }
+
+    /// Toggle maximize on a specific visual (also the context-menu path).
+    pub fn toggle_maximize_for(&mut self, vid: VisualId, source: crate::maximize::MaximizeSource) {
         if self.is_maximized(vid) {
             self.begin_unmaximize(vid, source);
         } else {
@@ -1791,6 +1801,7 @@ impl LookingGlass {
         if let Some((vid, _)) = picked {
             let ws_count = self.workspace_manager.len();
             self.context_menu.show(x, y, vid, ws_count);
+            self.context_menu.set_maximize_label(self.is_maximized(vid));
             info!(?vid, "context menu opened");
             true
         } else {
@@ -1854,6 +1865,11 @@ impl LookingGlass {
             MenuAction::ResetTransform => {
                 self.scene.reset_transform(target);
                 info!(?target, "context menu: reset transform");
+            }
+            MenuAction::Maximize => {
+                // Same path as Meta+Up: intent -> configure -> commit.
+                self.toggle_maximize_for(target, crate::maximize::MaximizeSource::Compositor);
+                info!(?target, "context menu: maximize toggle");
             }
             MenuAction::Close => {
                 if let Some(wl_surface) = self.wayland_surfaces.get(&target).cloned() {
@@ -2392,6 +2408,12 @@ impl LookingGlass {
     /// Uses NavigationModel for binding dispatch.
     pub fn handle_key(&mut self, linux_key: u32, pressed: bool) {
         use crate::keys;
+        // A press consumed by the compositor must not leak an unpaired
+        // release to the focused client.
+        if !pressed && self.swallow_release == Some(linux_key) {
+            self.swallow_release = None;
+            return;
+        }
         match linux_key {
             keys::CTRL_L | keys::CTRL_R => { self.ctrl_pressed = pressed; }
             keys::SHIFT_L | keys::SHIFT_R => { self.shift_pressed = pressed; }
@@ -2433,12 +2455,13 @@ impl LookingGlass {
         if self.context_menu.visible && pressed {
             use crate::keys;
             match linux_key {
-                keys::UP => { self.context_menu.select_prev(); return; }
-                keys::DOWN => { self.context_menu.select_next(); return; }
+                keys::UP => { self.context_menu.select_prev(); self.swallow_release = Some(linux_key); return; }
+                keys::DOWN => { self.context_menu.select_next(); self.swallow_release = Some(linux_key); return; }
                 keys::ENTER => {
                     if let Some(action) = self.context_menu.confirm_selection() {
                         self.execute_menu_action(action);
                     }
+                    self.swallow_release = Some(linux_key);
                     return;
                 }
                 _ => {}
@@ -2465,6 +2488,7 @@ impl LookingGlass {
 
             if let Some(b) = binding {
                 self.handle_binding(b);
+                self.swallow_release = Some(linux_key);
                 return;
             }
         }
@@ -2640,6 +2664,7 @@ impl LookingGlass {
             let (x, y) = (self.window_size.0 as f64 * 0.5, self.window_size.1 as f64 * 0.5);
             let ws_count = self.workspace_manager.len();
             self.context_menu.show(x, y, vid, ws_count);
+            self.context_menu.set_maximize_label(self.is_maximized(vid));
             info!(?vid, "context menu opened via keyboard");
         }
     }

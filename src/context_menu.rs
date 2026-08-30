@@ -10,6 +10,7 @@ pub enum MenuAction {
     DeEmphasize,
     Restore,
     ResetTransform,
+    Maximize,
     Close,
     Dismiss,
 }
@@ -62,6 +63,7 @@ impl ContextMenu {
             MenuItem::new("De-emphasize", MenuAction::DeEmphasize),
             MenuItem::new("Restore", MenuAction::Restore),
             MenuItem::new("Reset Transform", MenuAction::ResetTransform),
+            MenuItem::new("Maximize", MenuAction::Maximize),
             MenuItem::new("Close", MenuAction::Close),
         ];
     }
@@ -71,6 +73,17 @@ impl ContextMenu {
         self.target = None;
         self.selected = None;
         self.items.clear();
+    }
+
+    /// Rename the Maximize item for an already-maximized target.
+    /// Called by the compositor right after `show`.
+    pub fn set_maximize_label(&mut self, maximized: bool) {
+        if !maximized {
+            return;
+        }
+        if let Some(item) = self.items.iter_mut().find(|i| i.action == MenuAction::Maximize) {
+            item.label = "Restore size".into();
+        }
     }
 
     /// Returns true if the given screen position hits the menu.
@@ -194,6 +207,26 @@ mod tests {
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Arrange)));
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Close)));
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::ResetTransform)));
+        assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Maximize)));
+    }
+
+    #[test]
+    fn maximize_label_renames_when_maximized() {
+        let mut menu = ContextMenu::new();
+        menu.show(0.0, 0.0, VisualId(1), 3);
+        let label = |m: &ContextMenu| {
+            m.items
+                .iter()
+                .find(|i| i.action == MenuAction::Maximize)
+                .map(|i| i.label.clone())
+                .expect("maximize item present")
+        };
+        assert_eq!(label(&menu), "Maximize");
+        menu.set_maximize_label(false);
+        assert_eq!(label(&menu), "Maximize");
+        menu.set_maximize_label(true);
+        assert_eq!(label(&menu), "Restore size");
+        menu.dismiss();
     }
 
     #[test]
@@ -237,7 +270,9 @@ mod tests {
         assert!(menu.confirm_selection().is_none());
         menu.selected = Some(0);
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Focus));
-        menu.selected = Some(8); // Close
+        menu.selected = Some(8); // Maximize
+        assert_eq!(menu.confirm_selection(), Some(MenuAction::Maximize));
+        menu.selected = Some(9); // Close
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Close));
     }
 
