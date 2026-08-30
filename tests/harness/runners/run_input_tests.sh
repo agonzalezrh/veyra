@@ -72,8 +72,6 @@ XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-ki
     > "$TMP_DIR/t5.json" 2>"$TMP_DIR/t5.err" &
 T5_PID=$!
 sleep 1.5   # window mapped
-derive_rect_from_map
-WID=$(xdotool_wid)
 DISPLAY=:99 xdotool mousemove $CX $CY click 1   # click → focus
 sleep 1
 DISPLAY=:99 xdotool type q1w2
@@ -147,8 +145,6 @@ XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-ki
     > "$TMP_DIR/t8.json" 2>"$TMP_DIR/t8.err" &
 T8_PID=$!
 sleep 1.5
-derive_rect_from_map
-calibrate_rect
 
 E_END=$((XR-4+14)); [ $E_END -ge $((WIN_W-4)) ] && E_END=$((WIN_W-6))
 drag $((XR-4)) $CY $E_END $CY               # EAST: width grows
@@ -179,7 +175,6 @@ grep -E "resize session" "$TMP_DIR/veyra.log" | sed 's/\x1b\[[0-9;]*m//g' | tail
 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" keyboard --expect a --duration 5000 > "$TMP_DIR/t8b.json" 2>/dev/null &
 T8B_PID=$!
 sleep 1.5
-WID=$(xdotool_wid)
 DISPLAY=:99 xdotool mousemove $CX $CY click 1
 sleep 0.5
 DISPLAY=:99 xdotool type a

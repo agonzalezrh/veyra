@@ -1202,7 +1202,9 @@ impl LookingGlass {
             if kind == PointerEventKind::Down && self.resize_session.is_none() {
                 let band_u = 8.0 / geom_size.w.max(1) as f64;
                 let band_v = 8.0 / (geom_size.h.max(1) as f64 * (1.0 + title_h as f64));
-                if let Some(edges) = crate::resize::hit_test_resize_zone(u, v, band_u, band_v) {
+                let zone = crate::resize::hit_test_resize_zone(u, v, band_u, band_v);
+                info!(u, v, band_u, band_v, zone = ?zone, "resize zone check");
+                if let Some(edges) = zone {
                     let is_toplevel = self.toplevels.iter().any(|t| t.visual_id == Some(vid));
                     if is_toplevel {
                         let start_local = ((u - 0.5) as f32, (0.5 - v) as f32);
