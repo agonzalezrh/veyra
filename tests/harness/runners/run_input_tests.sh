@@ -218,6 +218,107 @@ assert_json "$TMP_DIR/t9.json" \
 echo "  ---- t9 veyra sessions + zone checks ----"
 grep -E "resize session|resize zone check" "$TMP_DIR/veyra.log" | sed 's/\x1b\[[0-9;]*m//g' | tail -14 | sed 's/^/    /' 
 
+# ── t10: compositor-requested maximize + refusals (I4) ────────────────
+# Meta+Up toggles maximize. While maximized:
+#   - interactive resize must be refused (geometry authority stays with
+#     the client; no session starts),
+#   - the maximize state survives a workspace switch round-trip,
+#   - unmaximize restores the pre-maximize committed size,
+#   - the spatial transform is never touched (veyra logs prove it).
+say "t10_maximize_compositor"
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --duration 14000 \
+    > "$TMP_DIR/t10.json" 2>"$TMP_DIR/t10.err" &
+T10_PID=$!
+sleep 1.5
+DISPLAY=:99 xdotool mousemove $CX $CY click 1   # focus
+sleep 0.3
+DISPLAY=:99 xdotool keydown super
+DISPLAY=:99 xdotool key Up
+DISPLAY=:99 xdotool keyup super
+sleep 1.5
+
+assert_json "$TMP_DIR/t10.json" \
+    "any(e['ev']=='config' and e['maximized'] and e['w']==$WIN_W and e['h']==$WIN_H for e in events)" \
+    "t10: Meta+Up produced sized maximized configure (view-size == render size)"
+assert_json "$TMP_DIR/t10.json" \
+    "any(e['ev']=='commit' and e['w']==$WIN_W and e['h']==$WIN_H for e in events)" \
+    "t10: client committed the maximized size"
+assert_log "$TMP_DIR/veyra.log" "maximize requested" "t10: veyra recorded compositor maximize intent"
+if strip_ansi "$TMP_DIR/veyra.log" | grep -a "maximize requested" | tail -1 | grep -qF "source=Compositor"; then
+    ok "t10: maximize was compositor-requested"
+else
+    bad "t10: maximize source is not compositor"
+fi
+
+# Resize attempt on the maximized window's west edge (window center at
+# CX: spans [CX-640, CX+640] → west edge at CX-640+4). A press+release
+# WITHOUT motion: any drag would trigger I2's content-area move, which
+# is orthogonal to maximize — here we only probe the resize refusal.
+DISPLAY=:99 xdotool mousemove $((CX-636)) $CY mousedown 1
+sleep 0.3
+DISPLAY=:99 xdotool mouseup 1
+sleep 0.5
+if strip_ansi "$TMP_DIR/veyra.log" | grep -aq "resize refused: window is maximized"; then
+    ok "t10: resize attempt refused while maximized"
+else
+    bad "t10: resize attempt not refused while maximized"
+fi
+FUL_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -an "maximize fulfilled" | grep -av "unmaximize" | tail -1 | cut -d: -f1)
+if strip_ansi "$TMP_DIR/veyra.log" | grep -an "resize session started" | awk -F: "\$1 > $FUL_LINE" | grep -q .; then
+    bad "t10: a resize session started after maximize"
+else
+    ok "t10: no resize session while maximized"
+fi
+assert_json "$TMP_DIR/t10.json" \
+    "all(e['w']==$WIN_W and e['h']==$WIN_H for i,e in enumerate(events) if e['ev']=='commit' and i >= [j for j,x in enumerate(events) if x['ev']=='commit' and x['w']==$WIN_W][0])" \
+    "t10: client size stayed at maximized size through refused resize"
+
+# Workspace switch round-trip: maximize state must survive it.
+DISPLAY=:99 xdotool key ctrl+Tab
+sleep 0.8
+DISPLAY=:99 xdotool key ctrl+shift+Tab
+sleep 0.8
+
+# Unmaximize: restore to the pre-maximize committed size (640x480).
+DISPLAY=:99 xdotool keydown super
+DISPLAY=:99 xdotool key Up
+DISPLAY=:99 xdotool keyup super
+sleep 1.5
+
+assert_json "$TMP_DIR/t10.json" \
+    "any(e['ev']=='config' and not e['maximized'] and e['w']==640 and e['h']==480 for e in events)" \
+    "t10: unmaximize restored pre-maximize size (survived workspace switch)"
+assert_log "$TMP_DIR/veyra.log" "unmaximize fulfilled" "t10: unmaximize transaction completed"
+MAP_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "surface mapped" | grep -a "client-kit-probe" | tail -1)
+UNM_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "unmaximize fulfilled" | tail -1)
+MAP_POS=$(echo "$MAP_LINE" | grep -oE "pos=Vector3 \[[^]]*\]")
+MAP_ROT=$(echo "$MAP_LINE" | grep -oE "rot=Quaternion \{[^}]*\}")
+MAP_SCALE=$(echo "$MAP_LINE" | grep -oE "scale=Vector3 \[[^]]*\]")
+UNM_POS=$(echo "$UNM_LINE" | grep -oE "pos=Vector3 \[[^]]*\]")
+UNM_ROT=$(echo "$UNM_LINE" | grep -oE "rot=Quaternion \{[^}]*\}")
+UNM_SCALE=$(echo "$UNM_LINE" | grep -oE "scale=Vector3 \[[^]]*\]")
+if [ -n "$MAP_POS" ] && [ "$MAP_POS" = "$UNM_POS" ] \
+   && [ -n "$MAP_ROT" ] && [ "$MAP_ROT" = "$UNM_ROT" ] \
+   && [ "$UNM_SCALE" = "scale=Vector3 [1.0, 1.0, 1.0]" ]; then
+    ok "t10: spatial transform (pos/rot/scale) untouched by maximize cycle"
+else
+    bad "t10: spatial transform changed by maximize cycle (map: $MAP_POS $MAP_ROT $MAP_SCALE / unmax: $UNM_POS $UNM_ROT $UNM_SCALE)"
+fi
+wait_process_exit $T10_PID 16
+
+# typing still works after a maximize cycle (no state corruption)
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" keyboard --expect a --duration 5000 > "$TMP_DIR/t10b.json" 2>/dev/null &
+T10B_PID=$!
+sleep 1.5
+DISPLAY=:99 xdotool mousemove $CX $CY click 1
+sleep 0.5
+DISPLAY=:99 xdotool type a
+wait_process_exit $T10B_PID 8
+assert_json "$TMP_DIR/t10b.json" \
+    "any(e['ev']=='expect_matched' for e in events)" \
+    "t10: typing works after maximize cycle (no state corruption)"
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"

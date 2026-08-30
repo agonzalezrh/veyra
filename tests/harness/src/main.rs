@@ -5,7 +5,9 @@
 //! (with keysyms), pointer events, and close requests. The runner
 //! asserts on these logs — never on screenshots or timing sleeps.
 //!
-//! Subcommands: probe, resizer, keyboard, pointer, quitter.
+//! Subcommands: probe, resizer, keyboard, pointer, quitter. The probe/
+//! resizer clients also support client-requested maximize sequencing via
+//! --maximize-after / --unmaximize-after (I4).
 
 use std::convert::TryInto;
 use std::io::Write;
@@ -84,6 +86,11 @@ struct Opts {
     /// (client-driven geometry change — tests compositor adoption).
     resize_to: Option<(u32, u32)>,
     after_commits: u32,
+    /// Maximize test: after this many commits, send xdg_toplevel
+    /// set_maximized (client-requested maximize).
+    maximize_after: Option<u32>,
+    /// Maximize test: after this many commits, send unset_maximized.
+    unmaximize_after: Option<u32>,
 }
 
 fn parse_size(s: &str) -> (u32, u32) {
@@ -109,6 +116,8 @@ fn parse_args() -> Opts {
         expect: None,
         resize_to: None,
         after_commits: 0,
+        maximize_after: None,
+        unmaximize_after: None,
     };
     let mut i = 1;
     while i < args.len() {
@@ -131,6 +140,8 @@ fn parse_args() -> Opts {
             "--expect" => opts.expect = Some(next(&mut i)),
             "--resize-to" => opts.resize_to = Some(parse_size(&next(&mut i))),
             "--after-commits" => opts.after_commits = next(&mut i).parse().unwrap_or(0),
+            "--maximize-after" => opts.maximize_after = next(&mut i).parse().ok(),
+            "--unmaximize-after" => opts.unmaximize_after = next(&mut i).parse().ok(),
             other => {
                 eprintln!("unknown option: {}", other);
                 std::process::exit(2);
@@ -246,6 +257,18 @@ impl TestClient {
             ("w", width.into()),
             ("h", height.into()),
         ]);
+        // Client-requested maximize transitions (I4). Requests are sent
+        // right after a commit; the compositor answers with a configure
+        // carrying the Maximized state bit (and a size for well-behaved
+        // compositors).
+        if self.opts.maximize_after == Some(self.commits) {
+            log_kv(&[("ev", "request_maximize".into())]);
+            self.window.set_maximized();
+        }
+        if self.opts.unmaximize_after == Some(self.commits) {
+            log_kv(&[("ev", "request_unmaximize".into())]);
+            self.window.unset_maximized();
+        }
         if let Some(n) = self.opts.exit_after_commits {
             if self.commits >= n {
                 self.exit = true;
