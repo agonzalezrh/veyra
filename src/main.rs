@@ -19,6 +19,7 @@ mod input_router;
 mod interaction;
 mod launcher;
 mod layout;
+mod maximize;
 mod native_backend;
 mod navigation;
 mod perf;
@@ -204,8 +205,10 @@ fn main() {
     handle
         .insert_source(winit_source, |event, _, state| match event {
             WinitEvent::Resized { size, .. } => {
-                tracing::info!("Window resized to {:?}", size);
                 state.window_size = (size.w as f32, size.h as f32);
+                // Same greppable shape as the startup log so consumers
+                // (harness) always see the CURRENT render size.
+                tracing::info!(window_size = ?state.window_size, "render size");
                 state.schedule_render();
             }
             WinitEvent::Input(event) => {

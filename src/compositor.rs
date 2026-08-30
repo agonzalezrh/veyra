@@ -125,6 +125,12 @@ pub struct ToplevelInfo {
     pub lifecycle: SurfaceLifecycle,
     pub visual_id: Option<VisualId>,
     pub size: Option<(i32, i32)>,
+    /// I4: the client acknowledged a maximized configure. Geometry
+    /// authority stays with the client; this only tracks the state.
+    pub maximized: bool,
+    /// I4: committed size to restore on unmaximize (captured at
+    /// maximize time). None while not maximized.
+    pub restore_size: Option<(i32, i32)>,
 }
 
 impl ToplevelInfo {
@@ -151,6 +157,8 @@ impl ToplevelInfo {
             title,
             visual_id: None,
             size: None,
+            maximized: false,
+            restore_size: None,
         }
     }
 
@@ -240,6 +248,10 @@ pub struct LookingGlass {
     /// Veyra-owned intent for client geometry changes (I3a). Protocol
     /// state (configure serials, ACKs) remains owned by Smithay.
     pub client_resizes: crate::client_resize::ClientResizeCoordinator,
+    /// Veyra-owned intent for maximize transitions (I4). The client's
+    /// configured/committed geometry changes; the spatial transform never
+    /// does (see crate::maximize).
+    pub maximize: crate::maximize::MaximizeCoordinator,
     /// In-progress pointer resize session (I3b), None when idle.
     pub resize_session: Option<crate::resize::ResizeSession>,
     /// Relative pointer manager for sending relative motion deltas.
@@ -361,6 +373,7 @@ impl LookingGlass {
             closed_windows: crate::closed::ClosedWindowHistory::new(10),
             pending_reopen: None,
             client_resizes: crate::client_resize::ClientResizeCoordinator::default(),
+            maximize: crate::maximize::MaximizeCoordinator::default(),
             resize_session: None,
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<LookingGlass>(display_handle),
             dmabuf_manager: crate::dmabuf::DmabufManager::new(display_handle),
@@ -722,6 +735,7 @@ impl LookingGlass {
                                 }
                                 let visual_id = visual.id;
                                 let map_pos = visual.transform.position;
+                                let map_rot = visual.transform.rotation;
                                 let map_total_w = visual.total_width();
                                 let map_total_h = visual.total_height();
                                 let map_scale = visual.transform.scale;
@@ -748,6 +762,7 @@ impl LookingGlass {
                                 );
                                 info!(?visual_id, app_id = %self.toplevels[idx].app_id,
                                        pos = ?map_pos,
+                                       rot = ?map_rot,
                                        total_w = map_total_w,
                                        total_h = map_total_h,
                                        scale = ?map_scale,
@@ -760,7 +775,8 @@ impl LookingGlass {
                         // Resolve any outstanding geometry request (I3a).
                         // A mismatched buffer means the client overrode us —
                         // committed geometry always wins.
-                        match self.client_resizes.note_commit(vid, (tex_size.w as i32, tex_size.h as i32)) {
+                        let outcome = self.client_resizes.note_commit(vid, (tex_size.w as i32, tex_size.h as i32));
+                        match outcome {
                             crate::client_resize::CommitOutcome::Fulfilled => {
                                 info!(?vid, w = tex_size.w, h = tex_size.h, "client resize fulfilled");
                                 // Client pacing (I3b): continue with the
@@ -772,6 +788,9 @@ impl LookingGlass {
                             }
                             crate::client_resize::CommitOutcome::NotResizing => {}
                         }
+                        // I4: a committed buffer completes any outstanding
+                        // maximize/unmaximize transition for this surface.
+                        self.complete_maximize_intent(vid, (tex_size.w as i32, tex_size.h as i32));
                         if let Some(visual) = self.scene.get_mut(vid) {
                             if let Some(dst) = visual.texture_mut() {
                                 *dst = texture;
@@ -1207,9 +1226,13 @@ impl LookingGlass {
                 if let Some(edges) = zone {
                     let is_toplevel = self.toplevels.iter().any(|t| t.visual_id == Some(vid));
                     if is_toplevel {
-                        let start_local = ((u - 0.5) as f32, (0.5 - v) as f32);
-                        if self.begin_resize_session(vid, edges, start_local) {
-                            return ContentRouting::Routed;
+                        if self.is_maximized(vid) {
+                            info!(?vid, ?edges, "resize refused: window is maximized");
+                        } else {
+                            let start_local = ((u - 0.5) as f32, (0.5 - v) as f32);
+                            if self.begin_resize_session(vid, edges, start_local) {
+                                return ContentRouting::Routed;
+                            }
                         }
                     }
                 }
@@ -1438,6 +1461,11 @@ impl LookingGlass {
         if self.resize_session.is_some() {
             return false;
         }
+        // I4: maximized windows do not participate in interactive resize.
+        if self.is_maximized(vid) {
+            info!(?vid, "resize session refused: window is maximized");
+            return false;
+        }
         let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() else { return false };
         if !self.toplevels.iter().any(|t| t.toplevel.wl_surface() == &wl_surface) {
             return false; // popups are transient and not resizable
@@ -1548,6 +1576,202 @@ impl LookingGlass {
         self.abort_client_resize(session.vid);
         info!(vid = ?session.vid, "resize session finished");
         true
+    }
+
+    // ── Maximize/unmaximize (I4) ─────────────────────────────────────────
+
+    /// The configured size for a maximized surface: the current view size.
+    /// The window quad grows around its spatial position when the client
+    /// commits bigger buffers — the transform itself is never touched.
+    fn maximize_target(&self) -> (i32, i32) {
+        let (w, h) = self.window_size;
+        ((w.round() as i32).max(1), (h.round() as i32).max(1))
+    }
+
+    /// Whether the toplevel for `vid` is currently maximized (I4).
+    pub fn is_maximized(&self, vid: VisualId) -> bool {
+        self.toplevels.iter().any(|t| t.visual_id == Some(vid) && t.maximized)
+    }
+
+    fn toplevel_for_vid(&self, vid: VisualId) -> Option<ToplevelSurface> {
+        self.toplevels.iter()
+            .find(|t| t.visual_id == Some(vid))
+            .map(|t| t.toplevel.clone())
+            .filter(|t| t.alive())
+    }
+
+    /// Begin a maximize transition (I4).
+    ///
+    /// Sends one xdg_toplevel.configure(view size, Maximized). The client
+    /// decides geometry by what it commits; the visual's spatial transform
+    /// (position/rotation/scale) is never modified. Reuses the I3a
+    /// coordinator so pacing stays "at most one unacknowledged configure".
+    pub fn begin_maximize(&mut self, vid: VisualId, source: crate::maximize::MaximizeSource) {
+        use crate::maximize::{MaximizeIntent, MaximizeKind};
+        let Some(toplevel) = self.toplevel_for_vid(vid) else { return };
+        if self.is_maximized(vid) {
+            info!(?vid, ?source, "maximize ignored: already maximized");
+            return;
+        }
+        if self.resize_session.as_ref().map_or(false, |s| s.vid == vid) {
+            info!(?vid, ?source, "maximize refused: resize session in progress");
+            return;
+        }
+        let Some(visual) = self.scene.get(vid) else { return };
+        let restore = (visual.geometry.size.w, visual.geometry.size.h);
+        if restore.0 <= 0 || restore.1 <= 0 {
+            info!(?vid, ?source, "maximize refused: no committed geometry yet");
+            return;
+        }
+        let target = self.maximize_target();
+
+        // Defer while the surface still owes an ACK for a previous configure.
+        let wl_surface = self.wayland_surfaces.get(&vid).cloned();
+        let unacked = wl_surface.map_or(false, |wl_surface| {
+            with_states(&wl_surface, |states| {
+                states.data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .map(|attrs| !attrs.lock().unwrap().pending_configures().is_empty())
+                    .unwrap_or(false)
+            })
+        });
+        if unacked || self.client_resizes.awaiting_ack(vid) {
+            self.maximize.defer(vid, MaximizeKind::Maximize, source);
+            info!(?vid, ?source, "maximize deferred: configure outstanding");
+            return;
+        }
+
+        toplevel.with_pending_state(|state| {
+            state.size = Some(smithay::utils::Size::new(target.0, target.1));
+            state.states.set(xdg_toplevel::State::Maximized);
+        });
+        let serial = toplevel.send_configure();
+        self.client_resizes.mark_sent(vid, serial, target);
+        self.maximize.begin(MaximizeIntent {
+            vid, kind: MaximizeKind::Maximize, source, serial, target, restore,
+            previous: restore,
+        });
+        info!(?vid, ?source, ?serial, target_w = target.0, target_h = target.1, restore_w = restore.0, restore_h = restore.1, "maximize requested");
+    }
+
+    /// Begin an unmaximize transition (I4): configure the client back to
+    /// its pre-maximize committed size and clear the Maximized state bit.
+    pub fn begin_unmaximize(&mut self, vid: VisualId, source: crate::maximize::MaximizeSource) {
+        use crate::maximize::{MaximizeIntent, MaximizeKind};
+        let Some(toplevel) = self.toplevel_for_vid(vid) else { return };
+        if !self.is_maximized(vid) {
+            info!(?vid, ?source, "unmaximize ignored: not maximized");
+            return;
+        }
+        let restore = self.toplevels.iter()
+            .find(|t| t.visual_id == Some(vid))
+            .and_then(|t| t.restore_size)
+            .unwrap_or_else(|| self.maximize_target());
+        let wl_surface = self.wayland_surfaces.get(&vid).cloned();
+        let unacked = wl_surface.map_or(false, |wl_surface| {
+            with_states(&wl_surface, |states| {
+                states.data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .map(|attrs| !attrs.lock().unwrap().pending_configures().is_empty())
+                    .unwrap_or(false)
+            })
+        });
+        if unacked || self.client_resizes.awaiting_ack(vid) {
+            self.maximize.defer(vid, MaximizeKind::Unmaximize, source);
+            info!(?vid, ?source, "unmaximize deferred: configure outstanding");
+            return;
+        }
+
+        toplevel.with_pending_state(|state| {
+            state.size = Some(smithay::utils::Size::new(restore.0, restore.1));
+            state.states.unset(xdg_toplevel::State::Maximized);
+        });
+        let previous = self.scene.get(vid)
+            .map(|v| (v.geometry.size.w, v.geometry.size.h))
+            .unwrap_or(restore);
+        let serial = toplevel.send_configure();
+        self.client_resizes.mark_sent(vid, serial, restore);
+        self.maximize.begin(MaximizeIntent {
+            vid, kind: MaximizeKind::Unmaximize, source, serial, target: restore, restore,
+            previous,
+        });
+        info!(?vid, ?source, ?serial, restore_w = restore.0, restore_h = restore.1, "unmaximize requested");
+    }
+
+    /// Toggle maximize on the focused (or selected) visual.
+    pub fn toggle_maximize_selected(&mut self, source: crate::maximize::MaximizeSource) {
+        let Some(vid) = self.scene.focused_id.or(self.scene.selected_id) else {
+            info!(?source, "maximize toggle ignored: no focused visual");
+            return;
+        };
+        if self.is_maximized(vid) {
+            self.begin_unmaximize(vid, source);
+        } else {
+            self.begin_maximize(vid, source);
+        }
+    }
+
+    /// Complete a maximize/unmaximize transaction after a client commit.
+    ///
+    /// `committed` is the client's buffer size. Completion rules:
+    /// - committed == target: the client complied (client_matched=true).
+    /// - committed == previous: a DRAINING buffer (acked our configure but
+    ///   not yet redrawn at the new size) — the intent stays armed until
+    ///   the client's next commit.
+    /// - anything else: the client explicitly committed a third size —
+    ///   the acknowledged STATE applies, committed geometry wins
+    ///   (client_matched=false).
+    ///
+    /// The visual's transform is logged as evidence that maximize never
+    /// touched it: position, rotation and scale are spatial state.
+    fn complete_maximize_intent(&mut self, vid: VisualId, committed: (i32, i32)) {
+        use crate::maximize::MaximizeKind;
+        let Some(intent) = self.maximize.intent(vid) else { return };
+        if committed == intent.previous && committed != intent.target {
+            return; // draining commit — keep the intent armed
+        }
+        let intent = self.maximize.take_intent(vid).expect("intent peeked above");
+        let client_matched = committed == intent.target;
+        if let Some(info) = self.toplevels.iter_mut().find(|t| t.visual_id == Some(vid)) {
+            match intent.kind {
+                MaximizeKind::Maximize => {
+                    info.maximized = true;
+                    info.restore_size = Some(intent.restore);
+                }
+                MaximizeKind::Unmaximize => {
+                    info.maximized = false;
+                    info.restore_size = None;
+                }
+            }
+        }
+        let state_msg = match intent.kind {
+            MaximizeKind::Maximize => "maximize fulfilled",
+            MaximizeKind::Unmaximize => "unmaximize fulfilled",
+        };
+        if let Some(v) = self.scene.get(vid) {
+            let pos = v.transform.position;
+            let rot = v.transform.rotation;
+            let scale = v.transform.scale;
+            info!(?vid, source = ?intent.source, client_matched,
+                  w = intent.target.0, h = intent.target.1, ?pos, ?rot, ?scale,
+                  "{}", state_msg);
+        } else {
+            info!(?vid, source = ?intent.source, client_matched,
+                  w = intent.target.0, h = intent.target.1,
+                  "{}", state_msg);
+        }
+        self.flush_deferred_maximize();
+    }
+
+    /// Retry a deferred maximize request once the surface is free of
+    /// unacknowledged configures (called from ack/commit paths).
+    fn flush_deferred_maximize(&mut self) {
+        use crate::maximize::MaximizeKind;
+        let Some((vid, kind, source)) = self.maximize.take_deferred() else { return };
+        match kind {
+            MaximizeKind::Maximize => self.begin_maximize(vid, source),
+            MaximizeKind::Unmaximize => self.begin_unmaximize(vid, source),
+        }
     }
 
     /// Show a context menu at the given screen position for the selected visual.
@@ -2352,6 +2576,9 @@ impl LookingGlass {
             CloseApp => {
                 self.close_focused_app();
             }
+            ToggleMaximize => {
+                self.toggle_maximize_selected(crate::maximize::MaximizeSource::Compositor);
+            }
             ReopenClosed => {
                 self.reopen_last_closed();
             }
@@ -2662,6 +2889,26 @@ impl XdgShellHandler for LookingGlass {
         info!(?vid, "unfullscreen requested");
     }
 
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
+        match vid {
+            Some(vid) => self.begin_maximize(vid, crate::maximize::MaximizeSource::Client),
+            None => {
+                info!("maximize request before the surface mapped; ignored");
+            }
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
+        match vid {
+            Some(vid) => self.begin_unmaximize(vid, crate::maximize::MaximizeSource::Client),
+            None => {
+                info!("unmaximize request before the surface mapped; ignored");
+            }
+        }
+    }
+
     fn ack_configure(&mut self, surface: WlSurface, configure: Configure) {
         // I3a: mark our outstanding geometry request acknowledged when the
         // serial matches. Smithay remains authoritative for the protocol
@@ -2680,6 +2927,8 @@ impl XdgShellHandler for LookingGlass {
                 .and_then(|t| t.visual_id);
             if let Some(vid) = vid {
                 self.flush_resize_desired(vid);
+                // I4: the freed surface may now take a deferred maximize.
+                self.flush_deferred_maximize();
             }
         }
     }
@@ -2743,6 +2992,8 @@ impl XdgShellHandler for LookingGlass {
                     || self.scene.selected_id == Some(vid);
                 // Drop any outstanding geometry request for the dead surface (I3a).
                 self.client_resizes.abort(vid);
+                // Drop any outstanding maximize intent for the dead surface (I4).
+                self.maximize.abort(vid);
                 // Record a tombstone before cleanup so the window can be
                 // reopened with its transform and workspace (I1).
                 let transform = self.scene.get_mut(vid).map(|v| v.transform.clone());
@@ -2822,6 +3073,8 @@ fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
     cleanup_popups_by_vid(state, vid);
     // Drop any outstanding client geometry request (I3a)
     state.client_resizes.abort(vid);
+    // Drop any outstanding maximize intent (I4)
+    state.maximize.abort(vid);
     // Drop a resize session targeting the removed visual (I3b)
     if state.resize_session.as_ref().map_or(false, |s| s.vid == vid) {
         state.resize_session = None;

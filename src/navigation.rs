@@ -18,6 +18,7 @@ pub enum Binding {
     FrameAll,
     Escape,
     CloseApp,
+    ToggleMaximize,
     ReopenClosed,
     CycleVisuals,
     OpenContextMenu,
@@ -93,6 +94,7 @@ impl NavigationModel {
             (SendToShelf,            KeyBinding::meta(keys::DOWN)),
             (Launcher,               KeyBinding::meta(keys::SPACE)),
             (CloseApp,               KeyBinding::meta(keys::W)),
+            (ToggleMaximize,         KeyBinding::meta(keys::UP)),
             (ReopenClosed,           KeyBinding::meta_shift(keys::T)),
             (HelpOverlay,            KeyBinding::meta(keys::SLASH)),
         ];
@@ -290,6 +292,15 @@ mod tests {
     fn match_binding_help_overlay() {
         let nav = NavigationModel::new();
         assert_eq!(nav.match_binding(61, false, false, false, true), Some(Binding::HelpOverlay));
+    }
+
+    #[test]
+    fn match_binding_toggle_maximize() {
+        let nav = NavigationModel::new();
+        // Meta+Up toggles maximize; plain Up and Meta+Down must not.
+        assert_eq!(nav.match_binding(111, false, false, false, true), Some(Binding::ToggleMaximize));
+        assert_eq!(nav.match_binding(111, false, false, false, false), None);
+        assert_eq!(nav.match_binding(116, false, false, false, true), Some(Binding::SendToShelf));
     }
 
     #[test]
