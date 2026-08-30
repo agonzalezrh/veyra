@@ -146,17 +146,21 @@ start_veyra_nested() { # parent_socket log_file
     return 1
 }
 
-start_veyra_x11() { # log_file
-    # X11 mode: winit must not see a stale WAYLAND_DISPLAY
+start_veyra_x11() { # log_file [veyra args...]
+    local log_file="$1"; shift
+    # X11 mode: winit must not see a stale WAYLAND_DISPLAY.
+    # compositor=debug adds KEY EVENT lines (exact received keycodes) —
+    # harness diagnostics use them when injection misbehaves.
     setup_veerya_runtime
-    env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$VEYRA_RUNTIME" DISPLAY=:99 "$BIN/veyra" > "$1" 2>&1 &
+    env -u WAYLAND_DISPLAY RUST_LOG="veyra=info,veyra::compositor=debug" \
+        XDG_RUNTIME_DIR="$VEYRA_RUNTIME" DISPLAY=:99 "$BIN/veyra" "$@" > "$log_file" 2>&1 &
     VEYRA_PID=$!
     for _ in $(seq 1 40); do
-        VEYRA_SOCKET=$(strip_ansi "$1" | grep -oE "Listening on wayland socket: wayland-[a-z0-9-]+" | tail -1 | awk '{print $NF}')
+        VEYRA_SOCKET=$(strip_ansi "$log_file" | grep -oE "Listening on wayland socket: wayland-[a-z0-9-]+" | tail -1 | awk '{print $NF}')
         [ -n "$VEYRA_SOCKET" ] && [ -S "$RT/$VEYRA_SOCKET" ] && return 0
         sleep 0.25
     done
-    tail_log "$1"
+    tail_log "$log_file"
     return 1
 }
 

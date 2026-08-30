@@ -74,6 +74,10 @@ fn main() {
 
     // Check for --native flag to use DRM backend
     let use_native = std::env::args().any(|a| a == "--native");
+    // Check for --normal/--2d flag to start in normal (2D, ortho) mode.
+    // Deterministic mode pinning: the harness (and users) must not depend
+    // on injected F5 keypresses, which proved unreliable across setups.
+    let start_normal = std::env::args().any(|a| a == "--normal" || a == "--2d");
 
     let mut event_loop: EventLoop<'static, LookingGlass> =
         EventLoop::try_new().expect("Failed to create event loop");
@@ -101,6 +105,12 @@ fn main() {
                 // Keep the winit backend already set up in `state`
             }
         }
+    }
+
+    // Start in normal (2D, ortho) mode when requested.
+    if start_normal {
+        state.spatial_mode = false;
+        tracing::info!("starting in normal (2D) mode");
     }
 
     // Run session startup sequence

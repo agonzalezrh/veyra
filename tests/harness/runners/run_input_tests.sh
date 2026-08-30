@@ -12,16 +12,15 @@ cleanup_all
 preflight || { say "pre-flight failed — fix the issues above and rerun"; exit 1; }
 
 # Client window geometry: the first visual is placed at world (300, 0, 0).
-# The harness pins normal (2D) mode by injecting F5 right after veyra
-# starts (the F5 binding toggles spatial mode), so the ortho projection
-# maps world→screen 1:1 across the ACTUAL winit window size (which
-# differs per machine — queried below). Default probe window is
-# 640x480 + 6% title bar → decorated 640x509 world units; resize band
-# is 8 px.
+# The harness pins normal (2D) mode via veyra's --normal flag (spatial
+# mode must be off for the ortho projection to map world→screen 1:1
+# across the ACTUAL winit window size, which differs per machine —
+# queried below). Default probe window is 640x480 + 6% title bar →
+# decorated 640x509 world units; resize band is 8 px.
 say "starting stack: Xvfb → veyra"
 start_xvfb || { bad "Xvfb started"; exit 1; }
 ok "Xvfb started"
-start_veyra_x11 "$TMP_DIR/veyra.log" || { bad "veyra started"; exit 1; }
+start_veyra_x11 "$TMP_DIR/veyra.log" --normal || { bad "veyra started"; exit 1; }
 ok "veyra started on $VEYRA_SOCKET"
 
 # Wait for veyra's X window to be visible (race with startup).
@@ -36,29 +35,20 @@ if [ -z "$WID0" ]; then
     echo "input: $PASS passed, $FAIL failed, $SKIP skipped"
     exit 1
 fi
-# Pin normal (2D) mode: F5 toggles spatial mode, and veyra always starts
-# in spatial mode. The injected keypress races veyra's input startup, so
-# verify the toggle landed in veyra's log and retry until the LATEST
-# toggle state is spatial_mode=false (a lost keypress retries; a doubled
-# keypress self-corrects on the next iteration).
-mode_pinned() {
-    strip_ansi "$TMP_DIR/veyra.log" | grep "spatial mode toggled" | tail -1 | grep -q "spatial_mode=false"
-}
-MODE_PINNED=0
-for _ in $(seq 1 12); do
-    if mode_pinned; then MODE_PINNED=1; break; fi
-    DISPLAY=:99 xdotool windowfocus "$WID0"
-    DISPLAY=:99 xdotool key F5
-    sleep 0.4
-done
-if [ "$MODE_PINNED" != 1 ]; then
-    bad "t0: could not pin normal mode — F5 toggle never observed in veyra log"
+# Xvfb has no window manager: focus must be set explicitly so that all
+# subsequent xdotool key/type injection lands in veyra's window.
+DISPLAY=:99 xdotool windowfocus "$WID0"
+# Pin normal (2D) mode deterministically: veyra is started with --normal,
+# so the mode never depends on injected keys (X key injection proved
+# unreliable across environments: q/w/1/2 delivered fine but the F5
+# toggle was lost on some setups). Verify via veyra's startup log.
+if ! strip_ansi "$TMP_DIR/veyra.log" | grep -q "starting in normal (2D) mode"; then
+    bad "t0: veyra did not start in normal (2D) mode (--normal flag missing?)"
     tail_log "$TMP_DIR/veyra.log"
     echo "input: $PASS passed, $FAIL failed, $SKIP skipped"
     exit 1
 fi
-ok "t0: normal (2D) mode pinned (spatial_mode=false in veyra log)"
-DISPLAY=:99 xdotool key Escape
+ok "t0: normal (2D) mode pinned (--normal startup)"
 sleep 0.5
 
 # Veyra's own Resized event is authoritative (the X window geometry can
