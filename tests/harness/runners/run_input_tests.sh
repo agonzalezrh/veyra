@@ -43,54 +43,28 @@ sleep 0.5
 
 # Veyra's own Resized event is authoritative (the X window geometry can
 # differ from the logical size winit reports — trust the log).
-# Veyra's own Resized event is authoritative when present (the X window
-# geometry can differ from the logical size winit reports). Some stacks
-# never emit it — fall back to veyra's initial window_size (1280x720).
-# The Debug format of the size varies; grab the last two integers on the
-# line (after the log timestamp).
-RAW_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -F "Window resized to" | tail -1)
+# Veyra logs its logical render size at startup (authoritative for the
+# ortho mapping; the X window geometry can differ). The X window POSITION
+# offsets the mapping when winit centers/clips the window on screen.
+RAW_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -F "render size" | grep -F "window_size" | tail -1)
 if [ -n "$RAW_LINE" ]; then
-    say "resized event: $RAW_LINE"
-    NUMS=$(echo "$RAW_LINE" | grep -oE "[0-9]+" | tail -2)
-    WIN_W=$(echo "$NUMS" | sed -n 1p)
-    WIN_H=$(echo "$NUMS" | sed -n 2p)
+    WIN_PAIR=$(echo "$RAW_LINE" | sed -E 's/.*\(([^)]*)\).*/\1/')
+    WIN_W=$(python3 -c "print(round(float('$WIN_PAIR'.split(',')[0])))")
+    WIN_H=$(python3 -c "print(round(float('$WIN_PAIR'.split(',')[1])))")
 else
     WIN_W=1280; WIN_H=720
-    say "no Resized event; using default window_size 1280x720"
+    say "no render size log; using default 1280x720"
 fi
 say "veyra render size: ${WIN_W}x${WIN_H}"
+WIN_POS=$(DISPLAY=:99 xdotool getwindowgeometry "$WID0" 2>/dev/null | grep -oE "Position: [-0-9]+,[-0-9]+" | head -1)
+WIN_PX=$(echo "$WIN_POS" | sed -E 's/Position: (-?[0-9]+),-?[0-9]+/\1/')
+WIN_PY=$(echo "$WIN_POS" | sed -E 's/Position: -?[0-9]+,(-?[0-9]+)/\1/')
+WIN_PX=${WIN_PX:-0}; WIN_PY=${WIN_PY:-0}
+say "veyra window position: ${WIN_PX},${WIN_PY}"
 
-# Fallback placement: first visual at world (300, 0).
+# Initial guess (overwritten by calibration).
 CX=$((WIN_W/2 + 300)); CY=$((WIN_H/2))
 XL=$((CX-320)); XR=$((CX+320)); YT=$((CY-255)); YB=$((CY+255))
-
-# Derive the CURRENT client window's screen rect from veyra's map log
-# (position + decorated size in world space, ortho 1:1 onto the screen).
-# Call after a client has mapped (its "surface mapped" line is the last one).
-derive_rect_from_map() {
-    local MAP_LINE
-    MAP_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -F "surface mapped" | tail -1)
-    local POS_X POS_Y TW TH
-    POS_X=$(echo "$MAP_LINE" | sed -E 's/.*pos=Vector3 \[([^,]+),.*/\1/')
-    POS_Y=$(echo "$MAP_LINE" | sed -E 's/.*pos=Vector3 \[[^,]+, ([^,]+),.*/\1/')
-    TW=$(echo "$MAP_LINE" | sed -E 's/.*total_w=([0-9.]+).*/\1/')
-    TH=$(echo "$MAP_LINE" | sed -E 's/.*total_h=([0-9.]+).*/\1/')
-    if echo "$MAP_LINE" | grep -q "pos=Vector3" && [ -n "$TW" ] && [ "$TW" != "$MAP_LINE" ] && [ -n "$TH" ] && [ "$TH" != "$MAP_LINE" ]; then
-        CX=$(python3 -c "print(round($WIN_W/2 + $POS_X))")
-        CY=$(python3 -c "print(round($WIN_H/2 - $POS_Y))")
-        XL=$(python3 -c "print(round($WIN_W/2 + $POS_X - $TW/2))")
-        XR=$(python3 -c "print(round($WIN_W/2 + $POS_X + $TW/2))")
-        YT=$(python3 -c "print(round($WIN_H/2 - $POS_Y - $TH/2))")
-        YB=$(python3 -c "print(round($WIN_H/2 - $POS_Y + $TH/2))")
-        say "client rect from map log: x[$XL..$XR] y[$YT..$YB]"
-    else
-        say "map line unusable; using placement defaults x[$XL..$XR] y[$YT..$YB]"
-    fi
-}
-
-xdotool_wid() {
-    DISPLAY=:99 xdotool search --onlyvisible --name . 2>/dev/null | head -1
-}
 
 # ── t5: q/w/1/2 regression — compositor must not steal plain keys ────
 say "t5_keyboard_plain_keys_reach_client"
@@ -174,6 +148,7 @@ XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-ki
 T8_PID=$!
 sleep 1.5
 derive_rect_from_map
+calibrate_rect
 
 E_END=$((XR-4+14)); [ $E_END -ge $((WIN_W-4)) ] && E_END=$((WIN_W-6))
 drag $((XR-4)) $CY $E_END $CY               # EAST: width grows

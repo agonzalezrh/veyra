@@ -274,6 +274,7 @@ fn main() {
         })
         .expect("Failed to register winit event source");
 
+    tracing::info!(window_size = ?state.window_size, "render size");
     tracing::info!("Veyra running on {}", socket_name);
 
     let _ = event_loop.run(None, &mut state, |_| {});
