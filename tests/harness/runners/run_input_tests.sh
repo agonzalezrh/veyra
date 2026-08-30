@@ -168,8 +168,8 @@ assert_json "$TMP_DIR/t8.json" \
     "t8: configure stream consistent"
 assert_log "$TMP_DIR/veyra.log" "client resize fulfilled" "t8: veyra fulfilled resize transactions"
 assert_log "$TMP_DIR/veyra.log" "resize session finished" "t8: session terminated on release"
-echo "  ---- t8 veyra sessions ----"
-grep -E "resize session" "$TMP_DIR/veyra.log" | sed 's/\x1b\[[0-9;]*m//g' | tail -10 | sed 's/^/    /' 
+echo "  ---- t8 veyra sessions + zone checks ----"
+grep -E "resize session|resize zone check" "$TMP_DIR/veyra.log" | sed 's/\x1b\[[0-9;]*m//g' | tail -14 | sed 's/^/    /' 
 
 # typed input still works after resizing (no corrupted state)
 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" keyboard --expect a --duration 5000 > "$TMP_DIR/t8b.json" 2>/dev/null &
@@ -205,8 +205,8 @@ assert_json "$TMP_DIR/t9.json" \
 assert_json "$TMP_DIR/t9.json" \
     "any(e['ev']=='commit' and e['w']>640 and e['h']>480 for e in events)" \
     "t9: corner resize grew both axes"
-echo "  ---- t9 veyra sessions ----"
-grep -E "resize session" "$TMP_DIR/veyra.log" | sed 's/\x1b\[[0-9;]*m//g' | tail -10 | sed 's/^/    /' 
+echo "  ---- t9 veyra sessions + zone checks ----"
+grep -E "resize session|resize zone check" "$TMP_DIR/veyra.log" | sed 's/\x1b\[[0-9;]*m//g' | tail -14 | sed 's/^/    /' 
 
 say "input tests done"
 echo "-------------------------------------"
