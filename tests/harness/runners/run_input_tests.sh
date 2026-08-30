@@ -319,6 +319,83 @@ assert_json "$TMP_DIR/t10b.json" \
     "any(e['ev']=='expect_matched' for e in events)" \
     "t10: typing works after maximize cycle (no state corruption)"
 
+# ── t11: Enter reaches the client (press AND release pair), maximized —
+# Covers the "Enter key not working" regression report. Return must be
+# delivered with both press+release before, WHILE, and after maximize,
+# and the consumed Meta+Up press must not leak an Up release to the
+# client (unpaired-release hygiene).
+say "t11_enter_key_reaches_client"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" keyboard --duration 14000 \
+    > "$TMP_DIR/t11.json" 2>"$TMP_DIR/t11.err" &
+T11_PID=$!
+sleep 1.5
+DISPLAY=:99 xdotool mousemove $CX $CY click 1   # focus
+sleep 0.5
+DISPLAY=:99 xdotool key Return                  # before maximize
+sleep 0.4
+DISPLAY=:99 xdotool keydown super               # toggles maximize
+DISPLAY=:99 xdotool key Up
+DISPLAY=:99 xdotool keyup super
+sleep 1.5
+DISPLAY=:99 xdotool key Return                  # while maximized
+sleep 0.4
+DISPLAY=:99 xdotool keydown super               # toggles restore
+DISPLAY=:99 xdotool key Up
+DISPLAY=:99 xdotool keyup super
+sleep 1.5
+DISPLAY=:99 xdotool key Return                  # after restore
+sleep 0.6
+wait_process_exit $T11_PID 16
+
+RET_PRESS=$(python3 - "$TMP_DIR/t11.json" <<'EOF'
+import json,sys
+n=0
+for line in open(sys.argv[1]):
+    line=line.strip()
+    if not line: continue
+    try: e=json.loads(line)
+    except Exception: continue
+    if e.get("ev")=="key" and e.get("sym")=="XK_Return" and e.get("pressed"): n+=1
+print(n)
+EOF
+)
+RET_UP=$(python3 - "$TMP_DIR/t11.json" <<'EOF'
+import json,sys
+n=0
+for line in open(sys.argv[1]):
+    line=line.strip()
+    if not line: continue
+    try: e=json.loads(line)
+    except Exception: continue
+    if e.get("ev")=="key" and e.get("sym")=="XK_Return" and not e.get("pressed"): n+=1
+print(n)
+EOF
+)
+LEAKED_UP=$(python3 - "$TMP_DIR/t11.json" <<'EOF'
+import json,sys
+n=0
+for line in open(sys.argv[1]):
+    line=line.strip()
+    if not line: continue
+    try: e=json.loads(line)
+    except Exception: continue
+    if e.get("ev")=="key" and e.get("sym")=="XK_Up" and e.get("code")==111: n+=1
+print(n)
+EOF
+)
+if [ "$RET_UP" = "3" ] && [ "$RET_UP" = "$RET_PRESS" ]; then
+    ok "t11: Enter press+release delivered before, during, and after maximize (3 pairs)"
+else
+    bad "t11: Enter Delivery broken (presses=$RET_PRESS releases=$RET_UP)"
+fi
+# Meta+Up press is consumed by the maximize binding: no Up keys (any
+# direction) may leak to the client.
+if [ "$LEAKED_UP" = "0" ]; then
+    ok "t11: consumed Up press leaks no Up release to client"
+else
+    bad "t11: leaked $LEAKED_UP Up key event(s) to client (unpaired release)"
+fi
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"
