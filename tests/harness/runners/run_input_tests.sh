@@ -36,8 +36,28 @@ if [ -z "$WID0" ]; then
     echo "input: $PASS passed, $FAIL failed, $SKIP skipped"
     exit 1
 fi
-DISPLAY=:99 xdotool windowfocus "$WID0"
-DISPLAY=:99 xdotool key F5
+# Pin normal (2D) mode: F5 toggles spatial mode, and veyra always starts
+# in spatial mode. The injected keypress races veyra's input startup, so
+# verify the toggle landed in veyra's log and retry until the LATEST
+# toggle state is spatial_mode=false (a lost keypress retries; a doubled
+# keypress self-corrects on the next iteration).
+mode_pinned() {
+    strip_ansi "$TMP_DIR/veyra.log" | grep "spatial mode toggled" | tail -1 | grep -q "spatial_mode=false"
+}
+MODE_PINNED=0
+for _ in $(seq 1 12); do
+    if mode_pinned; then MODE_PINNED=1; break; fi
+    DISPLAY=:99 xdotool windowfocus "$WID0"
+    DISPLAY=:99 xdotool key F5
+    sleep 0.4
+done
+if [ "$MODE_PINNED" != 1 ]; then
+    bad "t0: could not pin normal mode — F5 toggle never observed in veyra log"
+    tail_log "$TMP_DIR/veyra.log"
+    echo "input: $PASS passed, $FAIL failed, $SKIP skipped"
+    exit 1
+fi
+ok "t0: normal (2D) mode pinned (spatial_mode=false in veyra log)"
 DISPLAY=:99 xdotool key Escape
 sleep 0.5
 
@@ -62,7 +82,7 @@ WIN_PY=$(echo "$WIN_POS" | sed -E 's/Position: -?[0-9]+,(-?[0-9]+)/\1/')
 WIN_PX=${WIN_PX:-0}; WIN_PY=${WIN_PY:-0}
 say "veyra window position: ${WIN_PX},${WIN_PY}"
 
-# Initial guess (overwritten by calibration).
+# Ortho world→screen is 1:1 (see geometry note at top); edges follow.
 CX=$((WIN_W/2 + 300)); CY=$((WIN_H/2))
 XL=$((CX-320)); XR=$((CX+320)); YT=$((CY-255)); YB=$((CY+255))
 
