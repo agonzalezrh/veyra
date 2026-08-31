@@ -16,10 +16,15 @@ pub fn place_new_visual(
 ) -> Vector3<f32> {
     let base_spacing = 300.0f32;
     for i in 0..100 {
-        let angle = (i as f32) * 2.0 * std::f32::consts::TAU / 7.0;
-        let radius = base_spacing + (i as f32).sqrt() * base_spacing * 0.5;
-        let x = radius * angle.cos();
-        let y = radius * angle.sin() * 0.6; // flatten vertically
+        // First window opens centered on the workspace; later windows
+        // spiral outward (2π/7 steps, flattened vertically).
+        let (x, y) = if i == 0 {
+            (0.0, 0.0)
+        } else {
+            let angle = (i as f32) * 2.0 * std::f32::consts::TAU / 7.0;
+            let radius = base_spacing + (i as f32).sqrt() * base_spacing * 0.5;
+            (radius * angle.cos(), radius * angle.sin() * 0.6) // flatten vertically
+        };
         let candidate = Vector3::new(x, y, 0.0);
 
         // Check for significant overlap with non-detached visuals
@@ -260,9 +265,9 @@ mod tests {
     fn place_first_visual_empty_scene() {
         let scene = Scene::default();
         let pos = place_new_visual(200.0, 100.0, &scene);
-        // First placement in an empty scene should be near the origin
-        assert!(pos.x.abs() < 500.0, "first visual too far: x={}", pos.x);
-        assert!(pos.y.abs() < 500.0, "first visual too far: y={}", pos.y);
+        // First placement in an empty scene opens CENTERED on the workspace
+        assert_eq!(pos.x, 0.0, "first visual must open at origin: x={}", pos.x);
+        assert_eq!(pos.y, 0.0, "first visual must open at origin: y={}", pos.y);
     }
 
     #[test]

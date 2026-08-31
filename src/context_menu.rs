@@ -13,12 +13,13 @@ pub struct MenuMetrics {
 impl MenuMetrics {
     /// Derive metrics from the framebuffer size. Baseline: 220px menu,
     /// 24px rows, 2x glyphs at 1280x720. The glyph fills ~58% of the row
-    /// height at every size.
+    /// height at every size (round per-step, not even-only scales, so
+    /// 1.5x/3x displays get 3x/6x glyphs instead of staying at 2x).
     pub fn for_framebuffer(w: f32, h: f32) -> Self {
         let su = (w / 1280.0).clamp(1.0, 2.5);
         let sv = (h / 720.0).clamp(1.0, 2.5);
         let item_height = 24.0 * sv;
-        let glyph_scale = ((item_height * 0.58) / (7.0 * 2.0)).round().clamp(1.0, 5.0) * 2.0;
+        let glyph_scale = ((item_height * 0.58) / 7.0).round().clamp(2.0, 6.0);
         MenuMetrics { menu_width: 220.0 * su, item_height, glyph_scale }
     }
 }
@@ -196,6 +197,10 @@ mod tests {
         // Glyph fills ~58% of the row at every size (readable)
         let ink = 7.0 * m.glyph_scale;
         assert!((ink / m.item_height - 0.58).abs() < 0.06);
+        // 1.5x display (e.g. 1080p panel): must get 3x glyphs, not 2x
+        let m15 = MenuMetrics::for_framebuffer(1920.0, 1080.0);
+        assert_eq!(m15.glyph_scale, 3.0);
+        assert_eq!(m15.item_height, 36.0);
     }
 
     #[test]

@@ -198,6 +198,11 @@ pub struct LookingGlass {
     /// re-entering spatial restores this pose instead of starting from
     /// the ortho distance (which made windows appear hugely zoomed).
     spatial_cam_pose: Option<(cgmath::Point3<f32>, f32, f32)>,
+    /// One-shot spatial camera fit: at startup the camera distance must
+    /// cover the workspace view (the perspective frustum at z=0 must
+    /// include the full ortho rectangle, otherwise windows placed along
+    /// the spiral are invisible in spatial mode).
+    spatial_cam_adapted: bool,
     pub workspace_manager: WorkspaceManager,
     /// Registered frame producers
     producers: Vec<(VisualId, Box<dyn FrameProducer>)>,
@@ -349,6 +354,7 @@ impl LookingGlass {
             camera: Camera::new(),
             spatial_mode: true,
             spatial_cam_pose: None,
+            spatial_cam_adapted: false,
             workspace_manager: WorkspaceManager::new(config.workspace.count),
             producers: Vec::new(),
             perf: PerfStats::new(),
@@ -530,6 +536,28 @@ impl LookingGlass {
         None
     }
 
+    /// Clamp client damage rectangles to the last committed buffer size.
+    ///
+    /// Clients occasionally race their own resize: damage is reported in
+    /// the coordinates of the previous buffer while a smaller/larger
+    /// buffer is committed. smithay's shm import uploads damage regions
+    /// unclamped, so out-of-bounds rects produce GL_INVALID_VALUE spam
+    /// and a visibly stuck window (the upload fails each frame). Damage
+    /// that exceeds the buffer is clamped or dropped; with no known size
+    /// the import becomes a full upload (damage empty).
+    fn sanitize_damage(
+        damage: Vec<smithay::utils::Rectangle<i32, smithay::utils::Buffer>>,
+        last_size: Option<(i32, i32)>,
+    ) -> Vec<smithay::utils::Rectangle<i32, smithay::utils::Buffer>> {
+        use smithay::utils::{Point, Rectangle, Size};
+        let Some((w, h)) = last_size else { return Vec::new() };
+        let buf = Rectangle::new(Point::new(0, 0), Size::new(w, h));
+        damage.into_iter()
+            .filter_map(|r| r.intersection(buf))
+            .filter(|r| r.size.w > 0 && r.size.h > 0)
+            .collect()
+    }
+
     fn handle_commit(&mut self, surface: &WlSurface) {
         // Determine if this is a toplevel or popup commit
         let is_popup = self.popups.iter().any(|p| p.wl_surface == *surface);
@@ -575,6 +603,14 @@ impl LookingGlass {
             (buf, dmg)
         });
         let Some(wl_buffer) = wl_buffer else { return };
+        // Damage must fit the buffer being imported: race-resized clients
+        // report damage in previous-buffer coordinates (see sanitize_damage).
+        let last_size = if is_popup {
+            self.popups.iter().find(|p| p.wl_surface == *surface).and_then(|p| p.size)
+        } else {
+            self.toplevels.iter().find(|t| t.toplevel.wl_surface() == surface).and_then(|t| t.size)
+        };
+        let damage = Self::sanitize_damage(damage, last_size);
 
         if let Some(backend) = self.backend.as_mut() {
             let renderer = backend.renderer();
@@ -1064,6 +1100,19 @@ impl LookingGlass {
             let t = (self.perf.frame_count as f32) * 0.003;
             self.camera.yaw = t.cos() * 0.8;
             self.camera.pitch = (t * 0.5).sin() * 0.3 + 0.2;
+        } else if !self.spatial_cam_adapted && self.spatial_cam_pose.is_none()
+                  && self.focus_manager.transition.is_none() {
+            // One-shot frustum fit: with fov_y=45° and aspect w/h, a
+            // camera at distance 1.2071*h sees exactly the ortho view
+            // rectangle (±w/2, ±h/2) on the z=0 plane. Camera::new's
+            // fixed z=800 leaves windows along the placement spiral
+            // outside the frustum (invisible in spatial mode).
+            self.spatial_cam_adapted = true;
+            let d = (self.window_size.1 * 1.2071f32).max(600.0);
+            self.camera.position = cgmath::Point3::new(0.0, 0.0, d);
+            self.camera.yaw = 0.0;
+            self.camera.pitch = 0.0;
+            info!(distance = d, "spatial camera fitted to view");
         }
         // Focus/overview mode interpolates the camera toward the target
         let render_camera = self.focus_manager.interpolated_camera(&self.camera, &self.scene);
@@ -1868,6 +1917,9 @@ impl LookingGlass {
             let ws_count = self.workspace_manager.len();
             self.context_menu.show(x, y, vid, ws_count);
             self.context_menu.set_maximize_label(self.is_maximized(vid));
+            let m = crate::context_menu::MenuMetrics::for_framebuffer(self.window_size.0, self.window_size.1);
+            info!(menu_width = m.menu_width, item_height = m.item_height, glyph_scale = m.glyph_scale,
+                  fb_w = self.window_size.0, fb_h = self.window_size.1, "context menu metrics");
             info!(?vid, "context menu opened");
             true
         } else {
@@ -2602,12 +2654,20 @@ impl LookingGlass {
                 } else {
                     // Re-entering spatial: restore the saved pose so the
                     // desktop looks exactly like before the toggle.
+                    self.spatial_mode = true;
                     if let Some((pos, yaw, pitch)) = self.spatial_cam_pose.take() {
                         self.camera.position = pos;
                         self.camera.yaw = yaw;
                         self.camera.pitch = pitch;
+                    } else if !self.spatial_cam_adapted {
+                        // First spatial entry through the toggle: fit the
+                        // frustum to the workspace view.
+                        let d = (self.window_size.1 * 1.2071f32).max(600.0);
+                        self.camera.position = cgmath::Point3::new(0.0, 0.0, d);
+                        self.camera.yaw = 0.0;
+                        self.camera.pitch = 0.0;
                     }
-                    self.spatial_mode = true;
+                    self.spatial_cam_adapted = true;
                 }
                 tracing::info!(spatial_mode = self.spatial_mode, "spatial mode toggled");
             }
@@ -2755,6 +2815,9 @@ impl LookingGlass {
             let ws_count = self.workspace_manager.len();
             self.context_menu.show(x, y, vid, ws_count);
             self.context_menu.set_maximize_label(self.is_maximized(vid));
+            let m = crate::context_menu::MenuMetrics::for_framebuffer(self.window_size.0, self.window_size.1);
+            info!(menu_width = m.menu_width, item_height = m.item_height, glyph_scale = m.glyph_scale,
+                  fb_w = self.window_size.0, fb_h = self.window_size.1, "context menu metrics");
             info!(?vid, "context menu opened via keyboard");
         }
     }
@@ -3392,3 +3455,84 @@ delegate_primary_selection!(LookingGlass);
 delegate_pointer_constraints!(LookingGlass);
 delegate_relative_pointer!(LookingGlass);
 delegate_dmabuf!(LookingGlass);
+
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> smithay::utils::Rectangle<i32, smithay::utils::Buffer> {
+        smithay::utils::Rectangle::new(
+            smithay::utils::Point::new(x, y),
+            smithay::utils::Size::new(w, h),
+        )
+    }
+
+    #[test]
+    fn no_last_size_means_full_upload() {
+        let d = vec![rect(0, 0, 100, 100)];
+        assert!(LookingGlass::sanitize_damage(d, None).is_empty());
+    }
+
+    #[test]
+    fn damage_within_buffer_is_kept() {
+        let d = vec![rect(10, 10, 100, 50)];
+        let out = LookingGlass::sanitize_damage(d, Some((696, 432)));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size.w, 100);
+        assert_eq!(out[0].size.h, 50);
+    }
+
+    #[test]
+    fn oversized_damage_is_clamped() {
+        // Client raced its resize: 1280-wide damage against a 696-wide buffer
+        let d = vec![rect(0, 0, 1280, 768)];
+        let out = LookingGlass::sanitize_damage(d, Some((696, 432)));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size.w, 696);
+        assert_eq!(out[0].size.h, 432);
+    }
+
+    #[test]
+    fn negative_offset_damage_clamps_origin() {
+        let d = vec![rect(-4, -8, 100, 100)];
+        let out = LookingGlass::sanitize_damage(d, Some((696, 432)));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].loc.x, 0);
+        assert_eq!(out[0].loc.y, 0);
+        assert_eq!(out[0].size.w, 96);
+        assert_eq!(out[0].size.h, 92);
+    }
+
+    #[test]
+    fn fully_outside_damage_is_dropped() {
+        // x beyond width; y beyond height — both no-overlap rects vanish
+        let d = vec![rect(700, 0, 100, 100), rect(0, 500, 696, 464)];
+        let out = LookingGlass::sanitize_damage(d, Some((696, 432)));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn partially_overlapping_damage_is_clamped() {
+        // Real-world case: xoffset 1 + width 1278 > 696
+        let d = vec![rect(1, 0, 1278, 432)];
+        let out = LookingGlass::sanitize_damage(d, Some((696, 432)));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].loc.x, 1);
+        assert_eq!(out[0].size.w, 695);
+    }
+
+    #[test]
+    fn empty_damage_rects_are_dropped() {
+        // Real-world case: yoffset 464 + height 0 > 432 GL spam
+        let d = vec![rect(0, 464, 0, 0), rect(1, 1, 10, 10)];
+        let out = LookingGlass::sanitize_damage(d, Some((696, 432)));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size.w, 10);
+    }
+
+    #[test]
+    fn all_invalid_damage_degenerates_to_full_upload() {
+        let d = vec![rect(700, 0, 100, 100)];
+        assert!(LookingGlass::sanitize_damage(d, Some((696, 432))).is_empty());
+    }
+}

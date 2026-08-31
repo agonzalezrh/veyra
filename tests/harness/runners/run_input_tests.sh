@@ -73,7 +73,9 @@ WIN_PX=${WIN_PX:-0}; WIN_PY=${WIN_PY:-0}
 say "veyra window position: ${WIN_PX},${WIN_PY}"
 
 # Ortho world→screen is 1:1 (see geometry note at top); edges follow.
-CX=$((WIN_W/2 + 300)); CY=$((WIN_H/2))
+# First visual opens CENTERED on the workspace (layout.rs i==0 → origin),
+# which with the 1:1 ortho mapping is the center of the framebuffer.
+CX=$((WIN_W/2)); CY=$((WIN_H/2))
 XL=$((CX-320)); XR=$((CX+320)); YT=$((CY-255)); YB=$((CY+255))
 
 # ── t5: q/w/1/2 regression — compositor must not steal plain keys ────
