@@ -434,23 +434,29 @@ uniform float u_focused;
 uniform float u_title_h;
 uniform float u_edge;
 uniform vec4 u_tint;
+uniform vec4 u_border;
 void main() {
     vec2 uv = v_uv;
-    float b = 0.05;
-    float title_border = 0.02;
+    // Fixed-pixel chrome: thickness passed per-axis in UV units so the
+    // ring stays ~2.5 px regardless of window size (5% of a maximized
+    // window was a 30-60px gold band).
+    float bx = u_border.x;
+    float by = u_border.y;
+    float tbx = u_border.z;
+    float tby = u_border.w;
     // u_edge=0 disables the window-chrome borders entirely (glyphs and
     // overlay quads reuse this shader with atlas-relative UVs that would
     // otherwise cross the chrome thresholds).
     float th = u_title_h * u_edge;
     bvec4 edge = bvec4(
-        u_edge > 0.5 && (uv.x < b || uv.x > 1.0 - b),
-        u_edge > 0.5 && (uv.y < b || uv.y > 1.0 - b),
+        u_edge > 0.5 && (uv.x < bx || uv.x > 1.0 - bx),
+        u_edge > 0.5 && (uv.y < by || uv.y > 1.0 - by),
         false,
         false
     );
     if (uv.y < th) {
-        bool title_edge = uv.x < title_border || uv.x > 1.0 - title_border ||
-                          uv.y < title_border || uv.y > th - title_border;
+        bool title_edge = uv.x < tbx || uv.x > 1.0 - tbx ||
+                          uv.y < tby || uv.y > th - tby;
         if (title_edge) {
             if (u_selected > 0.5) {
                 gl_FragColor = vec4(0.8, 0.64, 0.0, 1.0);
@@ -496,6 +502,7 @@ struct DrawGl {
     u_title_h: i32,
     u_edge: i32,
     u_tint: i32,
+    u_border: i32,
     /// Solid-color overlay program (no texture, no window chrome semantics).
     solid_prog: u32,
     solid_a_pos: u32,
@@ -564,6 +571,7 @@ impl DrawGl {
         let u_title_h = unsafe { gl.GetUniformLocation(program, b"u_title_h\0".as_ptr() as *const i8) };
         let u_edge = unsafe { gl.GetUniformLocation(program, c"u_edge".as_ptr()) };
         let u_tint = unsafe { gl.GetUniformLocation(program, c"u_tint".as_ptr()) };
+        let u_border = unsafe { gl.GetUniformLocation(program, c"u_border".as_ptr()) };
         let mut vbo = 0;
         unsafe { gl.GenBuffers(1, &mut vbo) };
         let verts: [f32; 16] = [
@@ -624,7 +632,7 @@ impl DrawGl {
         let solid_u_mvp = unsafe { gl.GetUniformLocation(solid_prog, c"u_mvp".as_ptr()) };
         let solid_u_color = unsafe { gl.GetUniformLocation(solid_prog, c"u_color".as_ptr()) };
 
-        DrawGl { program, a_pos, a_uv, u_mvp, u_tex, u_selected, u_focused, u_title_h, u_edge, u_tint,
+        DrawGl { program, a_pos, a_uv, u_mvp, u_tex, u_selected, u_focused, u_title_h, u_edge, u_tint, u_border,
                  solid_prog, solid_a_pos, solid_a_uv, solid_u_mvp, solid_u_color, vbo,
                  text_prog, text_a_pos, text_a_uv, text_u_mvp, text_u_tex, text_u_color, text_vbo }
     }
@@ -667,6 +675,8 @@ fn draw_textured_quad(
     selected: bool,
     focused: bool,
     title_h: f32,
+    gw: f32,
+    gh: f32,
 ) {
     unsafe {
         gl.UseProgram(draw.program);
@@ -676,6 +686,10 @@ fn draw_textured_quad(
         gl.Uniform1f(draw.u_title_h, title_h);
         gl.Uniform1f(draw.u_edge, 1.0);
         gl.Uniform4f(draw.u_tint, 1.0, 1.0, 1.0, 1.0);
+        // ~2.5px chrome ring regardless of window size
+        let ring_u = 2.5 / gw.max(1.0);
+        let ring_v = 2.5 / gh.max(1.0);
+        gl.Uniform4f(draw.u_border, ring_u, ring_v, ring_u, ring_v);
         gl.ActiveTexture(ffi::TEXTURE0);
         gl.BindTexture(ffi::TEXTURE_2D, tex_id);
         gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
@@ -795,7 +809,7 @@ pub fn render_scene(
         let mvp = proj * view * model;
         let _ = renderer.with_context(|gl| {
             rebind_surface(gl);
-            draw_textured_quad(gl, draw, &mvp, tex_id, visual.selected, visual.focused, title_h)
+            draw_textured_quad(gl, draw, &mvp, tex_id, visual.selected, visual.focused, title_h, gw, gh)
         });
     }
     perf.record_stage(PipelineStage::RenderDraw, t_draw.elapsed().as_nanos() as u64);
@@ -810,8 +824,10 @@ pub fn render_scene(
                 gl.BlendFunc(ffi::SRC_ALPHA, ffi::ONE_MINUS_SRC_ALPHA);
 
                 let (mx, my) = menu.position;
-                let menu_width = 220.0;
-                let item_height = 24.0;
+                // DPI-proportional metrics shared with the click hit-test
+                let metrics = crate::context_menu::MenuMetrics::for_framebuffer(w as f32, h as f32);
+                let menu_width = metrics.menu_width;
+                let item_height = metrics.item_height;
                 let menu_height = menu.items.len() as f32 * item_height;
 
                 // Convert screen pixel coords to NDC [-1, 1]
@@ -880,13 +896,10 @@ pub fn render_scene(
                     // White for normal items, gold for the selected one.
                     let (tr, tg, tb) = if is_selected { (1.0, 0.84, 0.0) } else { (1.0, 1.0, 1.0) };
                     // The 5x7 bitmap glyphs are drawn at an integer scale
-                    // factor tied to display height — 1:1 pixels on a
-                    // modern panel are unreadably small (crisp with
+                    // factor proportional to the row height — 1:1 pixels on
+                    // a modern panel are unreadably small (crisp with
                     // NEAREST sampling at any scale).
-                    // factor tied to display height — 1:1 pixels on a
-                    // modern panel are unreadably small (crisp with
-                    // NEAREST sampling at any scale).
-                    let scale = ((h as f32 / 360.0).round()).clamp(1.0, 3.0);
+                    let scale = metrics.glyph_scale;
                     let text_x = item_ix - ndc_w / 2.0 + (4.0 / w as f32) * 2.0; // 4px left padding
                     let ch = (7.0f32 * scale / h as f32) * 2.0; // 7*scale px char height in NDC
                     let cw = (5.0f32 * scale / w as f32) * 2.0; // 5*scale px char width in NDC

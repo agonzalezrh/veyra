@@ -42,7 +42,7 @@ pub enum MaximizeSource {
 }
 
 /// One outstanding maximize/unmaximize transaction per surface.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MaximizeIntent {
     pub vid: VisualId,
     pub kind: MaximizeKind,
@@ -57,6 +57,11 @@ pub struct MaximizeIntent {
     /// this size is a DRAINING buffer (acked but not yet redrawn at the
     /// new size) — it does not complete the transaction.
     pub previous: (i32, i32),
+    /// Spatial transform captured when the transition began. A maximized
+    /// window is presented centered on the workspace view; these values
+    /// are restored verbatim when the window is unmaximized.
+    pub restore_pos: (f32, f32, f32),
+    pub restore_rot: [f32; 4], // quaternion (i, j, k, w)
 }
 
 /// Tracks Veyra's outstanding maximize intents. At most one intent per
@@ -128,6 +133,8 @@ mod tests {
             target,
             restore: (640, 480),
             previous: (640, 480),
+            restore_pos: (0.0, 0.0, 0.0),
+            restore_rot: [0.0, 0.0, 0.0, 1.0],
         }
     }
 

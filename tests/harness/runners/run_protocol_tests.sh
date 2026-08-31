@@ -138,8 +138,9 @@ else
     bad "t10: configure → ACK → commit ordering (requested=$REQ ack=$ACK fulfilled=$FUL)"
 fi
 
-# Requirements 11+12 — spatial transform untouched by maximize: position,
-# rotation and scale identical across map → maximize → unmaximize.
+# Requirements 11+12 — maximize presentation semantics: the maximized
+# window is CENTERED on the view (pos origin, identity rotation) and
+# unmaximize restores the exact pre-maximize pose (map == unmaximize).
 MAP_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "surface mapped" | grep -a "client-kit-maximizer" | tail -1)
 MAX_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "maximize fulfilled" | grep -av "unmaximize" | tail -1)
 UNM_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "unmaximize fulfilled" | tail -1)
@@ -152,12 +153,21 @@ MAX_SCALE=$(echo "$MAX_LINE" | grep -oE "scale=Vector3 \[[^]]*\]")
 UNM_POS=$(echo "$UNM_LINE" | grep -oE "pos=Vector3 \[[^]]*\]")
 UNM_ROT=$(echo "$UNM_LINE" | grep -oE "rot=Quaternion \{[^}]*\}")
 UNM_SCALE=$(echo "$UNM_LINE" | grep -oE "scale=Vector3 \[[^]]*\]")
-if [ -n "$MAP_POS" ] && [ "$MAP_POS" = "$MAX_POS" ] && [ "$MAP_POS" = "$UNM_POS" ] \
-   && [ -n "$MAP_ROT" ] && [ "$MAP_ROT" = "$MAX_ROT" ] && [ "$MAP_ROT" = "$UNM_ROT" ] \
-   && [ -n "$MAP_SCALE" ] && [ "$MAP_SCALE" = "$MAX_SCALE" ] && [ "$MAP_SCALE" = "$UNM_SCALE" ]; then
-    ok "t10: 3D transform (position/rotation/scale) preserved across maximize/unmaximize"
+MAX_CENTERED="pos=Vector3 [0.0, 0.0, 0.0]"
+ID_ROT="rot=Quaternion { v: Vector3 [0.0, 0.0, 0.0], s: 1.0 }"
+if [ -n "$MAX_POS" ] && [ "$MAX_POS" = "$MAX_CENTERED" ] \
+   && [ -n "$MAX_ROT" ] && [ "$MAX_ROT" = "$ID_ROT" ] \
+   && [ -n "$MAP_SCALE" ] && [ "$MAX_SCALE" = "$MAP_SCALE" ]; then
+    ok "t10: maximized window centered on view (pos origin, identity rot, scale kept)"
 else
-    bad "t10: 3D transform preserved (map: $MAP_POS $MAP_ROT $MAP_SCALE / max: $MAX_POS $MAX_ROT $MAX_SCALE / unmax: $UNM_POS $UNM_ROT $UNM_SCALE)"
+    bad "t10: maximized not centered (max: $MAX_POS $MAX_ROT $MAX_SCALE)"
+fi
+if [ -n "$MAP_POS" ] && [ "$MAP_POS" = "$UNM_POS" ] \
+   && [ -n "$MAP_ROT" ] && [ "$MAP_ROT" = "$UNM_ROT" ] \
+   && [ -n "$MAP_SCALE" ] && [ "$MAP_SCALE" = "$UNM_SCALE" ]; then
+    ok "t10: unmaximize restores exact pre-maximize transform (map == unmaximize)"
+else
+    bad "t10: transform not restored (map: $MAP_POS $MAP_ROT $MAP_SCALE / unmax: $UNM_POS $UNM_ROT $UNM_SCALE)"
 fi
 if echo "$MAX_LINE" | grep -qF "client_matched=true"; then
     ok "t10: fulfilled by matching client commit (geometry authority kept)"

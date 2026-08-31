@@ -1,5 +1,28 @@
 use crate::scene::VisualId;
 
+/// Menu geometry, proportional to the display so the menu stays readable
+/// on any panel size. All pixel values are framebuffer pixels.
+#[derive(Debug, Clone, Copy)]
+pub struct MenuMetrics {
+    pub menu_width: f32,
+    pub item_height: f32,
+    /// Integer scale factor for the 5x7 bitmap glyphs.
+    pub glyph_scale: f32,
+}
+
+impl MenuMetrics {
+    /// Derive metrics from the framebuffer size. Baseline: 220px menu,
+    /// 24px rows, 2x glyphs at 1280x720. The glyph fills ~58% of the row
+    /// height at every size.
+    pub fn for_framebuffer(w: f32, h: f32) -> Self {
+        let su = (w / 1280.0).clamp(1.0, 2.5);
+        let sv = (h / 720.0).clamp(1.0, 2.5);
+        let item_height = 24.0 * sv;
+        let glyph_scale = ((item_height * 0.58) / (7.0 * 2.0)).round().clamp(1.0, 5.0) * 2.0;
+        MenuMetrics { menu_width: 220.0 * su, item_height, glyph_scale }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MenuAction {
     Focus,
@@ -154,6 +177,33 @@ mod tests {
         assert!(!menu.visible);
         assert!(menu.target.is_none());
         assert!(menu.items.is_empty());
+    }
+
+    #[test]
+    fn metrics_baseline_matches_verified_geometry() {
+        let m = MenuMetrics::for_framebuffer(1280.0, 720.0);
+        assert_eq!(m.menu_width, 220.0);
+        assert_eq!(m.item_height, 24.0);
+        assert_eq!(m.glyph_scale, 2.0);
+    }
+
+    #[test]
+    fn metrics_scale_up_on_hidpi() {
+        let m = MenuMetrics::for_framebuffer(2560.0, 1440.0);
+        assert_eq!(m.menu_width, 440.0);
+        assert_eq!(m.item_height, 48.0);
+        assert_eq!(m.glyph_scale, 4.0); // 28px glyphs in 48px rows
+        // Glyph fills ~58% of the row at every size (readable)
+        let ink = 7.0 * m.glyph_scale;
+        assert!((ink / m.item_height - 0.58).abs() < 0.06);
+    }
+
+    #[test]
+    fn metrics_small_displays_keep_baseline() {
+        let m = MenuMetrics::for_framebuffer(800.0, 600.0);
+        assert_eq!(m.menu_width, 220.0);
+        assert_eq!(m.item_height, 24.0);
+        assert_eq!(m.glyph_scale, 2.0);
     }
 
     #[test]

@@ -44,7 +44,10 @@ impl Workspace {
             detached_set: Vec::new(),
             focused_id: None,
             transforms: HashMap::new(),
-            auto_orbit: true,
+            // Demo orbit off by default: an auto-orbiting camera swings
+            // windows out of the frustum and spatial mode must show the
+            // actual desktop (see M077 F5 regression).
+            auto_orbit: false,
             focus_manager_state: FocusManager::new(),
         }
     }

@@ -251,11 +251,13 @@ else
     bad "t10: maximize source is not compositor"
 fi
 
-# Resize attempt on the maximized window's west edge (window center at
-# CX: spans [CX-640, CX+640] → west edge at CX-640+4). A press+release
-# WITHOUT motion: any drag would trigger I2's content-area move, which
-# is orthogonal to maximize — here we only probe the resize refusal.
-DISPLAY=:99 xdotool mousemove $((CX-636)) $CY mousedown 1
+# Resize attempt on the maximized window's west edge. Since I4 centering,
+# the maximized quad is centered on the view: spans [WIN_W/2-640,
+# WIN_W/2+640] → west edge at WIN_W/2-640 (probe 4px inside). A press+
+# release WITHOUT motion: any drag would trigger I2's content-area move,
+# which is orthogonal to maximize — here we only probe the resize refusal.
+MAXX=$((WIN_W/2-636))
+DISPLAY=:99 xdotool mousemove $MAXX $CY mousedown 1
 sleep 0.3
 DISPLAY=:99 xdotool mouseup 1
 sleep 0.5

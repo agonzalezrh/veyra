@@ -131,6 +131,9 @@ pub struct ToplevelInfo {
     /// I4: committed size to restore on unmaximize (captured at
     /// maximize time). None while not maximized.
     pub restore_size: Option<(i32, i32)>,
+    /// I4: presentation pose to restore on unmaximize: (position xyz,
+    /// rotation ijkw). Captured when the window is maximized.
+    pub restore_pose: Option<((f32, f32, f32), [f32; 4])>,
 }
 
 impl ToplevelInfo {
@@ -159,6 +162,7 @@ impl ToplevelInfo {
             size: None,
             maximized: false,
             restore_size: None,
+            restore_pose: None,
         }
     }
 
@@ -189,6 +193,11 @@ pub struct LookingGlass {
     pub scene: Scene,
     pub camera: Camera,
     pub spatial_mode: bool,
+    /// Spatial camera pose saved when entering normal (2D) mode: normal
+    /// pins the camera to the ortho pose for 1:1 world↔screen mapping;
+    /// re-entering spatial restores this pose instead of starting from
+    /// the ortho distance (which made windows appear hugely zoomed).
+    spatial_cam_pose: Option<(cgmath::Point3<f32>, f32, f32)>,
     pub workspace_manager: WorkspaceManager,
     /// Registered frame producers
     producers: Vec<(VisualId, Box<dyn FrameProducer>)>,
@@ -339,6 +348,7 @@ impl LookingGlass {
             scene: Scene::default(),
             camera: Camera::new(),
             spatial_mode: true,
+            spatial_cam_pose: None,
             workspace_manager: WorkspaceManager::new(config.workspace.count),
             producers: Vec::new(),
             perf: PerfStats::new(),
@@ -1017,7 +1027,15 @@ impl LookingGlass {
 
         // Step 3: Apply layout
         let (world_w, world_h) = self.window_size;
-        let detached = self.scene.detached_set.clone();
+        let maximized: Vec<VisualId> = self.toplevels.iter()
+            .filter(|t| t.maximized)
+            .filter_map(|t| t.visual_id)
+            .collect();
+        let detached = {
+            let mut d = self.scene.detached_set.clone();
+            d.extend(maximized);
+            d
+        };
         let layout_mode = self.workspace_manager.active().layout_mode;
         layout::apply_layout(
             &mut self.scene,
@@ -1628,6 +1646,15 @@ impl LookingGlass {
             info!(?vid, ?source, "maximize refused: no committed geometry yet");
             return;
         }
+        // Presentation transform to restore on unmaximize: a maximized
+        // window is centered on the view, so the pre-maximize pose must
+        // be captured up front.
+        let restore_pos = {
+            let p = visual.transform.position;
+            (p.x, p.y, p.z)
+        };
+        let r = visual.transform.rotation;
+        let restore_rot = [r.v.x, r.v.y, r.v.z, r.s];
         let target = self.maximize_target();
 
         // Defer while the surface still owes an ACK for a previous configure.
@@ -1654,7 +1681,7 @@ impl LookingGlass {
         self.client_resizes.mark_sent(vid, serial, target);
         self.maximize.begin(MaximizeIntent {
             vid, kind: MaximizeKind::Maximize, source, serial, target, restore,
-            previous: restore,
+            previous: restore, restore_pos, restore_rot,
         });
         info!(?vid, ?source, ?serial, target_w = target.0, target_h = target.1, restore_w = restore.0, restore_h = restore.1, "maximize requested");
     }
@@ -1694,11 +1721,27 @@ impl LookingGlass {
         let previous = self.scene.get(vid)
             .map(|v| (v.geometry.size.w, v.geometry.size.h))
             .unwrap_or(restore);
+        // Unmaximize restores the captured pre-maximize presentation pose
+        // (position + rotation); the size restore goes to the client.
+        let (restore_pos, restore_rot) = self.toplevels.iter()
+            .find(|t| t.visual_id == Some(vid))
+            .and_then(|t| t.restore_pose)
+            .map(|(p, r)| (p, r))
+            .unwrap_or_else(|| {
+                match self.scene.get(vid) {
+                    Some(v) => {
+                        let p = v.transform.position;
+                        let r = v.transform.rotation;
+                        ((p.x, p.y, p.z), [r.v.x, r.v.y, r.v.z, r.s])
+                    }
+                    None => ((0.0, 0.0, 0.0), [0.0, 0.0, 0.0, 1.0]),
+                }
+            });
         let serial = toplevel.send_configure();
         self.client_resizes.mark_sent(vid, serial, restore);
         self.maximize.begin(MaximizeIntent {
             vid, kind: MaximizeKind::Unmaximize, source, serial, target: restore, restore,
-            previous,
+            previous, restore_pos, restore_rot,
         });
         info!(?vid, ?source, ?serial, restore_w = restore.0, restore_h = restore.1, "unmaximize requested");
     }
@@ -1732,8 +1775,9 @@ impl LookingGlass {
     ///   the acknowledged STATE applies, committed geometry wins
     ///   (client_matched=false).
     ///
-    /// The visual's transform is logged as evidence that maximize never
-    /// touched it: position, rotation and scale are spatial state.
+    /// The visual transform is applied per the presentation rule: maximize
+    /// centers it on the view, unmaximize restores the captured pose. The
+    /// fulfilled log records the post-transition transform as evidence.
     fn complete_maximize_intent(&mut self, vid: VisualId, committed: (i32, i32)) {
         use crate::maximize::MaximizeKind;
         let Some(intent) = self.maximize.intent(vid) else { return };
@@ -1747,9 +1791,31 @@ impl LookingGlass {
                 MaximizeKind::Maximize => {
                     info.maximized = true;
                     info.restore_size = Some(intent.restore);
+                    // Presentation: a maximized window covers the view.
+                    // Park the pre-maximize pose on the toplevel and center
+                    // the visual (workspace origin), rotation identity so
+                    // the quad fills the viewport edge to edge.
+                    if let Some(v) = self.scene.get_mut(vid) {
+                        let p = v.transform.position;
+                        info.restore_pose = Some(((p.x, p.y, p.z),
+                            [intent.restore_rot[0], intent.restore_rot[1],
+                             intent.restore_rot[2], intent.restore_rot[3]]));
+                        v.transform.position = cgmath::Vector3::new(0.0, 0.0, p.z);
+                        v.transform.rotation = cgmath::Quaternion::new(1.0, 0.0, 0.0, 0.0);
+                    }
                 }
                 MaximizeKind::Unmaximize => {
                     info.maximized = false;
+                    if let Some(v) = self.scene.get_mut(vid) {
+                        // Restore the exact pre-maximize pose captured at
+                        // maximize time (fall back to the transition pose).
+                        let pose = info.restore_pose.take().unwrap_or((intent.restore_pos, intent.restore_rot));
+                        let (px, py, pz) = pose.0;
+                        let [ri, rj, rk, rw] = pose.1;
+                        v.transform.position = cgmath::Vector3::new(px, py, pz);
+                        // cgmath Quaternion::new is scalar-first (w, x, y, z)
+                        v.transform.rotation = cgmath::Quaternion::new(rw, ri, rj, rk);
+                    }
                     info.restore_size = None;
                 }
             }
@@ -1827,6 +1893,12 @@ impl LookingGlass {
                 let ws = self.workspace_manager.active_mut();
                 let mode = ws.layout_mode;
                 let detached = self.scene.detached_set.clone();
+                let maximized: Vec<VisualId> = self.toplevels.iter()
+                    .filter(|t| t.maximized)
+                    .filter_map(|t| t.visual_id)
+                    .collect();
+                let mut detached = detached;
+                detached.extend(maximized);
                 let (ww, wh) = self.window_size;
                 layout::apply_layout(&mut self.scene, mode, &layout::LayoutConfig::default(), &detached, ww, wh);
                 info!(?target, "context menu: arrange");
@@ -1889,9 +1961,9 @@ impl LookingGlass {
 
     /// Handle a left-click on the context menu. Returns true if the click was handled by the menu.
     pub fn handle_menu_click(&mut self, x: f64, y: f64) -> bool {
-        let menu_width = 220.0;
-        let item_height = 24.0;
-        if let Some(idx) = self.context_menu.item_at(x, y, menu_width, item_height) {
+        // Must match the renderer's metrics (MenuMetrics::for_framebuffer)
+        let m = crate::context_menu::MenuMetrics::for_framebuffer(self.window_size.0, self.window_size.1);
+        if let Some(idx) = self.context_menu.item_at(x, y, m.menu_width as f64, m.item_height as f64) {
             if idx < self.context_menu.items.len() {
                 let action = self.context_menu.items[idx].action;
                 self.execute_menu_action(action);
@@ -2518,7 +2590,25 @@ impl LookingGlass {
         use crate::navigation::Binding::*;
         match binding {
             ToggleSpatial => {
-                self.spatial_mode = !self.spatial_mode;
+                if self.spatial_mode {
+                    // Leaving spatial: remember the pose, then let the
+                    // render loop pin the ortho camera.
+                    self.spatial_cam_pose = Some((
+                        self.camera.position,
+                        self.camera.yaw,
+                        self.camera.pitch,
+                    ));
+                    self.spatial_mode = false;
+                } else {
+                    // Re-entering spatial: restore the saved pose so the
+                    // desktop looks exactly like before the toggle.
+                    if let Some((pos, yaw, pitch)) = self.spatial_cam_pose.take() {
+                        self.camera.position = pos;
+                        self.camera.yaw = yaw;
+                        self.camera.pitch = pitch;
+                    }
+                    self.spatial_mode = true;
+                }
                 tracing::info!(spatial_mode = self.spatial_mode, "spatial mode toggled");
             }
             ToggleFocus => {
