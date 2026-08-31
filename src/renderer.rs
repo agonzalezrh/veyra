@@ -877,11 +877,19 @@ pub fn render_scene(
                     }
 
                     // Render item label text
-                    // Text color: white for normal, gold for selected
+                    // White for normal items, gold for the selected one.
                     let (tr, tg, tb) = if is_selected { (1.0, 0.84, 0.0) } else { (1.0, 1.0, 1.0) };
-                    let text_x = item_ix - ndc_w / 2.0 + (2.0 / w as f32) * 2.0; // 2px left padding
-                    let ch = (7.0f32 / h as f32) * 2.0; // 7px char height in NDC
-                    let cw = (5.0f32 / w as f32) * 2.0; // 5px char width in NDC
+                    // The 5x7 bitmap glyphs are drawn at an integer scale
+                    // factor tied to display height — 1:1 pixels on a
+                    // modern panel are unreadably small (crisp with
+                    // NEAREST sampling at any scale).
+                    // factor tied to display height — 1:1 pixels on a
+                    // modern panel are unreadably small (crisp with
+                    // NEAREST sampling at any scale).
+                    let scale = ((h as f32 / 360.0).round()).clamp(1.0, 3.0);
+                    let text_x = item_ix - ndc_w / 2.0 + (4.0 / w as f32) * 2.0; // 4px left padding
+                    let ch = (7.0f32 * scale / h as f32) * 2.0; // 7*scale px char height in NDC
+                    let cw = (5.0f32 * scale / w as f32) * 2.0; // 5*scale px char width in NDC
                     let text_y = item_iy_c - ch / 2.0; // draw_text y = glyph bottom → vertically centered
                     draw_text(gl, draw, &_item.label, text_x, text_y, cw, ch, tr, tg, tb);
                 }
