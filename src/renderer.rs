@@ -41,9 +41,6 @@ pub fn upload_texture_sub_region(
 /// Reset on context loss.
 static DRAW_GL: Mutex<Option<DrawGl>> = Mutex::new(None);
 
-/// A small 1x1 white texture used as a "brush" for drawing colored overlays.
-static MENU_WHITE_TEX: Mutex<Option<u32>> = Mutex::new(None);
-
 /// Font atlas texture for bitmap text rendering.
 static FONT_ATLAS: Mutex<Option<FontAtlas>> = Mutex::new(None);
 
@@ -86,9 +83,13 @@ unsafe fn draw_text(
     // This avoids needing text_u_color which triggers GL errors on some NVIDIA drivers.
     let stride = 4 * std::mem::size_of::<f32>() as i32;
     gl.UseProgram(draw.program);
-    gl.Uniform1f(draw.u_selected, if color_r > 0.5 { 1.0 } else { 0.0 });
+    gl.Uniform1f(draw.u_selected, 0.0);
     gl.Uniform1f(draw.u_focused, 0.0);
     gl.Uniform1f(draw.u_title_h, 0.0);
+    gl.Uniform1f(draw.u_edge, 0.0);
+    // Glyph color comes from u_tint (the atlas ink is white; rgb carried
+    // in .rgb, shape in .a). This finally applies the requested color.
+    gl.Uniform4f(draw.u_tint, color_r, color_g, color_b, 1.0);
     gl.ActiveTexture(ffi::TEXTURE0);
     gl.BindTexture(ffi::TEXTURE_2D, font_tex_id);
     gl.Uniform1i(draw.u_tex, 0);
@@ -364,7 +365,10 @@ unsafe fn ensure_font_atlas(gl: &ffi::Gles2) {
         0x00,0x00,0x40,0xa8,0x10,0x00,0x00,
     ];
 
-    let mut pixels = vec![0u8; (ATLAS_W * ATLAS_H) as usize];
+    // RGBA atlas with WHITE ink (alpha carries the glyph shape): the quad
+    // shader samples rgb directly, so white ink lets the u_tint uniform
+    // control the final text color (black ink would stay black).
+    let mut pixels = vec![0u8; (ATLAS_W * ATLAS_H * 4) as usize];
     let glyph_count = FONT.len() / (GH as usize);
     for gi in 0..glyph_count {
         let col = gi % COLS as usize;
@@ -378,7 +382,11 @@ unsafe fn ensure_font_atlas(gl: &ffi::Gles2) {
                 let px = (gx + c) as usize;
                 let py = (gy + r) as usize;
                 if bit != 0 {
-                    pixels[py * ATLAS_W as usize + px] = 255;
+                    let i = (py * ATLAS_W as usize + px) * 4;
+                    pixels[i] = 255; // R
+                    pixels[i + 1] = 255; // G
+                    pixels[i + 2] = 255; // B
+                    pixels[i + 3] = 255; // A
                 }
             }
         }
@@ -387,17 +395,14 @@ unsafe fn ensure_font_atlas(gl: &ffi::Gles2) {
     let mut tex = 0;
     gl.GenTextures(1, &mut tex);
     gl.BindTexture(ffi::TEXTURE_2D, tex);
-    // Use ALPHA format for the font atlas (widely supported in ES 2.0).
-    // The pixel data is stored as luminance in the alpha channel, sampled
-    // as .r (which maps to alpha in the TEXT_FS sampler).
     gl.TexImage2D(
         ffi::TEXTURE_2D,
         0,
-        ffi::ALPHA as i32,
+        ffi::RGBA as i32,
         ATLAS_W as i32,
         ATLAS_H as i32,
         0,
-        ffi::ALPHA,
+        ffi::RGBA,
         ffi::UNSIGNED_BYTE,
         pixels.as_ptr() as *const std::ffi::c_void,
     );
@@ -427,19 +432,25 @@ uniform sampler2D u_tex;
 uniform float u_selected;
 uniform float u_focused;
 uniform float u_title_h;
+uniform float u_edge;
+uniform vec4 u_tint;
 void main() {
     vec2 uv = v_uv;
     float b = 0.05;
     float title_border = 0.02;
+    // u_edge=0 disables the window-chrome borders entirely (glyphs and
+    // overlay quads reuse this shader with atlas-relative UVs that would
+    // otherwise cross the chrome thresholds).
+    float th = u_title_h * u_edge;
     bvec4 edge = bvec4(
-        uv.x < b || uv.x > 1.0 - b,
-        uv.y < b || uv.y > 1.0 - b,
+        u_edge > 0.5 && (uv.x < b || uv.x > 1.0 - b),
+        u_edge > 0.5 && (uv.y < b || uv.y > 1.0 - b),
         false,
         false
     );
-    if (uv.y < u_title_h) {
+    if (uv.y < th) {
         bool title_edge = uv.x < title_border || uv.x > 1.0 - title_border ||
-                          uv.y < title_border || uv.y > u_title_h - title_border;
+                          uv.y < title_border || uv.y > th - title_border;
         if (title_edge) {
             if (u_selected > 0.5) {
                 gl_FragColor = vec4(0.8, 0.64, 0.0, 1.0);
@@ -458,7 +469,7 @@ void main() {
             }
         }
     } else {
-        vec2 content_uv = vec2(uv.x, (uv.y - u_title_h) / (1.0 - u_title_h));
+        vec2 content_uv = vec2(uv.x, (uv.y - th) / (1.0 - th));
         if (any(edge)) {
             if (u_selected > 0.5) {
                 gl_FragColor = vec4(1.0, 0.84, 0.0, 1.0);
@@ -468,7 +479,7 @@ void main() {
                 gl_FragColor = vec4(0.0, 1.0, 1.0, 1.0);
             }
         } else {
-            gl_FragColor = texture2D(u_tex, content_uv);
+            gl_FragColor = texture2D(u_tex, content_uv) * u_tint;
         }
     }
 }
@@ -483,6 +494,14 @@ struct DrawGl {
     u_selected: i32,
     u_focused: i32,
     u_title_h: i32,
+    u_edge: i32,
+    u_tint: i32,
+    /// Solid-color overlay program (no texture, no window chrome semantics).
+    solid_prog: u32,
+    solid_a_pos: u32,
+    solid_a_uv: u32,
+    solid_u_mvp: i32,
+    solid_u_color: i32,
     vbo: u32,
     /// Simple text shader: samples alpha from a texture, applies a solid color.
     text_prog: u32,
@@ -516,6 +535,14 @@ void main() {
 }
 ";
 
+const SOLID_FS: &str = "\
+precision mediump float;
+uniform vec4 u_color;
+void main() {
+    gl_FragColor = u_color;
+}
+";
+
 impl DrawGl {
     fn new(gl: &ffi::Gles2) -> Self {
         let vs = Self::compile(gl, ffi::VERTEX_SHADER, QUAD_VS);
@@ -535,6 +562,8 @@ impl DrawGl {
         let u_selected = unsafe { gl.GetUniformLocation(program, b"u_selected\0".as_ptr() as *const i8) };
         let u_focused = unsafe { gl.GetUniformLocation(program, b"u_focused\0".as_ptr() as *const i8) };
         let u_title_h = unsafe { gl.GetUniformLocation(program, b"u_title_h\0".as_ptr() as *const i8) };
+        let u_edge = unsafe { gl.GetUniformLocation(program, c"u_edge".as_ptr()) };
+        let u_tint = unsafe { gl.GetUniformLocation(program, c"u_tint".as_ptr()) };
         let mut vbo = 0;
         unsafe { gl.GenBuffers(1, &mut vbo) };
         let verts: [f32; 16] = [
@@ -579,7 +608,24 @@ impl DrawGl {
                 text_verts.as_ptr() as *const std::ffi::c_void, ffi::STATIC_DRAW);
         }
 
-        DrawGl { program, a_pos, a_uv, u_mvp, u_tex, u_selected, u_focused, u_title_h, vbo,
+        // Solid overlay shader: constant color regardless of UV/texture.
+        let svs = Self::compile(gl, ffi::VERTEX_SHADER, QUAD_VS);
+        let sfs = Self::compile(gl, ffi::FRAGMENT_SHADER, SOLID_FS);
+        let solid_prog = unsafe { gl.CreateProgram() };
+        unsafe {
+            gl.AttachShader(solid_prog, svs);
+            gl.AttachShader(solid_prog, sfs);
+            gl.LinkProgram(solid_prog);
+            gl.DeleteShader(svs);
+            gl.DeleteShader(sfs);
+        }
+        let solid_a_pos = unsafe { gl.GetAttribLocation(solid_prog, c"a_pos".as_ptr()) as u32 };
+        let solid_a_uv = unsafe { gl.GetAttribLocation(solid_prog, c"a_uv".as_ptr()) as u32 };
+        let solid_u_mvp = unsafe { gl.GetUniformLocation(solid_prog, c"u_mvp".as_ptr()) };
+        let solid_u_color = unsafe { gl.GetUniformLocation(solid_prog, c"u_color".as_ptr()) };
+
+        DrawGl { program, a_pos, a_uv, u_mvp, u_tex, u_selected, u_focused, u_title_h, u_edge, u_tint,
+                 solid_prog, solid_a_pos, solid_a_uv, solid_u_mvp, solid_u_color, vbo,
                  text_prog, text_a_pos, text_a_uv, text_u_mvp, text_u_tex, text_u_color, text_vbo }
     }
 
@@ -628,6 +674,8 @@ fn draw_textured_quad(
         gl.Uniform1f(draw.u_selected, if selected { 1.0 } else { 0.0 });
         gl.Uniform1f(draw.u_focused, if focused { 1.0 } else { 0.0 });
         gl.Uniform1f(draw.u_title_h, title_h);
+        gl.Uniform1f(draw.u_edge, 1.0);
+        gl.Uniform4f(draw.u_tint, 1.0, 1.0, 1.0, 1.0);
         gl.ActiveTexture(ffi::TEXTURE0);
         gl.BindTexture(ffi::TEXTURE_2D, tex_id);
         gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
@@ -767,76 +815,50 @@ pub fn render_scene(
                 let menu_height = menu.items.len() as f32 * item_height;
 
                 // Convert screen pixel coords to NDC [-1, 1]
-                let ndc_x = (mx as f32 / w as f32) * 2.0 - 1.0;
-                let ndc_y = -((my as f32 / h as f32) * 2.0 - 1.0);
                 let ndc_w = menu_width / w as f32 * 2.0;
-                let ndc_h = menu_height / h as f32 * 2.0;
 
-                gl.UseProgram(draw.program);
-
-                // Black background quad for the menu
-                gl.Uniform1f(draw.u_selected, 0.0);
-                gl.Uniform1f(draw.u_focused, 0.0);
-                gl.Uniform1f(draw.u_title_h, 0.0);
-
-                // Ensure font atlas is initialized
+                // Ensure font atlas is initialized for the labels below
                 ensure_font_atlas(gl);
 
-                // Lazily create a 1x1 white texture for overlay rendering
-                let white_tex = {
-                    let mut guard = MENU_WHITE_TEX.lock().unwrap();
-                    let tex = *guard;
-                    if let Some(t) = tex {
-                        t
-                    } else {
-                        let mut t = 0;
-                        gl.GenTextures(1, &mut t);
-                        gl.BindTexture(ffi::TEXTURE_2D, t);
-                        let white: [u8; 4] = [255, 255, 255, 255];
-                        gl.TexImage2D(
-                            ffi::TEXTURE_2D,
-                            0,
-                            ffi::RGBA as i32,
-                            1,
-                            1,
-                            0,
-                            ffi::RGBA,
-                            ffi::UNSIGNED_BYTE,
-                            white.as_ptr() as *const std::ffi::c_void,
+                // Draw px-space rects through the solid overlay program.
+                // (px, py) is the top-left corner in screen pixels.
+                let stride = 4 * std::mem::size_of::<f32>() as i32;
+                let solid_rect = |px: f32, py: f32, pw: f32, ph: f32,
+                                  r: f32, g: f32, b: f32, a: f32| {
+                    let cx = ((px + pw / 2.0) / w as f32) * 2.0 - 1.0;
+                    let cy = -(((py + ph / 2.0) / h as f32) * 2.0 - 1.0);
+                    let mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(cx, cy, 0.0))
+                        * cgmath::Matrix4::from_nonuniform_scale(
+                            pw / w as f32 * 2.0,
+                            ph / h as f32 * 2.0,
+                            1.0,
                         );
-                        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
-                        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
-                        *guard = Some(t);
-                        t
-                    }
+                    gl.UseProgram(draw.solid_prog);
+                    gl.UniformMatrix4fv(draw.solid_u_mvp, 1, 0, mvp.as_ptr());
+                    gl.Uniform4f(draw.solid_u_color, r, g, b, a);
+                    gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
+                    gl.EnableVertexAttribArray(draw.solid_a_pos);
+                    gl.VertexAttribPointer(draw.solid_a_pos, 2, ffi::FLOAT, 0, stride, std::ptr::null());
+                    gl.EnableVertexAttribArray(draw.solid_a_uv);
+                    gl.VertexAttribPointer(
+                        draw.solid_a_uv,
+                        2,
+                        ffi::FLOAT,
+                        0,
+                        stride,
+                        (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void,
+                    );
+                    gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+                    gl.DisableVertexAttribArray(draw.solid_a_pos);
+                    gl.DisableVertexAttribArray(draw.solid_a_uv);
                 };
 
-                gl.ActiveTexture(ffi::TEXTURE0);
-                gl.BindTexture(ffi::TEXTURE_2D, white_tex);
-                gl.Uniform1i(draw.u_tex, 0);
-
-                // Background quad
-                let bg_pos = ndc_x + ndc_w / 2.0;
-                let bg_pos_y = ndc_y - ndc_h / 2.0;
-                let bg_mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
-                    bg_pos, bg_pos_y, 0.0,
-                )) * cgmath::Matrix4::from_nonuniform_scale(ndc_w, ndc_h, 1.0);
-                gl.UniformMatrix4fv(draw.u_mvp, 1, 0, bg_mvp.as_ptr());
-
-                let stride = 4 * std::mem::size_of::<f32>() as i32;
-                gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
-                gl.EnableVertexAttribArray(draw.a_pos);
-                gl.VertexAttribPointer(draw.a_pos, 2, ffi::FLOAT, 0, stride, std::ptr::null());
-                gl.EnableVertexAttribArray(draw.a_uv);
-                gl.VertexAttribPointer(
-                    draw.a_uv,
-                    2,
-                    ffi::FLOAT,
-                    0,
-                    stride,
-                    (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void,
-                );
-                gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+                // Border ring + dark interior: subtle neutral chrome, no
+                // window-shader edges, readable against any background.
+                let (mx32, my32) = (mx as f32, my as f32);
+                solid_rect(mx32 - 1.0, my32 - 1.0, menu_width + 2.0, menu_height + 2.0,
+                           0.30, 0.30, 0.32, 0.98);
+                solid_rect(mx32, my32, menu_width, menu_height, 0.13, 0.13, 0.15, 0.97);
 
                 let ndc_ih = item_height / h as f32 * 2.0;
                 // Draw each menu item
@@ -846,33 +868,24 @@ pub fn render_scene(
                     let item_ix =
                         (mx as f32 / w as f32) * 2.0 - 1.0 + ndc_w / 2.0;
                     let item_iy_c = item_iy - ndc_ih / 2.0;
-                    let item_mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
-                        item_ix, item_iy_c, 0.0,
-                    )) * cgmath::Matrix4::from_nonuniform_scale(ndc_w, ndc_ih, 1.0);
 
                     let is_selected = menu.selected == Some(i);
                     if is_selected {
-                        gl.Uniform1f(draw.u_selected, 1.0);
-                    } else {
-                        gl.Uniform1f(draw.u_selected, 0.0);
+                        // Subtle gold row highlight (matches selection accent)
+                        solid_rect(mx32, my32 + i as f32 * item_height, menu_width, item_height,
+                                   0.42, 0.33, 0.10, 0.95);
                     }
-                    gl.Uniform1f(draw.u_focused, 0.0);
-                    gl.Uniform1f(draw.u_title_h, 0.0);
-                    gl.UniformMatrix4fv(draw.u_mvp, 1, 0, item_mvp.as_ptr());
-                    gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
 
                     // Render item label text
                     // Text color: white for normal, gold for selected
                     let (tr, tg, tb) = if is_selected { (1.0, 0.84, 0.0) } else { (1.0, 1.0, 1.0) };
                     let text_x = item_ix - ndc_w / 2.0 + (2.0 / w as f32) * 2.0; // 2px left padding
-                    let text_y = item_iy_c - ndc_ih / 2.0 + (1.0 / h as f32) * 2.0; // 1px top padding
-                    let cw = (5.0f32 / w as f32) * 2.0; // 5px char width in NDC
                     let ch = (7.0f32 / h as f32) * 2.0; // 7px char height in NDC
+                    let cw = (5.0f32 / w as f32) * 2.0; // 5px char width in NDC
+                    let text_y = item_iy_c - ch / 2.0; // draw_text y = glyph bottom → vertically centered
                     draw_text(gl, draw, &_item.label, text_x, text_y, cw, ch, tr, tg, tb);
                 }
 
-                gl.DisableVertexAttribArray(draw.a_pos);
-                gl.DisableVertexAttribArray(draw.a_uv);
                 // Restore GL state for subsequent main-render passes
                 gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
                 gl.Enable(ffi::DEPTH_TEST);
