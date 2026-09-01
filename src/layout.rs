@@ -104,29 +104,51 @@ pub fn apply_layout(
     detached_set: &[VisualId],
     world_width: f32,
     world_height: f32,
+    eligible: &[VisualId],
 ) {
     match mode {
         LayoutMode::Freeform => {}
-        LayoutMode::Flat => apply_flat(scene, config, detached_set, world_width, world_height),
-        LayoutMode::Grid { .. } => apply_grid(scene, config, detached_set, world_width, world_height),
+        LayoutMode::Flat => {
+            apply_flat(scene, config, detached_set, world_width, eligible)
+        }
+        LayoutMode::Grid { .. } => {
+            apply_grid(scene, config, detached_set, world_height, eligible)
+        }
     }
+}
+
+/// Arrangement produces transforms; it never owns them and it never
+/// touches visuals outside the active workspace: with multiple
+/// workspaces the whole scene is shared, but layout only speaks for the
+/// workspace it was invoked for (audit fix P1).
+fn layout_eligible(
+    visual: &crate::scene::Visual,
+    detached_set: &[VisualId],
+    eligible: &[VisualId],
+) -> bool {
+    eligible.contains(&visual.id) && !detached_set.contains(&visual.id)
 }
 
 fn apply_flat(
     scene: &mut Scene,
     config: &LayoutConfig,
     detached_set: &[VisualId],
-    world_width: f32,
-    _world_height: f32,
+    _world_width: f32,
+    eligible: &[VisualId],
 ) {
-    let total_width: f32 = scene.visuals.iter().map(|v| v.geometry.size.w as f32).sum();
-    let spacing_total = (scene.visuals.len().saturating_sub(1) as f32) * config.spacing;
+    let n: usize = scene.visuals.iter()
+        .filter(|v| layout_eligible(v, detached_set, eligible))
+        .count();
+    let total_width: f32 = scene.visuals.iter()
+        .filter(|v| layout_eligible(v, detached_set, eligible))
+        .map(|v| v.geometry.size.w as f32)
+        .sum();
+    let spacing_total = (n.saturating_sub(1)) as f32 * config.spacing;
     let start_x = -total_width / 2.0 - spacing_total / 2.0 + config.margin;
 
     let mut cursor_x = start_x;
     for visual in &mut scene.visuals {
-        if detached_set.contains(&visual.id) {
-            cursor_x += visual.geometry.size.w as f32 + config.spacing;
+        if !layout_eligible(visual, detached_set, eligible) {
             continue;
         }
         visual.transform.position = Vector3::new(
@@ -144,12 +166,12 @@ fn apply_grid(
     config: &LayoutConfig,
     detached_set: &[VisualId],
     _world_width: f32,
-    _world_height: f32,
+    eligible: &[VisualId],
 ) {
-    let cols = cols_for(scene, config, detached_set);
+    let cols = cols_for(scene, config, detached_set, eligible);
     let mut idx = 0usize;
     for visual in &mut scene.visuals {
-        if detached_set.contains(&visual.id) {
+        if !layout_eligible(visual, detached_set, eligible) {
             idx += 1;
             continue;
         }
@@ -167,9 +189,14 @@ fn apply_grid(
     }
 }
 
-fn cols_for(scene: &Scene, config: &LayoutConfig, detached_set: &[VisualId]) -> usize {
+fn cols_for(
+    scene: &Scene,
+    config: &LayoutConfig,
+    detached_set: &[VisualId],
+    eligible: &[VisualId],
+) -> usize {
     let visible: Vec<_> = scene.visuals.iter()
-        .filter(|v| !detached_set.contains(&v.id))
+        .filter(|v| layout_eligible(v, detached_set, eligible))
         .collect();
     let count = visible.len();
     if count <= 3 {
@@ -194,9 +221,9 @@ mod tests {
     fn empty_scene_no_crash() {
         let mut scene = Scene::default();
         let config = LayoutConfig::default();
-        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0);
-        apply_layout(&mut scene, LayoutMode::Grid { columns: 3 }, &config, &[], 1280.0, 720.0);
-        apply_layout(&mut scene, LayoutMode::Freeform, &config, &[], 1280.0, 720.0);
+        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0, &[]);
+        apply_layout(&mut scene, LayoutMode::Grid { columns: 3 }, &config, &[], 1280.0, 720.0, &[]);
+        apply_layout(&mut scene, LayoutMode::Freeform, &config, &[], 1280.0, 720.0, &[]);
     }
 
     #[test]
@@ -247,9 +274,45 @@ mod tests {
     fn layout_idempotent() {
         let mut scene = Scene::default();
         let config = LayoutConfig::default();
-        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0);
-        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0);
-        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0);
+        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0, &[]);
+        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0, &[]);
+        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0, &[]);
+    }
+
+    #[test]
+    fn layout_only_moves_eligible_visuals() {
+        // Audit fix P1: a Flat/Grid arrangement invoked for workspace 0
+        // must not reposition workspace 1's visuals (they share one Scene).
+        let mut scene = crate::scene::Scene::default();
+        let a = crate::scene::Visual::new_test(300, 200);
+        let b = crate::scene::Visual::new_test(300, 200);
+        let ids = [a.id, b.id];
+        scene.add(a);
+        scene.add(b);
+        scene.visuals[1].transform.position = Vector3::new(500.0, 0.0, 0.0);
+        let config = LayoutConfig::default();
+        // Only the first visual belongs to the active workspace.
+        apply_layout(
+            &mut scene,
+            LayoutMode::Flat,
+            &config,
+            &[],
+            1280.0,
+            720.0,
+            &[ids[0]],
+        );
+        // The eligible visual was arranged onto the flat strip. It is the
+        // only eligible window (w=300, margin=100, no spacing with one
+        // item): start_x = -300/2 + 100 = -50, center = -50 + 150 = 100.
+        assert!(
+            (scene.visuals[0].transform.position.x - 100.0).abs() < 1.0,
+            "eligible visual arranged at flat-strip position, got {}",
+            scene.visuals[0].transform.position.x
+        );
+        assert_eq!(
+            scene.visuals[1].transform.position.x, 500.0,
+            "foreign workspace visual must keep its transform"
+        );
     }
 
     #[test]

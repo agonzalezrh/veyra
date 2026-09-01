@@ -1069,6 +1069,9 @@ impl LookingGlass {
         // Step 3: Apply layout
         let (world_w, world_h) = self.window_size;
         let detached = self.layout_detached();
+        // Layout only speaks for the active workspace (audit: foreign
+        // workspace transforms must not be rearranged every frame).
+        let eligible = self.workspace_manager.active().visual_ids.clone();
         let layout_mode = self.workspace_manager.active().layout_mode;
         layout::apply_layout(
             &mut self.scene,
@@ -1077,6 +1080,7 @@ impl LookingGlass {
             &detached,
             world_w,
             world_h,
+            &eligible,
         );
 
         // Apply shelf transforms to shelved visuals (overrides layout)
@@ -1840,6 +1844,14 @@ impl LookingGlass {
             info!(?vid, ?source, "minimize ignored: no visual");
             return;
         }
+        // Audit fix (P1): only real toplevels can minimize. Popups and
+        // external visuals have no ToplevelInfo row, so restoring from
+        // `restore_last_minimized` (which scans toplevels) could never
+        // find them — they'd hide forever.
+        if !self.toplevels.iter().any(|t| t.visual_id == Some(vid)) {
+            info!(?vid, ?source, "minimize refused: not a toplevel (popups/transients stay visible)");
+            return;
+        }
         // An in-flight maximize/unmaximize transition would fight the
         // hidden state (center-on-view at commit). Drop it: the surface
         // just stops being visible.
@@ -1870,6 +1882,16 @@ impl LookingGlass {
         if !self.is_minimized(vid) {
             info!(?vid, ?source, "restore ignored: not minimized");
             return;
+        }
+        // Audit fix (P1): a minimized window restored while the user has
+        // switched to another workspace would be focused but INVISIBLE
+        // (the renderer only draws the active workspace). Switch to the
+        // owning workspace first so the restore is actually seen.
+        if let Some(ws_idx) = self.workspace_for_visual(vid) {
+            if ws_idx != self.workspace_manager.active_id() {
+                info!(?vid, workspace = ws_idx, "restoring across workspace switch");
+                self.switch_workspace(ws_idx);
+            }
         }
         if let Some(info) = self.toplevels.iter_mut().find(|t| t.visual_id == Some(vid)) {
             info.minimized = false;
@@ -2052,8 +2074,9 @@ impl LookingGlass {
                 let ws = self.workspace_manager.active_mut();
                 let mode = ws.layout_mode;
                 let detached = self.layout_detached();
+                let eligible = self.workspace_manager.active().visual_ids.clone();
                 let (ww, wh) = self.window_size;
-                layout::apply_layout(&mut self.scene, mode, &layout::LayoutConfig::default(), &detached, ww, wh);
+                layout::apply_layout(&mut self.scene, mode, &layout::LayoutConfig::default(), &detached, ww, wh, &eligible);
                 info!(?target, "context menu: arrange");
             }
             MenuAction::MoveToWorkspace(ws_idx) => {
@@ -3393,6 +3416,10 @@ fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
             ws.remove(vid);
         }
     }
+    // Audit fix (P2): drop the InputSink registration; leaving it behind
+    // leaked the sink (and the Wayland proxies it holds) on every
+    // open/close cycle in long sessions.
+    state.input_sinks.remove(&vid);
     // Clean up focus state
     state.scene.remove(vid);
     state.wayland_surfaces.remove(&vid);

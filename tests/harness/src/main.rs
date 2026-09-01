@@ -665,6 +665,17 @@ fn run_until(
                 // real connection loss surfaces via dispatch_pending.
                 let _ = guard.read();
             }
+            // Socket hangup = the compositor closed the connection
+            // (shutdown while clients are still connected). Drain any
+            // events still in flight, then treat it as a clean
+            // disconnect — this mirrors what real Wayland clients do
+            // when the compositor dies.
+            if pfd.revents & (libc::POLLERR | libc::POLLHUP) != 0 {
+                if let Err(e) = eq.dispatch_pending(state) {
+                    eprintln!("dispatch error after hangup: {}", e);
+                }
+                return 0;
+            }
         }
         if let Err(e) = eq.dispatch_pending(state) {
             // Compositor died / connection lost — treat as clean disconnect.

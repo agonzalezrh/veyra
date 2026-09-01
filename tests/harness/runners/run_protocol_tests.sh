@@ -263,6 +263,29 @@ fi
 wait_for_log "$TMP_DIR/veyra.log" "surface destroyed" 5
 assert_log "$TMP_DIR/veyra.log" "surface destroyed" "t12b: close-while-minimized cleaned up"
 
+# ── t15: compositor shutdown with live clients (I6) ──────────────────
+# veyra is terminated while clients are connected; the clients must
+# notice the socket EOF and exit on their own within the timeout.
+say "t15_shutdown_with_clients"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe \
+    --duration 20000 > "$TMP_DIR/t15.json" 2>"$TMP_DIR/t15.err" &
+T15_PID=$!
+sleep 2
+# Deregister the EXIT trap's stop_stack so the kill below is the teardown
+# (the harness normally stops clients first; here we do it explicitly).
+kill "$VEYRA_PID" 2>/dev/null
+T15_DEAD=0
+for _ in $(seq 1 20); do
+    if ! kill -0 "$T15_PID" 2>/dev/null; then T15_DEAD=1; break; fi
+    sleep 0.25
+done
+if [ "$T15_DEAD" -eq 1 ]; then
+    ok "t15: client exited on compositor shutdown (socket EOF)"
+else
+    bad "t15: client did not exit after compositor shutdown"
+    kill "$T15_PID" 2>/dev/null
+fi
+
 say "protocol tests done"
 echo "-------------------------------------"
 echo "protocol: $PASS passed, $FAIL failed, $SKIP skipped"

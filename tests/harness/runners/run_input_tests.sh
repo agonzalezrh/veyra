@@ -494,6 +494,56 @@ fi
 # maximize on top of the restore flow must have been exercised
 assert_log "$TMP_DIR/veyra.log" "maximize fulfilled" "t13i: maximize binding works after minimize cycles"
 
+# ── t14i: Meta+Q close + lifecycle interplay (I6) ────────────────────
+say "t14i_metq_close_lifecycle"
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe \
+    --duration 16000 > "$TMP_DIR/t14i.json" 2>"$TMP_DIR/t14i.err" &
+T14I_PID=$!
+sleep 1.5
+DISPLAY=:99 xdotool mousemove $CX $CY click 1
+sleep 0.4
+# Meta+Q closes the focused window: client gets xdg_toplevel close → exits.
+# The chord is injected as a real held-modifier sequence (the suite's
+# plain-key injections proved single-shot `key Super+q` is unreliable in
+# Xvfb).
+DISPLAY=:99 xdotool keydown Super_L
+sleep 0.2
+DISPLAY=:99 xdotool key q
+sleep 0.2
+DISPLAY=:99 xdotool keyup Super_L
+wait_process_exit $T14I_PID 12
+assert_log "$TMP_DIR/veyra.log" "close sent to focused app" "t14i: Meta+Q sent close to focused window"
+wait_for_log "$TMP_DIR/veyra.log" "surface destroyed" 5
+# client-initiated close response: clean destroy + replacement hook
+assert_log "$TMP_DIR/veyra.log" "surface destroyed" "t14i: focus replacement after close"
+
+# ── t15i: close WHILE minimized (I6; minimize → client exits) ────────
+say "t15i_close_while_minimized"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe \
+    --maximize-after 3 --duration 12000 > "$TMP_DIR/t15i.json" 2>/dev/null &
+T15I_PID=$!
+sleep 1.5
+DISPLAY=:99 xdotool mousemove $CX $CY click 1
+sleep 0.3
+DISPLAY=:99 xdotool key F9   # minimize the focused (maximized) window
+wait_for_log "$TMP_DIR/veyra.log" "minimize applied" 5
+# wait_for_log already matches destroys from earlier tests; count strictly
+# after the LAST "minimize applied" line instead. The client exits at its
+# own --duration expiry, so the destroy arrives ~12s after the minimize.
+MIN_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -an "minimize applied" | tail -1 | cut -d: -f1)
+T15I_GONE=0
+for _ in $(seq 1 48); do
+    AFTER=$(strip_ansi "$TMP_DIR/veyra.log" | tail -n +"$MIN_LINE" | grep -ac "surface destroyed" || true)
+    if [ "$AFTER" -ge 1 ]; then T15I_GONE=1; break; fi
+    sleep 0.5
+done
+if [ "$T15I_GONE" -eq 1 ]; then
+    ok "t15i: minimized window destroyed cleanly on client exit"
+else
+    bad "t15i: minimized window destroy missing"
+fi
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"

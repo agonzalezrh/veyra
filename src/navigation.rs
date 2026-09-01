@@ -96,6 +96,9 @@ impl NavigationModel {
             (SendToShelf,            KeyBinding::meta(keys::DOWN)),
             (Launcher,               KeyBinding::meta(keys::SPACE)),
             (CloseApp,               KeyBinding::meta(keys::W)),
+            // Meta+Q is the canonical close binding (I6); Meta+W predates it
+            // and stays for muscle memory.
+            (CloseApp,               KeyBinding::meta(keys::Q)),
             (ToggleMaximize,         KeyBinding::meta(keys::UP)),
             // Meta+Down is taken by SendToShelf; minimize/restore answer to
             // Meta+N / Meta+U, plus plain F9/F10/F11 for deterministic
@@ -231,6 +234,14 @@ mod tests {
         assert_eq!(nav.match_binding(111, false, false, false, true), Some(Binding::ToggleMaximize));
         // Laptop-test binding: plain F11 (77) also toggles maximize.
         assert_eq!(nav.match_binding(77, false, false, false, false), Some(Binding::ToggleMaximize));
+    }
+
+    #[test]
+    fn match_binding_close() {
+        let nav = NavigationModel::new();
+        // Meta+W and Meta+Q both close the focused app (I6)
+        assert_eq!(nav.match_binding(25, false, false, false, true), Some(Binding::CloseApp));
+        assert_eq!(nav.match_binding(24, false, false, false, true), Some(Binding::CloseApp));
     }
 
     #[test]
