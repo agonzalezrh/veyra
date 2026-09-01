@@ -35,6 +35,7 @@ pub enum MenuAction {
     Restore,
     ResetTransform,
     Maximize,
+    Minimize,
     Close,
     Dismiss,
 }
@@ -88,6 +89,7 @@ impl ContextMenu {
             MenuItem::new("Restore", MenuAction::Restore),
             MenuItem::new("Reset Transform", MenuAction::ResetTransform),
             MenuItem::new("Maximize", MenuAction::Maximize),
+            MenuItem::new("Minimize", MenuAction::Minimize),
             MenuItem::new("Close", MenuAction::Close),
         ];
     }
@@ -263,6 +265,7 @@ mod tests {
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Close)));
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::ResetTransform)));
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Maximize)));
+        assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Minimize)));
     }
 
     #[test]
@@ -327,7 +330,9 @@ mod tests {
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Focus));
         menu.selected = Some(8); // Maximize
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Maximize));
-        menu.selected = Some(9); // Close
+        menu.selected = Some(9); // Minimize (I5)
+        assert_eq!(menu.confirm_selection(), Some(MenuAction::Minimize));
+        menu.selected = Some(10); // Close
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Close));
     }
 

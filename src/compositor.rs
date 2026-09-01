@@ -134,6 +134,10 @@ pub struct ToplevelInfo {
     /// I4: presentation pose to restore on unmaximize: (position xyz,
     /// rotation ijkw). Captured when the window is maximized.
     pub restore_pose: Option<((f32, f32, f32), [f32; 4])>,
+    /// I5: the window is currently minimized (hidden, Wayland surface
+    /// still mapped and alive). Presentation transform is untouched;
+    /// layout/arrangement treat minimized visuals as detached.
+    pub minimized: bool,
 }
 
 impl ToplevelInfo {
@@ -163,6 +167,7 @@ impl ToplevelInfo {
             maximized: false,
             restore_size: None,
             restore_pose: None,
+            minimized: false,
         }
     }
 
@@ -1063,15 +1068,7 @@ impl LookingGlass {
 
         // Step 3: Apply layout
         let (world_w, world_h) = self.window_size;
-        let maximized: Vec<VisualId> = self.toplevels.iter()
-            .filter(|t| t.maximized)
-            .filter_map(|t| t.visual_id)
-            .collect();
-        let detached = {
-            let mut d = self.scene.detached_set.clone();
-            d.extend(maximized);
-            d
-        };
+        let detached = self.layout_detached();
         let layout_mode = self.workspace_manager.active().layout_mode;
         layout::apply_layout(
             &mut self.scene,
@@ -1813,6 +1810,113 @@ impl LookingGlass {
         }
     }
 
+    // ── I5: minimize / restore ────────────────────────────────────────
+
+    pub fn is_minimized(&self, vid: VisualId) -> bool {
+        self.toplevels.iter().any(|t| t.visual_id == Some(vid) && t.minimized)
+    }
+
+    /// Minimize a window (I5).
+    ///
+    /// The visual is hidden from the scene (renderer + picking skip it)
+    /// while the Wayland surface stays mapped and alive: the client keeps
+    /// receiving frame callbacks and can keep committing — the commit path
+    /// still adopts its buffers so a restore shows the latest content.
+    /// The 3D transform and workspace membership are untouched.
+    ///
+    /// The focused window loses keyboard focus immediately; the best
+    /// remaining window (workspace stack order, skipping minimized) is
+    /// focused instead.
+    pub fn begin_minimize(&mut self, vid: VisualId, source: crate::maximize::MinimizeSource) {
+        if self.is_minimized(vid) {
+            info!(?vid, ?source, "minimize ignored: already minimized");
+            return;
+        }
+        if self.resize_session.as_ref().is_some_and(|s| s.vid == vid) {
+            info!(?vid, ?source, "minimize refused: resize session in progress");
+            return;
+        }
+        if self.scene.get(vid).is_none() {
+            info!(?vid, ?source, "minimize ignored: no visual");
+            return;
+        }
+        // An in-flight maximize/unmaximize transition would fight the
+        // hidden state (center-on-view at commit). Drop it: the surface
+        // just stops being visible.
+        self.maximize.abort(vid);
+
+        let was_focused = self.scene.focused_id == Some(vid);
+        if let Some(info) = self.toplevels.iter_mut().find(|t| t.visual_id == Some(vid)) {
+            info.minimized = true;
+        }
+        self.scene.set_minimized(vid, true);
+        info!(?vid, ?source, "minimize applied");
+
+        if was_focused {
+            // Focus the best remaining window on this workspace.
+            let ws_ids = self.workspace_manager.active().visual_ids.clone();
+            let replacement = self.scene.pick_focus_replacement(&ws_ids)
+                .filter(|r| *r != vid);
+            info!(?replacement, "refocusing after minimize");
+            self.scene.select(replacement);
+            self.set_keyboard_focus(replacement);
+        }
+        self.schedule_render();
+    }
+
+    /// Restore a minimized window (I5): visible again at exactly its
+    /// previous transform, raised above the stack and keyboard-focused.
+    pub fn restore_minimized(&mut self, vid: VisualId, source: crate::maximize::MinimizeSource) {
+        if !self.is_minimized(vid) {
+            info!(?vid, ?source, "restore ignored: not minimized");
+            return;
+        }
+        if let Some(info) = self.toplevels.iter_mut().find(|t| t.visual_id == Some(vid)) {
+            info.minimized = false;
+        }
+        self.scene.set_minimized(vid, false);
+        self.scene.raise_to_top(vid);
+        self.scene.focus(Some(vid));
+        self.set_keyboard_focus(Some(vid));
+        info!(?vid, ?source, "minimize restored");
+        self.schedule_render();
+    }
+
+    /// Restore the most recently minimized window (F10 / shell path).
+    /// The scan runs in reverse toplevel order, so the latest-created
+    /// minimized window wins.
+    pub fn restore_last_minimized(&mut self, source: crate::maximize::MinimizeSource) {
+        let target = self.toplevels.iter().rev()
+            .find(|t| t.minimized)
+            .and_then(|t| t.visual_id);
+        match target {
+            Some(vid) => self.restore_minimized(vid, source),
+            None => info!(?source, "restore ignored: nothing minimized"),
+        }
+    }
+
+    /// Minimize the focused (or selected) visual.
+    pub fn minimize_selected(&mut self, source: crate::maximize::MinimizeSource) {
+        let Some(vid) = self.scene.focused_id.or(self.scene.selected_id) else {
+            info!(?source, "minimize ignored: no focused visual");
+            return;
+        };
+        self.begin_minimize(vid, source);
+    }
+
+    /// Visuals that arrangement must not move: detached pins, maximized
+    /// windows (kept centered on the view) and minimized windows (hidden;
+    /// their transform must be preserved for restore).
+    fn layout_detached(&self) -> Vec<VisualId> {
+        let mut d = self.scene.detached_set.clone();
+        d.extend(
+            self.toplevels.iter()
+                .filter(|t| t.maximized || t.minimized)
+                .filter_map(|t| t.visual_id)
+        );
+        d
+    }
+
     /// Complete a maximize/unmaximize transaction after a client commit.
     ///
     /// `committed` is the client's buffer size. Completion rules:
@@ -1910,8 +2014,11 @@ impl LookingGlass {
         let ndc_x = (x as f32 / w) * 2.0 - 1.0;
         let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
         let pv = self.proj_view();
-        let ws_ids = self.workspace_manager.active().visual_ids.as_slice();
-        let picked = self.scene.pick_visible(&pv, ndc_x, ndc_y, ws_ids);
+        let ws_ids: Vec<VisualId> = self.workspace_manager.active().visual_ids.iter()
+            .copied()
+            .filter(|id| self.scene.is_visible(*id))
+            .collect();
+        let picked = self.scene.pick_visible(&pv, ndc_x, ndc_y, &ws_ids);
 
         if let Some((vid, _)) = picked {
             let ws_count = self.workspace_manager.len();
@@ -1944,13 +2051,7 @@ impl LookingGlass {
             MenuAction::Arrange => {
                 let ws = self.workspace_manager.active_mut();
                 let mode = ws.layout_mode;
-                let detached = self.scene.detached_set.clone();
-                let maximized: Vec<VisualId> = self.toplevels.iter()
-                    .filter(|t| t.maximized)
-                    .filter_map(|t| t.visual_id)
-                    .collect();
-                let mut detached = detached;
-                detached.extend(maximized);
+                let detached = self.layout_detached();
                 let (ww, wh) = self.window_size;
                 layout::apply_layout(&mut self.scene, mode, &layout::LayoutConfig::default(), &detached, ww, wh);
                 info!(?target, "context menu: arrange");
@@ -1994,6 +2095,13 @@ impl LookingGlass {
                 // Same path as Meta+Up: intent -> configure -> commit.
                 self.toggle_maximize_for(target, crate::maximize::MaximizeSource::Compositor);
                 info!(?target, "context menu: maximize toggle");
+            }
+            MenuAction::Minimize => {
+                // Non-Meta permanent minimize path (right-click). The
+                // minimize flow drops keyboard focus and hides the visual
+                // while the client stays alive.
+                self.begin_minimize(target, crate::maximize::MinimizeSource::Compositor);
+                info!(?target, "context menu: minimize");
             }
             MenuAction::Close => {
                 if let Some(wl_surface) = self.wayland_surfaces.get(&target).cloned() {
@@ -2209,8 +2317,11 @@ impl LookingGlass {
         let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
         let pv = self.proj_view();
 
-        let ws_visible = self.workspace_manager.active().visual_ids.as_slice();
-        let (vid, _) = self.scene.pick_visible(&pv, ndc_x, ndc_y, ws_visible)?;
+        let ws_visible: Vec<VisualId> = self.workspace_manager.active().visual_ids.iter()
+            .copied()
+            .filter(|id| self.scene.is_visible(*id))
+            .collect();
+        let (vid, _) = self.scene.pick_visible(&pv, ndc_x, ndc_y, &ws_visible)?;
         if !self.scene.is_active(vid) { return None; }
         let wl_surface = self.wayland_surfaces.get(&vid).cloned()?;
         let v = self.scene.visuals.iter().find(|v| v.id == vid)?;
@@ -2753,6 +2864,12 @@ impl LookingGlass {
             ToggleMaximize => {
                 self.toggle_maximize_selected(crate::maximize::MaximizeSource::Compositor);
             }
+            MinimizeSelected => {
+                self.minimize_selected(crate::maximize::MinimizeSource::Compositor);
+            }
+            RestoreSelected => {
+                self.restore_last_minimized(crate::maximize::MinimizeSource::Compositor);
+            }
             ReopenClosed => {
                 self.reopen_last_closed();
             }
@@ -3065,6 +3182,19 @@ impl XdgShellHandler for LookingGlass {
         });
         let _ = surface.send_configure();
         info!(?vid, "unfullscreen requested");
+    }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        // Client-initiated minimize (xdg_toplevel.set_minimized): same
+        // compositor-side flow as Meta+Down — hide the visual, keep the
+        // surface mapped, focus the next window. No state bit exists for
+        // minimized (xdg-shell), so no configure is sent.
+        let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
+        if let Some(vid) = vid {
+            self.begin_minimize(vid, crate::maximize::MinimizeSource::Client);
+        } else {
+            info!("minimize request for unknown toplevel ignored");
+        }
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {

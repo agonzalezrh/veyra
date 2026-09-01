@@ -400,6 +400,100 @@ else
     bad "t11: leaked $LEAKED_UP Up key event(s) to client (unpaired release)"
 fi
 
+# ── t12: minimize/restore cycle (I5) — F9 hides, F10 restores ────────
+# Client-visible signals:
+#   - config events show activated=false after minimize-time refocus,
+#     activated=true again after restore focus
+#   - commits keep flowing (client liveness while hidden)
+#   - pointer events must NOT be delivered while minimized
+say "t12_minimize_restore_cycle"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe \
+    --duration 14000 > "$TMP_DIR/t12i.json" 2>"$TMP_DIR/t12i.err" &
+T12I_PID=$!
+sleep 1.5
+DISPLAY=:99 xdotool mousemove $CX $CY click 1    # focus the probe window
+sleep 0.5
+# minimize via F9 → client loses focus → restore via F10 → refocused
+DISPLAY=:99 xdotool key F9
+sleep 1.2
+CREMENTED_AT_MIN=$(python3 -c "
+import json
+events=[json.loads(l) for l in open('$TMP_DIR/t12i.json')]
+rm=[i for i,e in enumerate(events) if e.get('ev')=='config' and not e.get('activated') and i>3]
+print(len(rm))")
+# pointer click while minimized: must NOT reach the client surface
+DISPLAY=:99 xdotool mousemove $CX $((CY-40)) click 1 2>/dev/null
+sleep 0.5
+DISPLAY=:99 xdotool key F10
+sleep 1.2
+# focus click after restore → client becomes active again
+DISPLAY=:99 xdotool mousemove $CX $CY click 1
+sleep 1.5
+wait_process_exit $T12I_PID 16
+# 1) While minimized the surface is unpickable: the mid-cycle clicks
+#    must deliver NO pointer enter (only the pre-minimize click and the
+#    post-restore click count).
+PE=$(python3 - "$TMP_DIR/t12i.json" <<'PYEOF'
+import json, sys
+events=[json.loads(l) for l in open(sys.argv[1])]
+print(sum(1 for e in events if e.get("ev")=="ptr_enter"))
+PYEOF
+)
+if [ "$PE" = "2" ]; then
+    ok "t12i: minimized window invisible to picking (2 ptr_enter: before + after)"
+else
+    bad "t12i: minimized window invisible to picking (ptr_enter=$PE, want 2)"
+fi
+# 2) No keyboard focus while minimized: after the deactivation (kb_leave),
+#    key events reach the client again only after the post-restore click.
+KV=$(python3 - "$TMP_DIR/t12i.json" <<'PYEOF'
+import json, sys
+events=[json.loads(l) for l in open(sys.argv[1])]
+print(sum(1 for e in events if e.get("ev")=="kb_leave"))
+PYEOF
+)
+if [ "$KV" = "1" ]; then
+    ok "t12i: keyboard focus re-routed while minimized (single kb_leave)"
+else
+    bad "t12i: keyboard focus flow broken (kb_leave=$KV, want 1)"
+fi
+# 3) liveness: commits kept coming the whole time
+assert_json "$TMP_DIR/t12i.json" \
+    "sum(1 for e in events if e['ev']=='commit') >= 15" \
+    "t12i: client kept committing through the cycle"
+# composition: no crash, log shows the I5 apply/restore lines
+assert_log "$TMP_DIR/veyra.log" "minimize applied" "t12i: veyra applied minimize (F9)"
+assert_log "$TMP_DIR/veyra.log" "minimize restored" "t12i: veyra restored minimized window (F10)"
+
+# ── t13i: repeated minimize/restore + maximize stacking (I5) ─────────
+# F9/F10 two more times (state idempotence), then maximize a restored
+# window (F11) and minimize it: restore must come back maximized-centered.
+say "t13i_repeat_and_maximize_stack"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe \
+    --duration 16000 > "$TMP_DIR/t13i.json" 2>"$TMP_DIR/t13i.err" &
+T13I_PID=$!
+sleep 1.5
+DISPLAY=:99 xdotool mousemove $CX $CY click 1
+sleep 0.4
+DISPLAY=:99 xdotool key F9;  sleep 1.0
+DISPLAY=:99 xdotool key F10; sleep 1.0
+DISPLAY=:99 xdotool key F9;  sleep 1.0
+DISPLAY=:99 xdotool key F10; sleep 1.0
+# maximize (F11 compositor binding), minimize, restore
+DISPLAY=:99 xdotool key F11; sleep 1.2
+DISPLAY=:99 xdotool key F9;  sleep 1.0
+DISPLAY=:99 xdotool key F10; sleep 1.2
+wait_process_exit $T13I_PID 18
+MIN_N=$(strip_ansi "$TMP_DIR/veyra.log" | grep -ac "minimize applied")
+RES_N=$(strip_ansi "$TMP_DIR/veyra.log" | grep -ac "minimize restored")
+if [ "$MIN_N" -ge 3 ] && [ "$RES_N" -ge 3 ]; then
+    ok "t13i: repeated minimize/restore cycles stable ($MIN_N min / $RES_N res)"
+else
+    bad "t13i: repeated minimize/restore cycles stable ($MIN_N min / $RES_N res, want 3+)"
+fi
+# maximize on top of the restore flow must have been exercised
+assert_log "$TMP_DIR/veyra.log" "maximize fulfilled" "t13i: maximize binding works after minimize cycles"
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"

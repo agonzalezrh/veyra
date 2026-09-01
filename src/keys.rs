@@ -22,6 +22,12 @@ pub const F2: u32 = 68;
 pub const F3: u32 = 69;
 pub const F5: u32 = 71;
 pub const F6: u32 = 72;
+// Laptop-test bindings: GNOME owns the Meta chords before the nested
+// compositor window sees them, so window-management features are also
+// reachable without Meta (see navigation.rs).
+pub const F9: u32 = 75;
+pub const F10: u32 = 76;
+pub const F11: u32 = 77;
 
 // Navigation
 pub const TAB: u32 = 23;
@@ -53,9 +59,11 @@ pub const A: u32 = 38;
 pub const D: u32 = 40;
 pub const F: u32 = 41;
 pub const M: u32 = 66;
+pub const N: u32 = 57;
 pub const O: u32 = 32;
 pub const P: u32 = 33;
 pub const Q: u32 = 24;
 pub const T: u32 = 28;
+pub const U: u32 = 30; // KEY_U=22 evdev → XKB 30
 pub const W: u32 = 25;
 pub const SLASH: u32 = 61;

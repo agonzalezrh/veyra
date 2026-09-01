@@ -352,6 +352,47 @@ impl Scene {
         self.visuals.iter().any(|v| v.id == id && v.window_state != WindowState::Minimized)
     }
 
+    /// Check if a visual is currently minimized (I5).
+    pub fn is_minimized(&self, id: VisualId) -> bool {
+        self.visuals.iter().any(|v| v.id == id && v.window_state == WindowState::Minimized)
+    }
+
+    /// Set the minimized state without touching transforms or the
+    /// saved-transform slot (I5).
+    ///
+    /// Unlike `minimize`/`restore`, this intentionally does NOT capture or
+    /// restore transforms: the caller owns presentation state. A maximized
+    /// window keeps its centered pose beneath the Minimized flag; layout
+    /// and arrangement must treat minimized visuals as detached.
+    /// Returns true if the visual exists (state set is idempotent).
+    pub fn set_minimized(&mut self, id: VisualId, minimized: bool) -> bool {
+        if let Some(v) = self.get_mut(id) {
+            if minimized {
+                v.window_state = WindowState::Minimized;
+            } else if v.window_state == WindowState::Minimized {
+                v.window_state = WindowState::Normal;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Move a visual to the top of the stacking order (raised above all
+    /// other visuals in draw order). Returns true on success.
+    pub fn raise_to_top(&mut self, id: VisualId) -> bool {
+        let idx = match self.find_index(id) {
+            Some(i) => i,
+            None => return false,
+        };
+        if idx >= self.visuals.len() - 1 {
+            return true; // already top
+        }
+        let visual = self.visuals.remove(idx);
+        self.visuals.push(visual);
+        true
+    }
+
     /// Check if a visual is de-emphasized.
     pub fn is_de_emphasized(&self, id: VisualId) -> bool {
         self.de_emphasized_set.contains(&id)
@@ -620,10 +661,12 @@ impl Scene {
     /// i.e. most recently raised) among the given workspace members.
     /// Returns None when the workspace has no remaining active visuals.
     pub fn pick_focus_replacement(&self, workspace_ids: &[VisualId]) -> Option<VisualId> {
+        // A minimized window must never receive keyboard focus via
+        // replacement (I5): it is invisible and unpickable.
         pick_replacement_from(
             self.visuals.iter().map(|v| v.id),
             workspace_ids,
-            |id| self.is_active(id),
+            |id| self.is_active(id) && !self.is_minimized(id),
         )
     }
 
@@ -1242,6 +1285,83 @@ mod tests {
         // Verify the enum values are distinct.
         assert_eq!(WindowState::default(), WindowState::Normal);
         assert_eq!(ContentState::default(), ContentState::Disconnected);
+    }
+
+    // ── I5: minimize state without transform capture ──────────────────
+
+    /// Two active test visuals; returns their ids in draw order.
+    fn two_active_visuals() -> (Scene, [VisualId; 2]) {
+        let mut scene = Scene::default();
+        let a = Visual::new_test(400, 300);
+        let b = Visual::new_test(400, 300);
+        let ids = [a.id, b.id];
+        scene.add(a);
+        scene.add(b);
+        (scene, ids)
+    }
+
+    #[test]
+    fn set_minimized_flips_state_idempotent() {
+        let (mut scene, _) = two_active_visuals();
+        let id = scene.visuals[0].id;
+        assert!(!scene.is_minimized(id));
+        assert!(scene.set_minimized(id, true));
+        assert!(scene.is_minimized(id));
+        assert!(!scene.is_visible(id));
+        // Double minimize is harmless; restore clears it exactly once.
+        assert!(scene.set_minimized(id, true));
+        assert!(scene.set_minimized(id, false));
+        assert!(!scene.is_minimized(id));
+        assert!(scene.is_visible(id));
+    }
+
+    #[test]
+    fn set_minimized_keeps_transform() {
+        let (mut scene, _) = two_active_visuals();
+        let id = scene.visuals[0].id;
+        let before = scene.get(id).unwrap().transform.clone();
+        scene.set_minimized(id, true);
+        let after = scene.get(id).unwrap().transform.clone();
+        assert_eq!(before.position, after.position, "minimize must not move the visual");
+        assert_eq!(before.rotation, after.rotation);
+        assert_eq!(after.scale, after.scale);
+        // saved_transform slot untouched: caller owns presentation.
+        assert!(scene.get(id).unwrap().saved_transform.is_none());
+    }
+
+    #[test]
+    fn set_minimized_unknown_visual() {
+        let mut scene = Scene::default();
+        assert!(!scene.set_minimized(VisualId(999), true));
+        assert!(!scene.is_minimized(VisualId(999)));
+    }
+
+    #[test]
+    fn focus_replacement_skips_minimized() {
+        let (mut scene, ids) = two_active_visuals();
+        // Normal case: last active visual in draw order wins
+        let repl = scene.pick_focus_replacement(&ids);
+        assert_eq!(repl, Some(ids[1]), "last in draw order wins");
+        // Minimized: must be skipped even though it is last and active
+        scene.set_minimized(ids[1], true);
+        let repl = scene.pick_focus_replacement(&ids);
+        assert_eq!(repl, Some(ids[0]), "minimized visual is not a candidate");
+        // Both minimized: no candidate
+        scene.set_minimized(ids[0], true);
+        assert_eq!(scene.pick_focus_replacement(&ids), None);
+    }
+
+    #[test]
+    fn raise_to_top_moves_stacking() {
+        let (mut scene, ids) = two_active_visuals();
+        assert!(scene.raise_to_top(ids[0]));
+        // Draw order: ids[1] (bottom), ids[0] (top)
+        let order: Vec<VisualId> = scene.visuals.iter().map(|v| v.id).collect();
+        assert_eq!(order, vec![ids[1], ids[0]]);
+        // Already top: harmless
+        assert!(scene.raise_to_top(ids[0]));
+        // Unknown: false
+        assert!(!scene.raise_to_top(VisualId(999)));
     }
 
     // ── Multi-provider integration tests ──────────────────────────────

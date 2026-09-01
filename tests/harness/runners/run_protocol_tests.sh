@@ -201,6 +201,68 @@ assert_json "$TMP_DIR/t11.json" \
     "any(e['ev']=='config' and e['maximized'] and e['w']==$MW and e['h']==$MH for e in events) and any(e['ev']=='config' and not e['maximized'] and e['w']==640 and e['h']==480 for e in events)" \
     "t11: fresh maximize cycle works after maximized close"
 
+# ── t12: client-requested minimize (I5) ──────────────────────────────
+# The client sends xdg_toplevel.set_minimized and keeps committing.
+# Requirements:
+#   - veyra applies the minimize (log) and never destroys the surface
+#   - commits CONTINUE while minimized (liveness + latest content)
+#   - the focused window's keyboard focus is re-routed
+# (Compositor-binding restore coverage lives in the X11 input suite —
+# this stack is nested Wayland with no injection device.)
+say "t12_minimize_client_request"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --minimize-after 3 --duration 9000 \
+    > "$TMP_DIR/t12.json" 2>"$TMP_DIR/t12.err" &
+T12_PID=$!
+wait_process_exit $T12_PID 14
+
+assert_json "$TMP_DIR/t12.json" \
+    "any(e['ev']=='request_minimize' for e in events)" \
+    "t12: client sent set_minimized"
+assert_log "$TMP_DIR/veyra.log" "minimize applied" "t12: veyra applied the minimize (I5)"
+assert_log "$TMP_DIR/veyra.log" "refocusing after minimize" "t12: focus replacement on minimize"
+# Client kept committing after the minimize request (alive, not frozen):
+# at least 2 commits follow the request in the event stream.
+assert_json "$TMP_DIR/t12.json" \
+    "(lambda rm: len(rm) == 1 and sum(1 for e in events[rm[0]:] if e['ev']=='commit') >= 2)([i for i,e in enumerate(events) if e['ev']=='request_minimize'])" \
+    "t12: client commits continue while minimized"
+# The minimized surface survives the minimize: the only destroy after the
+# last 'minimize applied' is the natural exit at --duration expiry.
+LAST_MIN=$(strip_ansi "$TMP_DIR/veyra.log" | grep -an "minimize applied" | tail -1 | cut -d: -f1)
+if [ -n "$LAST_MIN" ]; then
+    DEST_AFTER=$(strip_ansi "$TMP_DIR/veyra.log" | tail -n +"$((LAST_MIN + 1))" | grep -ac "surface destroyed")
+    if [ "$DEST_AFTER" -eq 1 ]; then
+        ok "t12: minimized surface survived minimize (destroyed only at exit)"
+    else
+        bad "t12: minimized surface survived minimize (destroys after minimize: $DEST_AFTER, want 1)"
+    fi
+else
+    bad "t12: no minimize applied line found"
+fi
+assert_log "$TMP_DIR/veyra.log" "surface destroyed" "t12: exit-after-minimize cleanup works"
+
+# ── t12b: close-while-minimized with a maximized window (I4/I5) ──────
+# client: maximize (client-requested) → minimize (client-requested) → exit
+say "t12b_maximize_then_minimize_close"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --maximize-after 2 --minimize-after 6 --duration 8000 \
+    > "$TMP_DIR/t12b.json" 2>"$TMP_DIR/t12b.err" &
+T12B_PID=$!
+wait_process_exit $T12B_PID 12
+assert_json "$TMP_DIR/t12b.json" \
+    "any(e['ev']=='request_maximize' for e in events) and any(e['ev']=='request_minimize' for e in events)" \
+    "t12b: client requested maximize then minimize"
+assert_log "$TMP_DIR/veyra.log" "maximize fulfilled" "t12b: maximize completed before minimize"
+LAST_MAX=$(strip_ansi "$TMP_DIR/veyra.log" | grep -an "unmaximize fulfilled\|maximize fulfilled" | grep -av "unmaximize" | tail -1 | cut -d: -f1)
+MIN_AFTER_MAX=$(strip_ansi "$TMP_DIR/veyra.log" | tail -n +"$LAST_MAX" | grep -ac "minimize applied")
+if [ "$MIN_AFTER_MAX" -ge 1 ]; then
+    ok "t12b: minimized while maximized (state layered, transform untouched)"
+else
+    bad "t12b: minimized while maximized"
+fi
+wait_for_log "$TMP_DIR/veyra.log" "surface destroyed" 5
+assert_log "$TMP_DIR/veyra.log" "surface destroyed" "t12b: close-while-minimized cleaned up"
+
 say "protocol tests done"
 echo "-------------------------------------"
 echo "protocol: $PASS passed, $FAIL failed, $SKIP skipped"

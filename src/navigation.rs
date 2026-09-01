@@ -19,6 +19,8 @@ pub enum Binding {
     Escape,
     CloseApp,
     ToggleMaximize,
+    MinimizeSelected,
+    RestoreSelected,
     ReopenClosed,
     CycleVisuals,
     OpenContextMenu,
@@ -95,6 +97,14 @@ impl NavigationModel {
             (Launcher,               KeyBinding::meta(keys::SPACE)),
             (CloseApp,               KeyBinding::meta(keys::W)),
             (ToggleMaximize,         KeyBinding::meta(keys::UP)),
+            // Meta+Down is taken by SendToShelf; minimize/restore answer to
+            // Meta+N / Meta+U, plus plain F9/F10/F11 for deterministic
+            // laptop testing (GNOME owns the Meta chords when nested).
+            (MinimizeSelected,       KeyBinding::meta(keys::N)),
+            (MinimizeSelected,       KeyBinding::new(keys::F9)),
+            (RestoreSelected,        KeyBinding::meta(keys::U)),
+            (RestoreSelected,        KeyBinding::new(keys::F10)),
+            (ToggleMaximize,         KeyBinding::new(keys::F11)),
             (ReopenClosed,           KeyBinding::meta_shift(keys::T)),
             (HelpOverlay,            KeyBinding::meta(keys::SLASH)),
         ];
@@ -213,6 +223,36 @@ mod tests {
     fn match_binding_toggle_focus() {
         let nav = NavigationModel::new();
         assert_eq!(nav.match_binding(72, false, false, false, false), Some(Binding::ToggleFocus));
+    }
+
+    #[test]
+    fn match_binding_maximize() {
+        let nav = NavigationModel::new();
+        assert_eq!(nav.match_binding(111, false, false, false, true), Some(Binding::ToggleMaximize));
+        // Laptop-test binding: plain F11 (77) also toggles maximize.
+        assert_eq!(nav.match_binding(77, false, false, false, false), Some(Binding::ToggleMaximize));
+    }
+
+    #[test]
+    fn match_binding_minimize_restore() {
+        let nav = NavigationModel::new();
+        assert_eq!(nav.match_binding(57, false, false, false, true), Some(Binding::MinimizeSelected));
+        assert_eq!(nav.match_binding(75, false, false, false, false), Some(Binding::MinimizeSelected));
+        assert_eq!(nav.match_binding(76, false, false, false, false), Some(Binding::RestoreSelected));
+        assert_eq!(nav.match_binding(30, false, false, false, true), Some(Binding::RestoreSelected));
+        // Meta+Down stays SendToShelf (existing E-series feature)
+        assert_eq!(nav.match_binding(116, false, false, false, true), Some(Binding::SendToShelf));
+    }
+
+    #[test]
+    fn maximize_meta_wins_before_alt_entries() {
+        // Multiple entries may map to one binding; the FIRST match wins but
+        // either entry must resolve to the same binding.
+        let nav = NavigationModel::new();
+        let a = nav.match_binding(111, false, false, false, true);
+        let b = nav.match_binding(77, false, false, false, false);
+        assert_eq!(a, Some(Binding::ToggleMaximize));
+        assert_eq!(a, b);
     }
 
     #[test]

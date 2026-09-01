@@ -41,6 +41,10 @@ pub enum MaximizeSource {
     Compositor,
 }
 
+/// I5 minimize/restore reuses the same source taxonomy: who asked for
+/// the window-state change (client request vs compositor key/menu).
+pub type MinimizeSource = MaximizeSource;
+
 /// One outstanding maximize/unmaximize transaction per surface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaximizeIntent {

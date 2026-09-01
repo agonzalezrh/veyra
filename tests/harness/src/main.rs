@@ -91,6 +91,9 @@ struct Opts {
     maximize_after: Option<u32>,
     /// Maximize test: after this many commits, send unset_maximized.
     unmaximize_after: Option<u32>,
+    /// Minimize test: after this many commits, send xdg_toplevel
+    /// set_minimized (client-requested minimize, I5).
+    minimize_after: Option<u32>,
 }
 
 fn parse_size(s: &str) -> (u32, u32) {
@@ -118,6 +121,7 @@ fn parse_args() -> Opts {
         after_commits: 0,
         maximize_after: None,
         unmaximize_after: None,
+        minimize_after: None,
     };
     let mut i = 1;
     while i < args.len() {
@@ -142,6 +146,7 @@ fn parse_args() -> Opts {
             "--after-commits" => opts.after_commits = next(&mut i).parse().unwrap_or(0),
             "--maximize-after" => opts.maximize_after = next(&mut i).parse().ok(),
             "--unmaximize-after" => opts.unmaximize_after = next(&mut i).parse().ok(),
+            "--minimize-after" => opts.minimize_after = next(&mut i).parse().ok(),
             other => {
                 eprintln!("unknown option: {}", other);
                 std::process::exit(2);
@@ -268,6 +273,14 @@ impl TestClient {
         if self.opts.unmaximize_after == Some(self.commits) {
             log_kv(&[("ev", "request_unmaximize".into())]);
             self.window.unset_maximized();
+        }
+        // Client-requested minimize (I5). No protocol answer is expected:
+        // xdg-shell has no Minimized state bit; the compositor simply
+        // hides the visual. The client keeps committing (log lines prove
+        // liveness) until the run duration expires.
+        if self.opts.minimize_after == Some(self.commits) {
+            log_kv(&[("ev", "request_minimize".into())]);
+            self.window.set_minimized();
         }
         if let Some(n) = self.opts.exit_after_commits {
             if self.commits >= n {
