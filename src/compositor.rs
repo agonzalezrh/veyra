@@ -3353,6 +3353,24 @@ impl XdgShellHandler for LookingGlass {
             );
         }
     }
+
+    fn popup_destroyed(&mut self, surface: smithay::wayland::shell::xdg::PopupSurface) {
+        let wl_surface = surface.wl_surface();
+        let Some(idx) = self
+            .popups
+            .iter()
+            .position(|p| p.wl_surface == *wl_surface)
+        else {
+            return;
+        };
+        let info = self.popups.remove(idx);
+        if let Some(vid) = info.visual_id {
+            remove_popup_visual(self, vid);
+            info!(?vid, "popup destroyed, visual dropped");
+        } else {
+            info!("popup destroyed before mapping");
+        }
+    }
 }
 
 delegate_xdg_shell!(LookingGlass);
@@ -3386,15 +3404,34 @@ fn cleanup_popups_by_vid(state: &mut LookingGlass, vid: VisualId) {
         .filter(|p| p.visual_id == Some(vid) || p.parent_toplevel_vid == Some(vid))
         .filter_map(|p| p.visual_id)
         .collect();
-    // Remove their visuals from scene
-    for pvid in &popup_ids {
-        state.scene.remove(*pvid);
-        state.wayland_surfaces.remove(pvid);
+    // Remove their visuals from the scene / workspace bookkeeping
+    for pvid in popup_ids {
+        remove_popup_visual(state, pvid);
     }
     // Remove from tracking list
     state.popups.retain(|p| {
         p.visual_id != Some(vid) && p.parent_toplevel_vid != Some(vid)
     });
+}
+
+/// Drop a popup's presentation state (visual, surface map, workspace
+/// membership, selection). The popup's scene visual has workspace-local
+/// lifetime while the Wayland surface has compositor-global lifetime —
+/// both must be released together. Used by both destroy paths: parent
+/// toplevel destruction and the client destroying the popup itself
+/// (audit fix: zombie popups kept visuals alive forever).
+fn remove_popup_visual(state: &mut LookingGlass, pvid: VisualId) {
+    state.scene.remove(pvid);
+    state.wayland_surfaces.remove(&pvid);
+    state.input_sinks.remove(&pvid);
+    for i in 0..state.workspace_manager.len() {
+        if let Some(ws) = state.workspace_manager.get_mut(i) {
+            ws.remove(pvid);
+        }
+    }
+    if state.interaction.is_dragging_visual(pvid) {
+        state.interaction.handle_pointer_up();
+    }
 }
 
 /// Clean up a visual from ALL workspaces, focus, interaction, snap, and scene state.

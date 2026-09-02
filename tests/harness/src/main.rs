@@ -51,6 +51,13 @@ fn log(ev: serde_json::Value) {
     let _ = out.flush();
 }
 
+mod popup_tester;
+use popup_tester::run_popups;
+
+fn opt_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
+}
+
 fn log_kv(pairs: &[(&str, serde_json::Value)]) {
     let mut map = serde_json::Map::new();
     for (k, v) in pairs {
@@ -686,6 +693,15 @@ fn run_until(
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cmd = args.first().cloned().unwrap_or_default();
+    // Raw popup lifecycle tester has its own connection flow.
+    if cmd == "popups" {
+        let cycles = opt_value(&args, "--cycles").and_then(|v| v.parse().ok()).unwrap_or(3);
+        let duration = opt_value(&args, "--duration").and_then(|v| v.parse().ok()).unwrap_or(8000);
+        let code = run_popups(cycles, duration);
+        std::process::exit(code);
+    }
     let opts = parse_args();
     let conn = Connection::connect_to_env().expect("connect to wayland");
     let (globals, mut event_queue) = registry_queue_init(&conn).expect("registry init");

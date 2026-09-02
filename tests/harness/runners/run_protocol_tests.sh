@@ -286,6 +286,32 @@ else
     kill "$T15_PID" 2>/dev/null
 fi
 
+# ── t16: popup creation → dismissal → recreation cycle (I7a) ─────────
+# t15 killed veyra; restart a fresh instance so the log is scoped.
+say "t16_popup_lifecycle"
+start_veyra_nested wayland-harness "$TMP_DIR/veyra.log" || { bad "t16: veyra restarted"; exit 1; }
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" popups \
+    --cycles 3 --duration 15000 > "$TMP_DIR/t16.json" 2>"$TMP_DIR/t16.err"
+POPU_EXIT=$?
+CREATED=$(grep -c '"ev":"popup_created"' "$TMP_DIR/t16.json" || true)
+MAPPED=$(strip_ansi "$TMP_DIR/veyra.log" | grep -c "popup mapped" || true)
+DROPPED=$(strip_ansi "$TMP_DIR/veyra.log" | grep -c "popup destroyed, visual dropped" || true)
+if [ "$POPU_EXIT" -eq 0 ] && [ "$CREATED" -eq 3 ]; then
+    ok "t16: 3 popup cycles completed (client exits cleanly)"
+else
+    bad "t16: popup cycles did not complete cleanly (exit=$POPU_EXIT created=$CREATED)"
+fi
+if [ "$MAPPED" -eq 3 ]; then
+    ok "t16: compositor mapped all 3 popups"
+else
+    bad "t16: compositor popup mappings wrong ($MAPPED != 3)"
+fi
+if [ "$DROPPED" -eq 3 ]; then
+    ok "t16: every client-destroyed popup had its visual dropped (no zombies)"
+else
+    bad "t16: zombie popups remain ($DROPPED visual drops for 3 destroys)"
+fi
+
 say "protocol tests done"
 echo "-------------------------------------"
 echo "protocol: $PASS passed, $FAIL failed, $SKIP skipped"
