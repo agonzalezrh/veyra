@@ -252,6 +252,10 @@ pub struct LookingGlass {
     meta_pressed: bool,
     /// Application switcher (Alt+Tab).
     pub app_switcher: ApplicationSwitcher,
+    /// Application focus history: MRU ordering of focused toplevels
+    /// (J1). Updated only on actual focus transitions; popups never
+    /// enter. See crate::focus_history.
+    pub focus_history: crate::focus_history::FocusHistory,
     /// Launcher (desktop file based application launcher).
     pub launcher: Launcher,
     /// Spatial shelf (de-emphasized visuals at bottom of workspace).
@@ -398,6 +402,7 @@ impl LookingGlass {
             alt_pressed: false,
             meta_pressed: false,
             app_switcher: ApplicationSwitcher::new(),
+            focus_history: crate::focus_history::FocusHistory::new(),
             launcher: Launcher::new(),
             shelf: SpatialShelf::new(),
             navigation: NavigationModel::new(),
@@ -830,6 +835,9 @@ impl LookingGlass {
                                     &self.toplevels[idx].app_id,
                                     visual_id,
                                 );
+                                // J1: a new window takes focus (GNOME
+                                // policy) — this also seeds the MRU.
+                                self.set_keyboard_focus(Some(visual_id));
                                 info!(?visual_id, app_id = %self.toplevels[idx].app_id,
                                        pos = ?map_pos,
                                        rot = ?map_rot,
@@ -1251,6 +1259,16 @@ impl LookingGlass {
         // Update scene focus
         self.scene.focus(vid);
 
+        // J1: an actual focus transition of a real toplevel updates the
+        // MRU. Only toplevel-row owners qualify — popups and external
+        // visuals never pollute the application history.
+        if let Some(vid) = vid {
+            if self.toplevels.iter().any(|t| t.visual_id == Some(vid)) {
+                self.focus_history.touch(vid);
+                info!(?vid, order = ?self.focus_history.order(), "focus history updated");
+            }
+        }
+
         // Update Wayland keyboard focus
         if let (Some(vid), Some(kh)) = (vid, self.keyboard_handle.clone()) {
             if let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() {
@@ -1457,9 +1475,22 @@ impl LookingGlass {
     /// After the focused/selected visual was destroyed, transfer keyboard
     /// focus and selection to the topmost remaining visual in the active
     /// workspace so keyboard input keeps flowing to a real client.
-    fn refocus_after_close(&mut self) {
+    /// `closed` is the window that just died — the replacement is the
+    /// most recent MRU entry OTHER than it (J1). When some other window
+    /// was closed instead, the current focus stays a valid candidate.
+    fn refocus_after_close(&mut self, closed: Option<VisualId>) {
         let ws_ids = self.workspace_manager.active().visual_ids.clone();
-        let replacement = self.scene.pick_focus_replacement(&ws_ids);
+        // J1: focus after close comes from the MRU history — the most
+        // recently focused OTHER window on this workspace, not a
+        // stacking-order guess. `this` reborrows self immutably for the
+        // focusability predicate while the history query runs.
+        let this: &LookingGlass = self;
+        let replacement = this.focus_history.focus_replacement(closed, &move |vid| {
+            Some(vid) != closed
+                && ws_ids.contains(&vid)
+                && this.scene.is_visible(vid)
+                && !this.is_minimized(vid)
+        });
         info!(?replacement, "refocusing after close");
         self.scene.select(replacement);
         self.set_keyboard_focus(replacement);
@@ -2152,11 +2183,37 @@ impl LookingGlass {
         self.scene.set_minimized(vid, true);
         info!(?vid, ?source, "minimize applied");
 
+        // J1: the minimized window leaves the application MRU immediately
+        // (acceptance table: minimize A → MRU drops A). Entries are
+        // removed one by one so the predicate can borrow `self` while
+        // the history mutates.
+        let stale: Vec<VisualId> = self
+            .focus_history
+            .order()
+            .iter()
+            .copied()
+            .filter(|v| self.scene.is_minimized(*v))
+            .collect();
+        for v in &stale {
+            self.focus_history.remove(*v);
+        }
+        if !stale.is_empty() {
+            info!(affected = ?stale, order = ?self.focus_history.order(),
+                  "focus history pruned after minimize");
+        }
+
         if was_focused {
-            // Focus the best remaining window on this workspace.
+            // Focus the best remaining window on this workspace: J1 MRU
+            // order (most recently focused other window), skipping the
+            // just-minimized one.
             let ws_ids = self.workspace_manager.active().visual_ids.clone();
-            let replacement = self.scene.pick_focus_replacement(&ws_ids)
-                .filter(|r| *r != vid);
+            let this: &LookingGlass = self;
+            let replacement = this.focus_history.focus_replacement(Some(vid), &move |r| {
+                r != vid
+                    && ws_ids.contains(&r)
+                    && this.scene.is_visible(r)
+                    && !this.is_minimized(r)
+            });
             info!(?replacement, "refocusing after minimize");
             self.scene.select(replacement);
             self.set_keyboard_focus(replacement);
@@ -2886,9 +2943,27 @@ impl LookingGlass {
         self.focus_manager.camera_mode = CameraMode::Normal;
         self.focus_manager.transition = None;
         self.focus_manager.saved_camera = None;
-        // Use authoritative focus setter for Wayland keyboard focus sync
-        self.set_keyboard_focus(ws.focused_id);
-        info!(workspace = idx, old = old_id, "switched workspace");
+        // Use authoritative focus setter for Wayland keyboard focus sync.
+        // J1: a saved focus that is no longer focusable (minimized while
+        // the workspace was inactive, destroyed, etc.) is replaced by
+        // the most recent MRU entry that belongs to the target
+        // workspace — the focused visual must always be live and visible.
+        let saved = ws.focused_id;
+        let saved_ok = saved
+            .map(|vid| ws.contains(vid) && self.scene.is_visible(vid))
+            .unwrap_or(false)
+            && saved.map(|vid| !self.is_minimized(vid)).unwrap_or(false);
+        let focus_target = if saved_ok { saved } else {
+            let this: &LookingGlass = self;
+            let fallback_ws = ws.visual_ids.clone();
+            this.focus_history
+                .next_after(None, &move |v| {
+                    fallback_ws.contains(&v) && this.scene.is_visible(v)
+                })
+                .or_else(|| ws.visual_ids.first().copied())
+        };
+        self.set_keyboard_focus(focus_target);
+        info!(workspace = idx, old = old_id, restored = ?focus_target, "switched workspace");
         true
     }
 
@@ -2987,16 +3062,11 @@ impl LookingGlass {
 
         // Track Alt+Tab state: while Alt is held, keep cycling
         if self.alt_pressed && linux_key == crate::keys::TAB && pressed {
+            self.alt_tab_active = true;
             if self.shift_pressed {
-                self.alt_tab_active = true;
-                if let Some(app_id) = self.app_switcher.previous() {
-                    info!(app = %app_id.as_str(), "alt+shift+tab: previous app");
-                }
+                self.switch_app_focus(false);
             } else {
-                self.alt_tab_active = true;
-                if let Some(app_id) = self.app_switcher.next() {
-                    info!(app = %app_id.as_str(), "alt+tab: next app");
-                }
+                self.switch_app_focus(true);
             }
             return;
         }
@@ -3130,9 +3200,13 @@ impl LookingGlass {
             WorkspacePrev => {
                 self.previous_workspace();
             }
-            AppNext | AppPrev => {
-                // Alt+Tab is already handled above, but this catches
-                // any other key bound to app switching
+            AppNext => {
+                // J1: shell app switch over the MRU (Alt+Tab keyboard
+                // path is handled inline above with held-modifier state).
+                self.switch_app_focus(true);
+            }
+            AppPrev => {
+                self.switch_app_focus(false);
             }
             DeEmphasize => {
                 if let Some(vid) = self.scene.selected_id {
@@ -3314,22 +3388,46 @@ impl LookingGlass {
     }
 
     /// Cycle through visuals in the current workspace (Super+Tab).
+    /// J1: switch application focus along the MRU history. Forward
+    /// = Alt+Tab (next most recent), back = Alt+Shift+Tab. Only this
+    /// workspace's live, non-minimized windows participate; popups are
+    /// never in the history.
+    pub fn switch_app_focus(&mut self, forward: bool) -> bool {
+        let ws_ids = self.workspace_manager.active().visual_ids.clone();
+        let this: &LookingGlass = self;
+        let current = this.scene.focused_id;
+        let candidate = if forward {
+            this.focus_history.next_after(current, &move |v| ws_ids.contains(&v))
+        } else {
+            this.focus_history.previous_before(current, &move |v| ws_ids.contains(&v))
+        };
+        match candidate {
+            Some(next) => {
+                info!(?next, forward, "app switch (MRU)");
+                self.set_keyboard_focus(Some(next));
+                self.scene.select(Some(next));
+                true
+            }
+            None => {
+                info!(forward, "app switch: no other focusable window");
+                false
+            }
+        }
+    }
+
     pub fn cycle_visuals(&mut self) -> bool {
+        // J1: window cycling now follows the MRU history (not stacking
+        // order): the same coherence rule Alt+Tab uses.
+        if self.switch_app_focus(true) {
+            return true;
+        }
+        // Empty history (e.g. fresh session with windows never focused):
+        // fall back to the first window of the workspace.
         let ws_ids = self.workspace_manager.active().visual_ids.clone();
         if ws_ids.is_empty() {
             return false;
         }
-        let current = self.scene.focused_id;
-        let next = if let Some(cid) = current {
-            // Find the current visual's position and pick the next one
-            if let Some(pos) = ws_ids.iter().position(|id| *id == cid) {
-                ws_ids[(pos + 1) % ws_ids.len()]
-            } else {
-                ws_ids[0]
-            }
-        } else {
-            ws_ids[0]
-        };
+        let next = ws_ids[0];
         self.set_keyboard_focus(Some(next));
         self.scene.select(Some(next));
         info!(?next, "cycled to visual");
@@ -3647,7 +3745,7 @@ impl XdgShellHandler for LookingGlass {
                 self.shelf.remove(vid);
                 cleanup_visual_permanently(self, vid);
                 if was_focused {
-                    self.refocus_after_close();
+                    self.refocus_after_close(Some(vid));
                 }
             }
             info!(
@@ -3749,6 +3847,8 @@ fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
     state.maximize.abort(vid);
     // Drop any outstanding fullscreen intent (I7)
     state.fullscreen.abort(vid);
+    // J1: dead windows leave the application focus history.
+    state.focus_history.remove(vid);
     // Drop a resize session targeting the removed visual (I3b)
     if state.resize_session.as_ref().map_or(false, |s| s.vid == vid) {
         state.resize_session = None;

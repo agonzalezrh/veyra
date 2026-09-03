@@ -21,6 +21,7 @@ mod launcher;
 mod layout;
 mod maximize;
 mod fullscreen;
+mod focus_history;
 mod native_backend;
 mod navigation;
 mod perf;

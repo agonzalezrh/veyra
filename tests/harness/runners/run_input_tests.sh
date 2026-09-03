@@ -573,6 +573,53 @@ assert_json "$TMP_DIR/t16i.json" \
     "any(e['ev']=='config' and e['fullscreen'] for e in events) and any(e['ev']=='config' and not e['fullscreen'] for e in events)" \
     "t16i: client saw fullscreen and restored configures"
 
+# ── t18i: focus MRU + minimize/restore via keys (J1) ─────────────────
+# Click → focuses the window (MRU [A]); F9 minimizes it (MRU pruned,
+# refocus replacement=None since it is the only window); F10 restores
+# and refocuses it (MRU [A] again). Asserts the compositor-side focus
+# history log lines for the t18i window.
+say "t18i_mru_minimize_restore"
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --duration 12000 > "$TMP_DIR/t18i.json" 2>/dev/null &
+T18I_PID=$!
+sleep 1.5
+DISPLAY=:99 xdotool mousemove $CX $CY click 1
+sleep 0.3
+# Focus click: the window is now focused and the MRU has exactly it.
+T18I_TASK_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "focus history updated" | tail -1)
+T18I_VID=$(echo "$T18I_TASK_LINE" | grep -oE "VisualId\([0-9]+\)" | head -1)
+if [ -n "$T18I_VID" ] && echo "$T18I_TASK_LINE" | grep -qa "vid=$T18I_VID order=\[$T18I_VID\]"; then
+    ok "t18i: click focused the window; MRU [$T18I_VID]"
+else
+    bad "t18i: click focus MRU wrong: $T18I_TASK_LINE"
+fi
+# F9: minimize → MRU pruned, no other window to focus.
+DISPLAY=:99 xdotool key F9
+wait_for_log "$TMP_DIR/veyra.log" "focus history pruned after minimize" 5
+T18I_PRUNE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "focus history pruned after minimize" | tail -1)
+if echo "$T18I_PRUNE" | grep -qa "affected=\[$T18I_VID\] order=\[\]"; then
+    ok "t18i: minimize removed the window from MRU"
+else
+    bad "t18i: post-minimize MRU wrong: $T18I_PRUNE"
+fi
+T18I_MIN_REF=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "refocusing after minimize" | tail -1)
+if echo "$T18I_MIN_REF" | grep -qa "replacement=None"; then
+    ok "t18i: minimize refocus None (only window)"
+else
+    bad "t18i: minimize refocus wrong: $T18I_MIN_REF"
+fi
+# F10: restore → refocus + MRU re-seed.
+DISPLAY=:99 xdotool key F10
+wait_for_log "$TMP_DIR/veyra.log" "minimize restored" 5
+T18I_RESTORE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "focus history updated" | tail -1)
+if echo "$T18I_RESTORE" | grep -qa "vid=$T18I_VID order=\[$T18I_VID\]"; then
+    ok "t18i: restore refocused the window (MRU [$T18I_VID])"
+else
+    bad "t18i: restore refocus wrong: $T18I_RESTORE"
+fi
+wait_process_exit $T18I_PID 10
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"

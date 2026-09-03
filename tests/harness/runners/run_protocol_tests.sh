@@ -400,6 +400,72 @@ else
     bad "t17b: unfullscreen did not complete with client compliance: $T17B_LAST_FULFILLED"
 fi
 
+# ── t18: focus MRU lifecycle (J1) ─────────────────────────────────────
+say "t18_focus_mru_lifecycle"
+# Three long-lived clients map in order (A, B, C) -> MRU [C,B,A] with
+# focus on C. We then terminate them in reverse order (C, B, A), each
+# while it is the FOCUSED window, so every close produces a MRU-driven
+# refocus:
+#   C exits -> refocus B;  B exits -> refocus A;  A exits -> None.
+# External termination keeps the ordering deterministic.
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --duration 20000 > "$TMP_DIR/t18a.json" 2>"$TMP_DIR/t18a.err" &
+T18A_PID=$!
+sleep 2
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --duration 20000 > "$TMP_DIR/t18b.json" 2>"$TMP_DIR/t18b.err" &
+T18B_PID=$!
+sleep 2
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --duration 20000 > "$TMP_DIR/t18c.json" 2>"$TMP_DIR/t18c.err" &
+T18C_PID=$!
+sleep 2
+
+# MRU after the three maps: the last three mapped visuals in REVERSE
+# map order must be the full MRU = [C,B,A].
+T18_VID_C=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "surface mapped" | tail -1 | grep -oE "VisualId\([0-9]+\)")
+T18_VID_B=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "surface mapped" | tail -2 | head -1 | grep -oE "VisualId\([0-9]+\)")
+T18_VID_A=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "surface mapped" | tail -3 | head -1 | grep -oE "VisualId\([0-9]+\)")
+T18_MRU_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "focus history updated" | tail -1)
+if echo "$T18_MRU_LINE" | grep -qa "order=\[$T18_VID_C, $T18_VID_B, $T18_VID_A\]"; then
+    ok "t18: MRU seeded by map order [C,B,A] ($T18_VID_C, $T18_VID_B, $T18_VID_A)"
+else
+    bad "t18: map-time MRU wrong: $T18_MRU_LINE"
+fi
+
+# Terminate C, then B, then A; ordering is fully controlled.
+kill $T18C_PID 2>/dev/null; sleep 1
+kill $T18B_PID 2>/dev/null; sleep 1
+kill $T18A_PID 2>/dev/null; sleep 1
+
+# The three t18 close refocuses are the last three lines, in order.
+T18_CLOSES=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "refocusing after close" | tail -3)
+T18_CLOSE_N=$(echo "$T18_CLOSES" | grep -ac "refocusing after close")
+if [ "$T18_CLOSE_N" -eq 3 ]; then
+    ok "t18: three focused closes logged refocus"
+else
+    bad "t18: wanted 3 close refocuses, saw $T18_CLOSE_N"
+fi
+T18_C1=$(echo "$T18_CLOSES" | sed -n 1p)
+T18_C2=$(echo "$T18_CLOSES" | sed -n 2p)
+T18_C3=$(echo "$T18_CLOSES" | sed -n 3p)
+if echo "$T18_C1" | grep -qa "replacement=Some($T18_VID_B)"; then
+    ok "t18: C close -> refocus B (MRU order)"
+else
+    bad "t18: first close refocus wrong: $T18_C1"
+fi
+if echo "$T18_C2" | grep -qa "replacement=Some($T18_VID_A)"; then
+    ok "t18: B close -> refocus A (MRU order)"
+else
+    bad "t18: second close refocus wrong: $T18_C2"
+fi
+if echo "$T18_C3" | grep -qa "replacement=None"; then
+    ok "t18: A close -> no focusable window left"
+else
+    bad "t18: third close refocus wrong: $T18_C3"
+fi
+
 say "protocol tests done"
 echo "-------------------------------------"
 echo "protocol: $PASS passed, $FAIL failed, $SKIP skipped"
