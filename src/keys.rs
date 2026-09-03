@@ -28,6 +28,7 @@ pub const F6: u32 = 72;
 pub const F9: u32 = 75;
 pub const F10: u32 = 76;
 pub const F11: u32 = 77;
+pub const F12: u32 = 96;
 
 // Navigation
 pub const TAB: u32 = 23;
@@ -58,6 +59,7 @@ pub const K0: u32 = 19;
 pub const A: u32 = 38;
 pub const D: u32 = 40;
 pub const F: u32 = 41;
+pub const G: u32 = 42; // KEY_G=18 evdev → XKB 42
 pub const M: u32 = 66;
 pub const N: u32 = 57;
 pub const O: u32 = 32;

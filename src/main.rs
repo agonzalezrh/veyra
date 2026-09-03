@@ -20,6 +20,7 @@ mod interaction;
 mod launcher;
 mod layout;
 mod maximize;
+mod fullscreen;
 mod native_backend;
 mod navigation;
 mod perf;

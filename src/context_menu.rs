@@ -35,6 +35,7 @@ pub enum MenuAction {
     Restore,
     ResetTransform,
     Maximize,
+    Fullscreen,
     Minimize,
     Close,
     Dismiss,
@@ -89,6 +90,7 @@ impl ContextMenu {
             MenuItem::new("Restore", MenuAction::Restore),
             MenuItem::new("Reset Transform", MenuAction::ResetTransform),
             MenuItem::new("Maximize", MenuAction::Maximize),
+            MenuItem::new("Fullscreen", MenuAction::Fullscreen),
             MenuItem::new("Minimize", MenuAction::Minimize),
             MenuItem::new("Close", MenuAction::Close),
         ];
@@ -265,6 +267,7 @@ mod tests {
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Close)));
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::ResetTransform)));
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Maximize)));
+        assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Fullscreen)));
         assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Minimize)));
     }
 
@@ -330,9 +333,11 @@ mod tests {
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Focus));
         menu.selected = Some(8); // Maximize
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Maximize));
-        menu.selected = Some(9); // Minimize (I5)
+        menu.selected = Some(9); // Fullscreen (I7)
+        assert_eq!(menu.confirm_selection(), Some(MenuAction::Fullscreen));
+        menu.selected = Some(10); // Minimize (I5)
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Minimize));
-        menu.selected = Some(10); // Close
+        menu.selected = Some(11); // Close
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Close));
     }
 

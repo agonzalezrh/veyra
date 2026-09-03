@@ -312,6 +312,94 @@ else
     bad "t16: zombie popups remain ($DROPPED visual drops for 3 destroys)"
 fi
 
+# ── t17: fullscreen state machine — client request cycle (I7) ────────
+# normal → fullscreen → normal: request → configure(Fullscreen, area)
+# → ACK → commit → FULLSCREEN; unfullscreen → restore configure →
+# commit → NORMAL with the pre-fullscreen size.
+say "t17_fullscreen_client_cycle"
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --fullscreen-after 2 --unfullscreen-after 8 --duration 6000 \
+    > "$TMP_DIR/t17.json" 2>"$TMP_DIR/t17.err" &
+T17_PID=$!
+wait_process_exit $T17_PID 12
+assert_json "$TMP_DIR/t17.json" \
+    "any(e['ev']=='request_fullscreen' for e in events)" \
+    "t17: client sent set_fullscreen"
+assert_json "$TMP_DIR/t17.json" \
+    "any(e['ev']=='config' and e['fullscreen'] and e['w']==$MW and e['h']==$MH for e in events)" \
+    "t17: normal→fullscreen: sized configure with Fullscreen state"
+assert_json "$TMP_DIR/t17.json" \
+    "any(e['ev']=='config' and not e['fullscreen'] and e['w']==640 and e['h']==480 for e in events)" \
+    "t17: fullscreen→normal: restore configure (Fullscreen bit cleared)"
+assert_json "$TMP_DIR/t17.json" \
+    "any(e['ev']=='commit' and e['w']==$MW and e['h']==$MH for e in events)" \
+    "t17: client committed at the presentation area"
+assert_json "$TMP_DIR/t17.json" \
+    "any(e['ev']=='commit' and e['w']==640 and e['h']==480 for e in events)" \
+    "t17: client committed the restored size"
+assert_json "$TMP_DIR/t17.json" \
+    "[i for i,e in enumerate(events) if e['ev']=='request_fullscreen'][0] < [i for i,e in enumerate(events) if e['ev']=='config' and e['fullscreen']][0]" \
+    "t17: request precedes the fullscreen configure"
+assert_log "$TMP_DIR/veyra.log" "fullscreen requested" "t17: veyra recorded fullscreen intent"
+assert_log "$TMP_DIR/veyra.log" "fullscreen fulfilled" "t17: veyra completed the fullscreen transaction"
+assert_log "$TMP_DIR/veyra.log" "unfullscreen fulfilled" "t17: veyra completed the unfullscreen transaction"
+# Only-then-FULLSCREEN rule: the state flips at commit completion, never
+# before. Assert the log order: requested → fulfilled (and no fullscreen
+# state writes in between beyond the configure itself).
+# 'unfullscreen fulfilled' CONTAINS 'fullscreen fulfilled' — same grep
+# trap as maximize: filter the negation out before counting.
+FULFILLED_COUNT=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "fullscreen fulfilled" | grep -acv "unfullscreen" || true)
+if [ "$FULFILLED_COUNT" -eq 1 ]; then
+    ok "t17: exactly one fullscreen completion (no premature state flips)"
+else
+    bad "t17: fullscreen fulfilled $FULFILLED_COUNT times (want 1)"
+fi
+# Presentation semantics: fullscreen = temporary presentation policy;
+# the pre-fullscreen pose is restored verbatim (map pose == restore pose).
+FS_MAP_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "surface mapped" | grep -a "client-kit-maximizer" | tail -1)
+FS_UN_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "unfullscreen fulfilled" | tail -1)
+FS_MAP_POS=$(echo "$FS_MAP_LINE" | grep -oE "pos=Vector3 \[[^]]*\]")
+FS_UN_POS=$(echo "$FS_UN_LINE" | grep -oE "pos=Vector3 \[[^]]*\]")
+FS_MAP_ROT=$(echo "$FS_MAP_LINE" | grep -oE "rot=Quaternion \{[^}]*\}")
+FS_UN_ROT=$(echo "$FS_UN_LINE" | grep -oE "rot=Quaternion \{[^}]*\}")
+if [ -n "$FS_MAP_POS" ] && [ "$FS_MAP_POS" == "$FS_UN_POS" ] && [ -n "$FS_MAP_ROT" ] && [ "$FS_MAP_ROT" == "$FS_UN_ROT" ]; then
+    ok "t17: unfullscreen restores the exact pre-fullscreen pose"
+else
+    bad "t17: pose restore mismatch (map $FS_MAP_POS <> un $FS_UN_POS / rot $FS_MAP_ROT vs $FS_UN_ROT)"
+fi
+
+# ── t17b: MAXIMIZED → fullscreen → MAXIMIZED round trip (I7) ─────────
+say "t17b_maximized_fullscreen_roundtrip"
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --maximize-after 2 --fullscreen-after 5 --unfullscreen-after 9 --duration 8000 \
+    > "$TMP_DIR/t17b.json" 2>"$TMP_DIR/t17b.err" &
+T17B_PID=$!
+wait_process_exit $T17B_PID 14
+assert_json "$TMP_DIR/t17b.json" \
+    "any(e['ev']=='request_maximize' for e in events) and any(e['ev']=='request_fullscreen' for e in events)" \
+    "t17b: client maximized then fullscreened"
+# MAXIMIZED → FULLSCREEN: the fullscreen configure carries BOTH bits and
+# the presentation-area size.
+assert_json "$TMP_DIR/t17b.json" \
+    "any(e['ev']=='config' and e['fullscreen'] and e['maximized'] and e['w']==$MW and e['h']==$MH for e in events)" \
+    "t17b: maximized→fullscreen: both bits, presentation area"
+# FULLSCREEN → MAXIMIZED: unfullscreen restore configure without the
+# Fullscreen bit but WITH Maximized still parked, at the maximized size.
+assert_json "$TMP_DIR/t17b.json" \
+    "any(e['ev']=='config' and not e['fullscreen'] and e['maximized'] and e['w']==$MW and e['h']==$MH for e in events)" \
+    "t17b: unfullscreen returns to MAXIMIZED (not NORMAL)"
+assert_log "$TMP_DIR/veyra.log" "fullscreen fulfilled" "t17b: fullscreen transaction completed from maximized"
+assert_log "$TMP_DIR/veyra.log" "unfullscreen fulfilled" "t17b: unfullscreen transaction completed back to maximized"
+# Unfullscreen must NOT clear the maximize state on the compositor side.
+T17B_LAST_FULFILLED=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "unfullscreen fulfilled" | tail -1)
+if echo "$T17B_LAST_FULFILLED" | grep -qa "client_matched=true"; then
+    ok "t17b: unfullscreen completed with client compliance"
+else
+    bad "t17b: unfullscreen did not complete with client compliance: $T17B_LAST_FULFILLED"
+fi
+
 say "protocol tests done"
 echo "-------------------------------------"
 echo "protocol: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -138,6 +138,14 @@ pub struct ToplevelInfo {
     /// still mapped and alive). Presentation transform is untouched;
     /// layout/arrangement treat minimized visuals as detached.
     pub minimized: bool,
+    /// I7: the client acknowledged a fullscreen configure and committed
+    /// at the transition size (FULLSCREEN state in the machine above).
+    /// The snapshot for restoring lives in the fullscreen coordinator.
+    pub fullscreened: bool,
+    /// I7: the pre-fullscreen snapshot (FullscreenSnapshot), captured
+    /// exactly once at fullscreen entry and consumed by unfullscreen
+    /// restore. None while not fullscreen.
+    pub fullscreen_snapshot: Option<crate::fullscreen::FullscreenSnapshot>,
 }
 
 impl ToplevelInfo {
@@ -168,6 +176,8 @@ impl ToplevelInfo {
             restore_size: None,
             restore_pose: None,
             minimized: false,
+            fullscreened: false,
+            fullscreen_snapshot: None,
         }
     }
 
@@ -275,6 +285,9 @@ pub struct LookingGlass {
     /// configured/committed geometry changes; the spatial transform never
     /// does (see crate::maximize).
     pub maximize: crate::maximize::MaximizeCoordinator,
+    /// Outstanding fullscreen transitions (I7): intent + serial + the
+    /// pre-fullscreen snapshot (see crate::fullscreen).
+    pub fullscreen: crate::fullscreen::FullscreenCoordinator,
     /// In-progress pointer resize session (I3b), None when idle.
     pub resize_session: Option<crate::resize::ResizeSession>,
     /// Relative pointer manager for sending relative motion deltas.
@@ -400,6 +413,7 @@ impl LookingGlass {
             pending_reopen: None,
             client_resizes: crate::client_resize::ClientResizeCoordinator::default(),
             maximize: crate::maximize::MaximizeCoordinator::default(),
+            fullscreen: crate::fullscreen::FullscreenCoordinator::default(),
             resize_session: None,
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<LookingGlass>(display_handle),
             dmabuf_manager: crate::dmabuf::DmabufManager::new(display_handle),
@@ -844,9 +858,14 @@ impl LookingGlass {
                             }
                             crate::client_resize::CommitOutcome::NotResizing => {}
                         }
-                        // I4: a committed buffer completes any outstanding
-                        // maximize/unmaximize transition for this surface.
-                        self.complete_maximize_intent(vid, (tex_size.w as i32, tex_size.h as i32));
+        let committed = (tex_size.w as i32, tex_size.h as i32);
+        // I4: a committed buffer completes any outstanding
+        // maximize/unmaximize transition for this surface.
+        self.complete_maximize_intent(vid, committed);
+        self.flush_deferred_maximize();
+        // I7: same completion discipline for fullscreen.
+        self.complete_fullscreen_intent(vid, committed);
+        self.flush_fullscreen_deferred();
                         if let Some(visual) = self.scene.get_mut(vid) {
                             if let Some(dst) = visual.texture_mut() {
                                 *dst = texture;
@@ -1539,6 +1558,11 @@ impl LookingGlass {
             info!(?vid, "resize session refused: window is maximized");
             return false;
         }
+        // I7: neither do fullscreen windows.
+        if self.is_fullscreened(vid) {
+            info!(?vid, "resize session refused: window is fullscreen");
+            return false;
+        }
         let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() else { return false };
         if !self.toplevels.iter().any(|t| t.toplevel.wl_surface() == &wl_surface) {
             return false; // popups are transient and not resizable
@@ -1666,6 +1690,258 @@ impl LookingGlass {
         self.toplevels.iter().any(|t| t.visual_id == Some(vid) && t.maximized)
     }
 
+    /// Whether the toplevel for `vid` is currently fullscreen (I7).
+    pub fn is_fullscreened(&self, vid: VisualId) -> bool {
+        self.toplevels.iter().any(|t| t.visual_id == Some(vid) && t.fullscreened)
+    }
+
+    // ── I7: fullscreen / unfullscreen ─────────────────────────────────
+
+    /// Begin a fullscreen transition.
+    ///
+    /// Snapshot discipline: the pre-fullscreen presentation + state is
+    /// captured EXACTLY ONCE here (entering PENDING_FULLSCREEN), never
+    /// while fullscreen. The client is configured with the Fullscreen
+    /// state bit and the presentation area — never a hardcoded size.
+    ///
+    /// Maximize interactions: a maximized window snapshots
+    /// `was_maximized=true` and keeps the Maximized state bit parked on
+    /// the toplevel; unfullscreen returns it to maximized (not NORMAL).
+    pub fn begin_fullscreen(&mut self, vid: VisualId, source: crate::fullscreen::FullscreenSource) {
+        use crate::fullscreen::{FullscreenIntent, FullscreenKind};
+        let Some(toplevel) = self.toplevel_for_vid(vid) else { return };
+        if self.is_fullscreened(vid) {
+            info!(?vid, ?source, "fullscreen ignored: already fullscreen");
+            return;
+        }
+        if self.resize_session.as_ref().is_some_and(|s| s.vid == vid) {
+            info!(?vid, ?source, "fullscreen refused: resize session in progress");
+            return;
+        }
+        let Some(visual) = self.scene.get(vid) else { return };
+        let restore = (visual.geometry.size.w, visual.geometry.size.h);
+        if restore.0 <= 0 || restore.1 <= 0 {
+            info!(?vid, ?source, "fullscreen refused: no committed geometry yet");
+            return;
+        }
+        let was_maximized = self.is_maximized(vid);
+        let snapshot = crate::fullscreen::FullscreenSnapshot::capture(
+            restore,
+            visual.transform.position,
+            visual.transform.rotation,
+            was_maximized,
+        );
+        // Size the client to the presentation area — nothing hardcoded.
+        let target = crate::fullscreen::PresentationArea::for_window_size(self.window_size).size();
+
+        // Defer while the surface still owes an ACK for a prior configure.
+        let wl_surface = self.wayland_surfaces.get(&vid).cloned();
+        let unacked = wl_surface.is_some_and(|wl_surface| {
+            with_states(&wl_surface, |states| {
+                states.data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .map(|attrs| !attrs.lock().unwrap().pending_configures().is_empty())
+                    .unwrap_or(false)
+            })
+        });
+        if unacked || self.client_resizes.awaiting_ack(vid) {
+            self.fullscreen.defer(vid, FullscreenKind::Fullscreen, source);
+            info!(?vid, ?source, "fullscreen deferred: configure outstanding");
+            return;
+        }
+
+        // Park the maximize intent if one races with fullscreen: the
+        // fullscreen transition owns the window from here on.
+        self.maximize.abort(vid);
+        toplevel.with_pending_state(|state| {
+            state.size = Some(smithay::utils::Size::new(target.0, target.1));
+            state.states.set(xdg_toplevel::State::Fullscreen);
+            // was_maximized keeps the Maximized bit until unfullscreen;
+            // the client still reports fullscreen+maximized correctly.
+            if !was_maximized {
+                state.states.unset(xdg_toplevel::State::Maximized);
+            }
+        });
+        let serial = toplevel.send_configure();
+        self.client_resizes.mark_sent(vid, serial, target);
+        self.fullscreen.begin(FullscreenIntent {
+            vid, kind: FullscreenKind::Fullscreen, source, serial, target,
+            previous: restore, snapshot: None,
+        });
+        // The snapshot lives on the toplevel row so it survives intent
+        // replacement and is consumed by unfullscreen.
+        if let Some(info) = self.toplevels.iter_mut().find(|t| t.visual_id == Some(vid)) {
+            info.fullscreen_snapshot = Some(snapshot);
+        }
+        info!(?vid, ?source, ?serial, target_w = target.0, target_h = target.1, was_maximized, "fullscreen requested");
+    }
+
+    /// Begin an unfullscreen transition: restores the state that existed
+    /// immediately before fullscreen (MAXIMIZED → FULLSCREEN → MAXIMIZED,
+    /// NORMAL → FULLSCREEN → NORMAL) and hands the pre-fullscreen size
+    /// back to the client.
+    pub fn begin_unfullscreen(&mut self, vid: VisualId, source: crate::fullscreen::FullscreenSource) {
+        use crate::fullscreen::{FullscreenIntent, FullscreenKind};
+        let Some(toplevel) = self.toplevel_for_vid(vid) else { return };
+        if !self.is_fullscreened(vid) && self.fullscreen.intent(vid).is_none() {
+            info!(?vid, ?source, "unfullscreen ignored: not fullscreen");
+            return;
+        }
+        let snapshot = self.toplevels.iter()
+            .find(|t| t.visual_id == Some(vid))
+            .and_then(|t| t.fullscreen_snapshot.clone())
+            .unwrap_or_else(|| {
+                // Defensive fallback: no snapshot recorded (e.g. a client
+                // that set fullscreen before veyra saw geometry). Restore
+                // to the window size, un-maximized.
+                crate::fullscreen::FullscreenSnapshot::capture(
+                    (800, 600),
+                    cgmath::Vector3::new(0.0, 0.0, 0.0),
+                    cgmath::Quaternion::new(1.0, 0.0, 0.0, 0.0),
+                    false,
+                )
+            });
+        let target = snapshot.restore_size;
+        let was_maximized = snapshot.was_maximized;
+
+        let wl_surface = self.wayland_surfaces.get(&vid).cloned();
+        let unacked = wl_surface.is_some_and( |wl_surface| {
+            with_states(&wl_surface, |states| {
+                states.data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .map(|attrs| !attrs.lock().unwrap().pending_configures().is_empty())
+                    .unwrap_or(false)
+            })
+        });
+        if unacked || self.client_resizes.awaiting_ack(vid) {
+            self.fullscreen.defer(vid, FullscreenKind::Unfullscreen, source);
+            info!(?vid, ?source, "unfullscreen deferred: configure outstanding");
+            return;
+        }
+
+        toplevel.with_pending_state(|state| {
+            state.size = Some(smithay::utils::Size::new(target.0, target.1));
+            state.states.unset(xdg_toplevel::State::Fullscreen);
+            // MAXIMIZED → FULLSCREEN → MAXIMIZED: the bit stays parked
+            // while fullscreen, so unfullscreen leaves it set.
+        });
+        let previous = self.scene.get(vid)
+            .map(|v| (v.geometry.size.w, v.geometry.size.h))
+            .unwrap_or(target);
+        let serial = toplevel.send_configure();
+        self.client_resizes.mark_sent(vid, serial, target);
+        self.fullscreen.begin(FullscreenIntent {
+            vid, kind: FullscreenKind::Unfullscreen, source, serial, target,
+            previous, snapshot: Some(snapshot),
+        });
+        info!(?vid, ?source, ?serial, restore_w = target.0, restore_h = target.1, was_maximized, "unfullscreen requested");
+    }
+
+    /// Toggle fullscreen on the focused (or selected) visual.
+    pub fn toggle_fullscreen_selected(&mut self, source: crate::fullscreen::FullscreenSource) {
+        let Some(vid) = self.scene.focused_id.or(self.scene.selected_id) else {
+            info!(?source, "fullscreen toggle ignored: no focused visual");
+            return;
+        };
+        self.toggle_fullscreen_for(vid, source);
+    }
+
+    /// Toggle fullscreen on a specific visual (also the context-menu path).
+    pub fn toggle_fullscreen_for(&mut self, vid: VisualId, source: crate::fullscreen::FullscreenSource) {
+        if self.is_fullscreened(vid) {
+            self.begin_unfullscreen(vid, source);
+        } else {
+            self.begin_fullscreen(vid, source);
+        }
+    }
+
+    /// Complete a fullscreen/unfullscreen transaction after a client
+    /// commit. Same rules as the maximize coordinator: draining commits
+    /// (acked configure, old size still committed) keep the intent armed;
+    /// `committed == target` completes with client_matched=true; a third
+    /// size completes with the acknowledged STATE applying anyway.
+    fn complete_fullscreen_intent(&mut self, vid: VisualId, committed: (i32, i32)) {
+        use crate::fullscreen::FullscreenKind;
+        let Some(intent) = self.fullscreen.intent(vid) else { return };
+        if committed == intent.previous && committed != intent.target {
+            return; // draining commit — keep the intent armed
+        }
+        let intent = self.fullscreen.take_intent(vid).expect("intent peeked above");
+        let client_matched = committed == intent.target;
+        if let Some(info) = self.toplevels.iter_mut().find(|t| t.visual_id == Some(vid)) {
+            match intent.kind {
+                FullscreenKind::Fullscreen => {
+                    info.fullscreened = true;
+                    // Presentation: fullscreen is temporary presentation
+                    // policy, NOT a reset transform. The parked pose is
+                    // the fullscreen snapshot on the toplevel row; the
+                    // visual centers on the workspace view so the quad
+                    // fills the viewport edge to edge.
+                    if let Some(v) = self.scene.get_mut(vid) {
+                        v.transform.position = cgmath::Vector3::new(0.0, 0.0, v.transform.position.z);
+                        v.transform.rotation = cgmath::Quaternion::new(1.0, 0.0, 0.0, 0.0);
+                    }
+                }
+                FullscreenKind::Unfullscreen => {
+                    info.fullscreened = false;
+                    // Restore from the snapshot captured at ENTRY — the
+                    // snapshot rides on the intent (unfullscreen took a
+                    // copy); consumed exactly once here.
+                    if let Some(snapshot) = info.fullscreen_snapshot.take() {
+                        info.maximized = snapshot.was_maximized;
+                        if !snapshot.was_maximized {
+                            info.restore_size = None;
+                            info.restore_pose = None;
+                        }
+                        if let Some(v) = self.scene.get_mut(vid) {
+                            let (px, py, pz) = snapshot.restore_pos;
+                            let [ri, rj, rk, rw] = snapshot.restore_rot;
+                            v.transform.position = cgmath::Vector3::new(px, py, pz);
+                            // cgmath Quaternion::new is scalar-first (w, x, y, z)
+                            v.transform.rotation = cgmath::Quaternion::new(rw, ri, rj, rk);
+                        }
+                        if snapshot.was_maximized {
+                            // Back in maximized presentation: centered on
+                            // the view, bit still parked from fullscreen.
+                            if let Some(v) = self.scene.get_mut(vid) {
+                                v.transform.position = cgmath::Vector3::new(0.0, 0.0, v.transform.position.z);
+                                v.transform.rotation = cgmath::Quaternion::new(1.0, 0.0, 0.0, 0.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let state_msg = match intent.kind {
+            FullscreenKind::Fullscreen => "fullscreen fulfilled",
+            FullscreenKind::Unfullscreen => "unfullscreen fulfilled",
+        };
+        if let Some(v) = self.scene.get(vid) {
+            let pos = v.transform.position;
+            let rot = v.transform.rotation;
+            let scale = v.transform.scale;
+            info!(?vid, source = ?intent.source, client_matched,
+                  w = intent.target.0, h = intent.target.1, ?pos, ?rot, ?scale,
+                  "{}", state_msg);
+        } else {
+            info!(?vid, source = ?intent.source, client_matched,
+                  w = intent.target.0, h = intent.target.1, "{}", state_msg);
+        }
+        self.schedule_render();
+    }
+
+    /// Flush a deferred fullscreen/unfullscreen request (ack path).
+    fn flush_fullscreen_deferred(&mut self) {
+        if let Some((vid, kind, source)) = self.fullscreen.take_deferred() {
+            match kind {
+                crate::fullscreen::FullscreenKind::Fullscreen =>
+                    self.begin_fullscreen(vid, source),
+                crate::fullscreen::FullscreenKind::Unfullscreen =>
+                    self.begin_unfullscreen(vid, source),
+            }
+        }
+    }
+
     fn toplevel_for_vid(&self, vid: VisualId) -> Option<ToplevelSurface> {
         self.toplevels.iter()
             .find(|t| t.visual_id == Some(vid))
@@ -1684,6 +1960,13 @@ impl LookingGlass {
         let Some(toplevel) = self.toplevel_for_vid(vid) else { return };
         if self.is_maximized(vid) {
             info!(?vid, ?source, "maximize ignored: already maximized");
+            return;
+        }
+        // Explicit maximize↔fullscreen semantics (I7): a fullscreen
+        // window stays fullscreen; maximize requests on it are refused
+        // (GNOME-style). Exit fullscreen first.
+        if self.is_fullscreened(vid) {
+            info!(?vid, ?source, "maximize refused: window is fullscreen");
             return;
         }
         if self.resize_session.as_ref().map_or(false, |s| s.vid == vid) {
@@ -1856,6 +2139,11 @@ impl LookingGlass {
         // hidden state (center-on-view at commit). Drop it: the surface
         // just stops being visible.
         self.maximize.abort(vid);
+        // An in-flight fullscreen transition would also apply a
+        // presentation pose on commit while hidden; drop it. The parked
+        // fullscreen snapshot stays so a later unfullscreen still
+        // restores the original state.
+        self.fullscreen.abort(vid);
 
         let was_focused = self.scene.focused_id == Some(vid);
         if let Some(info) = self.toplevels.iter_mut().find(|t| t.visual_id == Some(vid)) {
@@ -1927,13 +2215,14 @@ impl LookingGlass {
     }
 
     /// Visuals that arrangement must not move: detached pins, maximized
-    /// windows (kept centered on the view) and minimized windows (hidden;
-    /// their transform must be preserved for restore).
+    /// windows (kept centered on the view), minimized windows (hidden;
+    /// their transform must be preserved for restore) and fullscreen
+    /// windows (presented centered; snapshot holds the restore pose).
     fn layout_detached(&self) -> Vec<VisualId> {
         let mut d = self.scene.detached_set.clone();
         d.extend(
             self.toplevels.iter()
-                .filter(|t| t.maximized || t.minimized)
+                .filter(|t| t.maximized || t.minimized || t.fullscreened)
                 .filter_map(|t| t.visual_id)
         );
         d
@@ -2118,6 +2407,11 @@ impl LookingGlass {
                 // Same path as Meta+Up: intent -> configure -> commit.
                 self.toggle_maximize_for(target, crate::maximize::MaximizeSource::Compositor);
                 info!(?target, "context menu: maximize toggle");
+            }
+            MenuAction::Fullscreen => {
+                // Same coordinator as Meta+G / F12 / client requests (I7).
+                self.toggle_fullscreen_for(target, crate::fullscreen::FullscreenSource::Compositor);
+                info!(?target, "context menu: fullscreen toggle");
             }
             MenuAction::Minimize => {
                 // Non-Meta permanent minimize path (right-click). The
@@ -2887,6 +3181,9 @@ impl LookingGlass {
             ToggleMaximize => {
                 self.toggle_maximize_selected(crate::maximize::MaximizeSource::Compositor);
             }
+            ToggleFullscreen => {
+                self.toggle_fullscreen_selected(crate::fullscreen::FullscreenSource::Compositor);
+            }
             MinimizeSelected => {
                 self.minimize_selected(crate::maximize::MinimizeSource::Compositor);
             }
@@ -3190,21 +3487,26 @@ impl XdgShellHandler for LookingGlass {
     }
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>) {
+        // Client-initiated fullscreen (I7): same coordinator as the
+        // compositor key/menu path. The Fullscreen state bit + size are
+        // sent by begin_fullscreen, not here.
         let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
-        surface.with_pending_state(|state| {
-            state.states.set(xdg_toplevel::State::Fullscreen);
-        });
-        let _ = surface.send_configure();
-        info!(?vid, "fullscreen requested");
+        match vid {
+            Some(vid) => self.begin_fullscreen(vid, crate::fullscreen::FullscreenSource::Client),
+            None => {
+                info!("fullscreen request before the surface mapped; ignored");
+            }
+        }
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
-        surface.with_pending_state(|state| {
-            state.states.unset(xdg_toplevel::State::Fullscreen);
-        });
-        let _ = surface.send_configure();
-        info!(?vid, "unfullscreen requested");
+        match vid {
+            Some(vid) => self.begin_unfullscreen(vid, crate::fullscreen::FullscreenSource::Client),
+            None => {
+                info!("unfullscreen request for unknown toplevel ignored");
+            }
+        }
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
@@ -3260,6 +3562,8 @@ impl XdgShellHandler for LookingGlass {
                 self.flush_resize_desired(vid);
                 // I4: the freed surface may now take a deferred maximize.
                 self.flush_deferred_maximize();
+                // I7: ...or a deferred fullscreen request.
+                self.flush_fullscreen_deferred();
             }
         }
     }
@@ -3443,6 +3747,8 @@ fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
     state.client_resizes.abort(vid);
     // Drop any outstanding maximize intent (I4)
     state.maximize.abort(vid);
+    // Drop any outstanding fullscreen intent (I7)
+    state.fullscreen.abort(vid);
     // Drop a resize session targeting the removed visual (I3b)
     if state.resize_session.as_ref().map_or(false, |s| s.vid == vid) {
         state.resize_session = None;

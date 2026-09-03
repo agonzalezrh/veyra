@@ -19,6 +19,7 @@ pub enum Binding {
     Escape,
     CloseApp,
     ToggleMaximize,
+    ToggleFullscreen,
     MinimizeSelected,
     RestoreSelected,
     ReopenClosed,
@@ -108,6 +109,10 @@ impl NavigationModel {
             (RestoreSelected,        KeyBinding::meta(keys::U)),
             (RestoreSelected,        KeyBinding::new(keys::F10)),
             (ToggleMaximize,         KeyBinding::new(keys::F11)),
+            // Fullscreen (I7): Meta+G permanent (Meta+F is FrameSelected),
+            // F12 for deterministic laptop testing nested inside GNOME.
+            (ToggleFullscreen,       KeyBinding::meta(keys::G)),
+            (ToggleFullscreen,       KeyBinding::new(keys::F12)),
             (ReopenClosed,           KeyBinding::meta_shift(keys::T)),
             (HelpOverlay,            KeyBinding::meta(keys::SLASH)),
         ];
@@ -242,6 +247,15 @@ mod tests {
         // Meta+W and Meta+Q both close the focused app (I6)
         assert_eq!(nav.match_binding(25, false, false, false, true), Some(Binding::CloseApp));
         assert_eq!(nav.match_binding(24, false, false, false, true), Some(Binding::CloseApp));
+    }
+
+    #[test]
+    fn match_binding_fullscreen() {
+        let nav = NavigationModel::new();
+        // Meta+G (G=42): fullscreen (Meta+F is FrameSelected)
+        assert_eq!(nav.match_binding(42, false, false, false, true), Some(Binding::ToggleFullscreen));
+        // Laptop-test binding: plain F12 (96) also toggles fullscreen.
+        assert_eq!(nav.match_binding(96, false, false, false, false), Some(Binding::ToggleFullscreen));
     }
 
     #[test]

@@ -7,7 +7,8 @@
 //!
 //! Subcommands: probe, resizer, keyboard, pointer, quitter. The probe/
 //! resizer clients also support client-requested maximize sequencing via
-//! --maximize-after / --unmaximize-after (I4).
+//! --maximize-after / --unmaximize-after (I4),
+//! --minimize-after (I5), --fullscreen-after / --unfullscreen-after (I7).
 
 use std::convert::TryInto;
 use std::io::Write;
@@ -101,6 +102,12 @@ struct Opts {
     /// Minimize test: after this many commits, send xdg_toplevel
     /// set_minimized (client-requested minimize, I5).
     minimize_after: Option<u32>,
+    /// Fullscreen test (I7): after this many commits, send
+    /// xdg_toplevel.set_fullscreen (client-requested).
+    fullscreen_after: Option<u32>,
+    /// Fullscreen test (I7): after this many commits, send
+    /// xdg_toplevel.unset_fullscreen.
+    unfullscreen_after: Option<u32>,
 }
 
 fn parse_size(s: &str) -> (u32, u32) {
@@ -129,6 +136,8 @@ fn parse_args() -> Opts {
         maximize_after: None,
         unmaximize_after: None,
         minimize_after: None,
+        fullscreen_after: None,
+        unfullscreen_after: None,
     };
     let mut i = 1;
     while i < args.len() {
@@ -154,6 +163,8 @@ fn parse_args() -> Opts {
             "--maximize-after" => opts.maximize_after = next(&mut i).parse().ok(),
             "--unmaximize-after" => opts.unmaximize_after = next(&mut i).parse().ok(),
             "--minimize-after" => opts.minimize_after = next(&mut i).parse().ok(),
+            "--fullscreen-after" => opts.fullscreen_after = next(&mut i).parse().ok(),
+            "--unfullscreen-after" => opts.unfullscreen_after = next(&mut i).parse().ok(),
             other => {
                 eprintln!("unknown option: {}", other);
                 std::process::exit(2);
@@ -288,6 +299,17 @@ impl TestClient {
         if self.opts.minimize_after == Some(self.commits) {
             log_kv(&[("ev", "request_minimize".into())]);
             self.window.set_minimized();
+        }
+        // Client-requested fullscreen transitions (I7). The compositor
+        // answers with a configure carrying the Fullscreen state bit
+        // (plus a size for well-behaved compositors).
+        if self.opts.fullscreen_after == Some(self.commits) {
+            log_kv(&[("ev", "request_fullscreen".into())]);
+            self.window.set_fullscreen(None);
+        }
+        if self.opts.unfullscreen_after == Some(self.commits) {
+            log_kv(&[("ev", "request_unfullscreen".into())]);
+            self.window.unset_fullscreen();
         }
         if let Some(n) = self.opts.exit_after_commits {
             if self.commits >= n {

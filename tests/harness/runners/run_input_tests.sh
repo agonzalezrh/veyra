@@ -544,6 +544,35 @@ else
     bad "t15i: minimized window destroy missing"
 fi
 
+# ── t16i: compositor-requested fullscreen via F12 (I7) ───────────────
+# focus click → F12 (fullscreen) → F12 again (unfullscreen); the client
+# must be configured to the presentation area and back, with the
+# server-side log showing request → fulfilled both ways.
+say "t16i_fullscreen_binding"
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --duration 12000 > "$TMP_DIR/t16i.json" 2>/dev/null &
+T16I_PID=$!
+sleep 1.5
+DISPLAY=:99 xdotool mousemove $CX $CY click 1
+sleep 0.3
+DISPLAY=:99 xdotool key F12
+wait_for_log "$TMP_DIR/veyra.log" "fullscreen fulfilled" 5
+DISPLAY=:99 xdotool key F12
+wait_process_exit $T16I_PID 16
+assert_log "$TMP_DIR/veyra.log" "fullscreen requested" "t16i: F12 triggered compositor fullscreen request"
+FS_UNCALLS=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "unfullscreen fulfilled" | grep -acv "unfullscreen" || true)
+FS_UNFULLFILLED_TOTAL=$(strip_ansi "$TMP_DIR/veyra.log" | grep -ac "unfullscreen fulfilled" || true)
+if [ "$FS_UNFULLFILLED_TOTAL" -ge 1 ]; then
+    ok "t16i: second F12 completed the unfullscreen transaction"
+else
+    bad "t16i: second F12 did not unfullscreen"
+fi
+# Client observed the Fullscreen state bit and the restore configure.
+assert_json "$TMP_DIR/t16i.json" \
+    "any(e['ev']=='config' and e['fullscreen'] for e in events) and any(e['ev']=='config' and not e['fullscreen'] for e in events)" \
+    "t16i: client saw fullscreen and restored configures"
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"
