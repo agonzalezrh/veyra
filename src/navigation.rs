@@ -82,6 +82,11 @@ impl NavigationModel {
             (WorkspacePrev,          KeyBinding::ctrl_shift(keys::TAB)),
             (AppNext,                KeyBinding::alt(keys::TAB)),
             (AppPrev,                KeyBinding::alt_shift(keys::TAB)),
+            // Plain F7/F8 for deterministic laptop testing: GNOME owns
+            // Alt+Tab when nested, so the MRU switcher needs keys the
+            // mother compositor will not intercept.
+            (AppNext,                KeyBinding::new(keys::F7)),
+            (AppPrev,                KeyBinding::new(keys::F8)),
             (Escape,                 KeyBinding::new(keys::ESCAPE)),
             (FrameAll,               KeyBinding::new(keys::HOME)),
             (OpenContextMenu,        KeyBinding::new(keys::MENU)),

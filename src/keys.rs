@@ -25,6 +25,8 @@ pub const F6: u32 = 72;
 // Laptop-test bindings: GNOME owns the Meta chords before the nested
 // compositor window sees them, so window-management features are also
 // reachable without Meta (see navigation.rs).
+pub const F7: u32 = 73;
+pub const F8: u32 = 74;
 pub const F9: u32 = 75;
 pub const F10: u32 = 76;
 pub const F11: u32 = 77;

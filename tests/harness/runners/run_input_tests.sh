@@ -618,6 +618,17 @@ if echo "$T18I_RESTORE" | grep -qa "vid=$T18I_VID order=\[$T18I_VID\]"; then
 else
     bad "t18i: restore refocus wrong: $T18I_RESTORE"
 fi
+# F7 (AppNext plain binding): the only window is focused → MRU cycle
+# finds no OTHER window and logs the refusal (path still runs through
+# switch_app_focus → set_keyboard_focus, never a second writer).
+DISPLAY=:99 xdotool key F7
+sleep 0.3
+T18I_F7=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "app switch" | tail -1)
+if echo "$T18I_F7" | grep -qa "no other focusable window"; then
+    ok "t18i: F7 cycles MRU; single window keeps focus"
+else
+    bad "t18i: F7 app-switch wrong: $T18I_F7"
+fi
 wait_process_exit $T18I_PID 10
 
 say "input tests done"
