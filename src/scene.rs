@@ -457,6 +457,30 @@ impl Scene {
         result
     }
 
+    /// The visual's transform as seen in world space: parent chain
+    /// applied to its local transform. Position and rotation come from
+    /// the composed matrix (exactly the extraction the renderer does);
+    /// scale stays the visual's own, since quads size themselves from
+    /// their own geometry — matching the renderer's model matrix.
+    ///
+    /// Picking and pointer→UV mapping must use this so that parented
+    /// visuals (popups, groups) are hit where they are DRAWN, not
+    /// where their local coordinates happen to sit.
+    pub fn world_transform(&self, id: VisualId) -> Transform3D {
+        let world = self.world_matrix(id);
+        let pos = Vector3::new(world[3][0], world[3][1], world[3][2]);
+        let m3 = cgmath::Matrix3::new(
+            world[0][0], world[0][1], world[0][2],
+            world[1][0], world[1][1], world[1][2],
+            world[2][0], world[2][1], world[2][2],
+        );
+        let rot = cgmath::Quaternion::from(m3);
+        let own_scale = self.visuals.iter().find(|v| v.id == id)
+            .map(|v| v.transform.scale)
+            .unwrap_or_else(|| Vector3::new(1.0, 1.0, 1.0));
+        Transform3D { position: pos, rotation: rot, scale: own_scale }
+    }
+
     /// Set a visual's parent. Returns an error if it would create a cycle.
     pub fn set_parent(&mut self, child: VisualId, new_parent: VisualId) -> Result<(), String> {
         if child == new_parent {
@@ -766,7 +790,19 @@ impl Scene {
         ndc_x: f32,
         ndc_y: f32,
     ) -> Option<(VisualId, f32)> {
-        pick_visual(proj_view, ndc_x, ndc_y, &self.visuals)
+        // World-space picking: parented visuals (popups, groups) are
+        // hit where they are drawn, not at their local coordinates.
+        let items: Vec<_> = self.visuals
+            .iter()
+            .map(|v| {
+                (
+                    v.id,
+                    self.world_transform(v.id),
+                    (v.total_width(), v.total_height()),
+                )
+            })
+            .collect();
+        pick_visual_items(proj_view, ndc_x, ndc_y, &items)
     }
 
     /// Pick only among visuals in the given visible set (workspace filter).
@@ -784,7 +820,7 @@ impl Scene {
             .map(|v| {
                 (
                     v.id,
-                    v.transform.clone(),
+                    self.world_transform(v.id),
                     (v.total_width(), v.total_height()),
                 )
             })
@@ -797,31 +833,11 @@ impl Scene {
 ///
 /// `proj_view` = projection × view matrix.
 /// `ndc_x`, `ndc_y` = normalized device coordinates in [-1, 1].
-/// `visuals` = slice of visual references.
+/// `visuals` = slice of (id, world transform, (w, h)) items.
 ///
 /// Returns the closest intersected `(VisualId, hit_distance)` or `None`.
-pub fn pick_visual(
-    proj_view: &Matrix4<f32>,
-    ndc_x: f32,
-    ndc_y: f32,
-    visuals: &[Visual],
-) -> Option<(VisualId, f32)> {
-    // Use decorated quad size (including title bar) for picking
-    let items: Vec<_> = visuals
-        .iter()
-        .map(|v| {
-            (
-                v.id,
-                v.transform.clone(),
-                (v.total_width(), v.total_height()),
-            )
-        })
-        .collect();
-    pick_visual_items(proj_view, ndc_x, ndc_y, &items)
-}
-
 /// Pure picking math operating on (id, transform, width, height) tuples.
-/// Used by pick_visual internally and by unit tests.
+/// Used by Scene::pick / pick_visible and by unit tests.
 fn pick_visual_items(
     proj_view: &Matrix4<f32>,
     ndc_x: f32,
@@ -1445,6 +1461,107 @@ mod tests {
         let m = scene.world_matrix(VisualId(999));
         assert!((m[0][0] - 1.0).abs() < 1e-4);
         assert!((m[3][0]).abs() < 1e-4);
+    }
+
+    // ── J2 popup coordinate model ────────────────────────────────────
+
+    /// Popup on a parent at the origin: world == local (identity parent).
+    #[test]
+    fn popup_world_on_origin_parent_is_local() {
+        let mut scene = Scene::default();
+        let parent = crate::scene::Visual::new_test(400, 300);
+        let popup = crate::scene::Visual::new_test(100, 60);
+        let pid = parent.id;
+        let cid = popup.id;
+        scene.add(parent);
+        scene.add(popup);
+        scene.set_parent(cid, pid).unwrap();
+        scene.visuals[1].transform.position = Vector3::new(50.0, -20.0, 10.0);
+        let w = scene.world_matrix(cid);
+        assert!((w[3][0] - 50.0).abs() < 1e-4);
+        assert!((w[3][1] + 20.0).abs() < 1e-4);
+        assert!((w[3][2] - 10.0).abs() < 1e-4);
+    }
+
+    /// THE J2 INVARIANT: moving the parent moves the popup by the same
+    /// delta; the popup's own transform is untouched (parent-local).
+    #[test]
+    fn popup_follows_parent_translation() {
+        let mut scene = Scene::default();
+        let parent = crate::scene::Visual::new_test(400, 300);
+        let popup = crate::scene::Visual::new_test(100, 60);
+        let pid = parent.id;
+        let cid = popup.id;
+        scene.add(parent);
+        scene.add(popup);
+        scene.set_parent(cid, pid).unwrap();
+        scene.visuals[0].transform.position = Vector3::new(200.0, 100.0, 0.0);
+        scene.visuals[1].transform.position = Vector3::new(50.0, 0.0, 10.0);
+        let w0 = scene.world_matrix(cid);
+        // Move the parent only.
+        scene.visuals[0].transform.position = Vector3::new(340.0, -60.0, 0.0);
+        let w1 = scene.world_matrix(cid);
+        let dx = w1[3][0] - w0[3][0];
+        let dy = w1[3][1] - w0[3][1];
+        let dz = w1[3][2] - w0[3][2];
+        assert!((dx - 140.0).abs() < 1e-4, "popup x delta {}", dx);
+        assert!((dy + 160.0).abs() < 1e-4, "popup y delta {}", dy);
+        assert!(dz.abs() < 1e-4);
+        // Popup local transform unchanged (scene state ownership).
+        assert_eq!(scene.visuals[1].transform.position, Vector3::new(50.0, 0.0, 10.0));
+    }
+
+    /// THE NASTY CASE: parent rotated 90° about Y — a popup offset to
+    /// the parent's right (+x local) must appear BEHIND the parent in
+    /// world space (−z world), because "right of the window" rotates
+    /// with the window. This is what makes the popup spatially
+    /// attached to the transformed parent instead of the screen.
+    #[test]
+    fn popup_offset_rotates_with_parent() {
+        let mut scene = Scene::default();
+        let parent = crate::scene::Visual::new_test(400, 300);
+        let popup = crate::scene::Visual::new_test(100, 60);
+        let pid = parent.id;
+        let cid = popup.id;
+        scene.add(parent);
+        scene.add(popup);
+        scene.set_parent(cid, pid).unwrap();
+        // Parent rotated 90° about Y (facing left/right instead of camera).
+        scene.visuals[0].transform.rotation = cgmath::Quaternion::from_angle_y(cgmath::Deg(90.0));
+        scene.visuals[1].transform.position = Vector3::new(100.0, 0.0, 0.0);
+        let w = scene.world_matrix(cid);
+        // Local +x (100) under a +90° Y rotation maps to world −z:
+        // [cos90 0 sin90; 0 1 0; −sin90 0 cos90] · (100,0,0) = (0,0,−100).
+        assert!((w[3][0]).abs() < 1e-4, "world x {}", w[3][0]);
+        assert!((w[3][1]).abs() < 1e-4);
+        assert!((w[3][2] + 100.0).abs() < 1e-4, "world z {}", w[3][2]);
+    }
+
+    /// Picking must hit parented visuals where they are DRAWN (world
+    /// space), not where their local coordinates sit.
+    #[test]
+    fn pick_hits_popup_at_world_position() {
+        use cgmath::InnerSpace;
+        let mut scene = Scene::default();
+        let parent = crate::scene::Visual::new_test(400, 300);
+        let popup = crate::scene::Visual::new_test(100, 60);
+        let pid = parent.id;
+        let cid = popup.id;
+        scene.add(parent);
+        scene.add(popup);
+        scene.set_parent(cid, pid).unwrap();
+        scene.visuals[0].transform.position = Vector3::new(300.0, 0.0, 0.0);
+        scene.visuals[1].transform.position = Vector3::new(0.0, 0.0, 10.0);
+        // proj*view for the standard camera at (0,0,800) looking at origin.
+        let view = cgmath::Matrix4::from_translation(cgmath::Vector3::new(0.0, 0.0, -800.0));
+        let proj = cgmath::perspective(cgmath::Deg(45.0), 1280.0 / 720.0, 1.0, 10000.0);
+        let pv = proj * view;
+        // The popup draws at world (300, 0, 10): project that point to NDC.
+        let world_pt = pv * cgmath::Vector4::new(300.0, 0.0, 10.0, 1.0);
+        let ndc_x = world_pt.x / world_pt.w;
+        let ndc_y = world_pt.y / world_pt.w;
+        let hit = scene.pick(&pv, ndc_x, ndc_y);
+        assert_eq!(hit.map(|(id, _)| id), Some(cid), "popup must be picked at its world position");
     }
 
     #[test]

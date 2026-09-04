@@ -674,14 +674,15 @@ impl LookingGlass {
                                             smithay::utils::Point::new(0, 0),
                                             smithay::utils::Size::new(tex_size.w, tex_size.h),
                                         );
-                                        // Recompute position from updated positioner
-                                        if let Some((p_pos, p_total_w, p_total_h)) = parent_pos {
+                                        // Recompute position from updated positioner.
+                                        // J2: parent-local, same as the map path
+                                        // (parent linkage was set at first map).
+                                        if let Some((_p_pos, p_total_w, p_total_h)) = parent_pos {
                                             let popup_w = new_pos.size.w as f32;
                                             let popup_h = new_pos.size.h as f32;
                                             let local_x = new_pos.loc.x as f32 + popup_w * 0.5 - p_total_w * 0.5;
                                             let local_y = -(new_pos.loc.y as f32 + popup_h * 0.5 - p_total_h * 0.5);
-                                            visual.transform.position = p_pos
-                                                + cgmath::Vector3::new(local_x, local_y, 10.0);
+                                            visual.transform.position = cgmath::Vector3::new(local_x, local_y, 10.0);
                                         }
                                         self.workspace_manager.active_mut().add(vid);
                                         info!(?vid, "popup remapped");
@@ -705,13 +706,21 @@ impl LookingGlass {
                                         smithay::utils::Size::new(tex_size.w, tex_size.h),
                                     ),
                                 );
-                                if let Some((p_pos, p_total_w, p_total_h, pvid)) = parent_info {
+                                if let Some((_p_pos, p_total_w, p_total_h, pvid)) = parent_info {
                                     let popup_w = popup_geometry.size.w as f32;
                                     let popup_h = popup_geometry.size.h as f32;
+                                    // J2: the popup transform is PARENT-LOCAL —
+                                    // an offset from the parent's center in the
+                                    // parent's own coordinate frame. The renderer
+                                    // composes world = parent_world * local, so
+                                    // the popup follows parent move/rotate/scale
+                                    // with zero extra bookkeeping. (The old code
+                                    // baked the parent's world position into the
+                                    // local transform, double-applying it for any
+                                    // parent not at the origin.)
                                     let local_x = popup_geometry.loc.x as f32 + popup_w * 0.5 - p_total_w * 0.5;
                                     let local_y = -(popup_geometry.loc.y as f32 + popup_h * 0.5 - p_total_h * 0.5);
-                                    visual.transform.position = p_pos
-                                        + cgmath::Vector3::new(local_x, local_y, 10.0);
+                                    visual.transform.position = cgmath::Vector3::new(local_x, local_y, 10.0);
                                     visual.parent = Some(pvid);
                                 }
                                 let visual_id = visual.id;
@@ -731,7 +740,22 @@ impl LookingGlass {
                                 } else {
                                     self.workspace_manager.active_mut().add(visual_id);
                                 }
-                                info!(?visual_id, ?parent_vid, ?popup_geometry, "popup mapped");
+                                // J2 observability: log the parent-local offset
+                                // and the derived world position (parent
+                                // transform applied) for harness assertions.
+                                let (local_dbg, world_dbg) = self.scene.visuals
+                                    .iter()
+                                    .find(|v| v.id == visual_id)
+                                    .map(|v| {
+                                        let w = self.scene.world_matrix(visual_id);
+                                        (
+                                            (v.transform.position.x, v.transform.position.y),
+                                            (w[3][0], w[3][1], w[3][2]),
+                                        )
+                                    })
+                                    .unwrap_or(((0.0, 0.0), (0.0, 0.0, 0.0)));
+                                info!(?visual_id, ?parent_vid, ?popup_geometry,
+                                      local = ?local_dbg, world = ?world_dbg, "popup mapped");
                             }
                         } else {
                             // ── Toplevel commit ──
@@ -1335,9 +1359,12 @@ impl LookingGlass {
         let pv = self.proj_view();
 
         let data = self.scene.visuals.iter().find(|v| v.id == vid).map(|v| {
-            (v.transform.clone(), v.total_width(), v.total_height(), v.decoration.title_bar_height, v.geometry.size)
+            (v.id, v.total_width(), v.total_height(), v.decoration.title_bar_height, v.geometry.size)
         });
-        let Some((transform, gw, gh, title_h, geom_size)) = data else { return ContentRouting::NoTarget };
+        let Some((vid, gw, gh, title_h, geom_size)) = data else { return ContentRouting::NoTarget };
+        // J2: UV mapping against the WORLD transform so parented
+        // visuals (popups) route clicks where they are drawn.
+        let transform = self.scene.world_transform(vid);
 
         if let Some((u, v)) = input_router::screen_to_visual_uv(
             &pv, ndc_x, ndc_y, &transform, gw, gh,
@@ -2595,7 +2622,34 @@ impl LookingGlass {
             return;
         }
         let has_active = self.interaction.is_dragging();
+        let dragged_vid = if has_active { self.scene.selected_id } else { None };
         self.interaction.handle_pointer_up();
+        if has_active {
+            // J2 observability: after a drag ends, log where the dragged
+            // window ended up and where its popup children now are in
+            // world space (they follow via the scene graph parent chain).
+            if let Some(vid) = dragged_vid {
+                let dragging = self.scene.visuals.iter()
+                    .find(|v| v.id == vid)
+                    .map(|v| (v.transform.position, v.transform.rotation));
+                let popup_worlds: Vec<(VisualId, (f32, f32, f32))> = self.scene.visuals
+                    .iter()
+                    .filter(|v| v.parent == Some(vid))
+                    .map(|v| {
+                        let w = self.scene.world_matrix(v.id);
+                        (v.id, (w[3][0], w[3][1], w[3][2]))
+                    })
+                    .collect();
+                match dragging {
+                    Some((pos, rot)) if !popup_worlds.is_empty() => {
+                        info!(?vid, pos = ?pos, rot = ?rot,
+                              popups = ?popup_worlds, "drag finished with popups attached");
+                    }
+                    Some((pos, _)) => info!(?vid, pos = ?pos, "drag finished"),
+                    None => {}
+                }
+            }
+        }
         if !has_active {
             self.route_to_content(PointerEventKind::Up, x, y);
         }

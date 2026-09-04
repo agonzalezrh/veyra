@@ -47,6 +47,9 @@ struct PopupCycle {
 
 pub struct PopupTester {
     wanted_cycles: u32,
+    /// Keep the LAST cycle's popup mapped (skip its destroy) so the
+    /// harness can drag the parent while a popup is attached (J2).
+    hold_last: bool,
     pub cycle: u32,
     #[allow(dead_code)]
     compositor: CompositorState,
@@ -72,6 +75,10 @@ pub struct PopupTester {
 }
 
 pub fn run_popups(cycles: u32, duration_ms: u64) -> i32 {
+    run_popups_opts(cycles, duration_ms, false)
+}
+
+pub fn run_popups_opts(cycles: u32, duration_ms: u64, hold_last: bool) -> i32 {
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
         Err(_) => {
@@ -112,6 +119,7 @@ pub fn run_popups(cycles: u32, duration_ms: u64) -> i32 {
 
     let mut tester = PopupTester {
         wanted_cycles: cycles,
+        hold_last,
         cycle: 0,
         compositor,
         wm_base,
@@ -145,7 +153,8 @@ pub fn run_popups(cycles: u32, duration_ms: u64) -> i32 {
         // wall-clock driven so pacing differences between backends
         // (weston-headless vs X11) do not stall the cycle chain.
         if let Some(t) = tester.committed_at {
-            if t.elapsed() >= Duration::from_millis(300) {
+            let holding = tester.hold_last && tester.cycle >= tester.wanted_cycles;
+            if t.elapsed() >= Duration::from_millis(300) && !holding {
                 let qh = qh.clone();
                 tester.kill_and_continue(&qh);
             }

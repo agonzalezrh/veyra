@@ -466,6 +466,59 @@ else
     bad "t18: third close refocus wrong: $T18_C3"
 fi
 
+# ── t19: popup placement through the transformed parent (J2) ──────────
+say "t19_popup_transformed_parent"
+# One popup cycle with --hold: the popup maps attached to its parent.
+# The map log carries parent-local offset AND the derived world
+# position; we verify world == parent_transform * local numerically
+# (the parent carries the map-time fan rotation, so the rotation
+# actually participates in the math).
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" popups \
+    --cycles 1 --duration 4000 --hold > "$TMP_DIR/t19.json" 2>"$TMP_DIR/t19.err" &
+T19_PID=$!
+wait_process_exit $T19_PID 8
+
+assert_log "$TMP_DIR/veyra.log" "popup mapped" "t19: popup mapped"
+T19_POPUP_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "popup mapped" | tail -1)
+T19_MAP_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "surface mapped" | tail -1)
+python3 - "$T19_POPUP_LINE" "$T19_MAP_LINE" <<'PYEOF' > "$TMP_DIR/t19.check" 2>&1 || true
+import re, sys, math
+popup_line, parent_line = sys.argv[1], sys.argv[2]
+def vec3(s):
+    m = re.search(r"Vector3 \[([^\]]*)\]", s)
+    return [float(x) for x in m.group(1).split(",")]
+def quat(s):
+    m = re.search(r"Quaternion \{ v: Vector3 \[([^\]]*)\], s: ([0-9.eE+-]+) \}", s)
+    v = [float(x) for x in m.group(1).split(",")]
+    return v[0], v[1], v[2], float(m.group(2))
+# parent: position + rotation from its surface mapped line
+p_pos = vec3(parent_line.split("pos=")[1])
+rvx, rvy, rvz, rvs = quat(parent_line.split("rot=")[1])
+# yaw angle from the quaternion (v.y carries the half-angle for pure Y rotations)
+theta = 2.0 * math.atan2(rvy, rvs)
+# popup line: local=(x, y) world=(x, y, z)
+m_local = re.search(r"local=\(([0-9.eE+-]+), ([0-9.eE+-]+)\)", popup_line)
+m_world = re.search(r"world=\(([0-9.eE+-]+), ([0-9.eE+-]+), ([0-9.eE+-]+)\)", popup_line)
+lx, ly = float(m_local.group(1)), float(m_local.group(2))
+wx, wy, wz = float(m_world.group(1)), float(m_world.group(2)), float(m_world.group(3))
+# expected: parent position + R_y(theta) * (lx, ly, 10)
+LZ = 10.0
+ex = p_pos[0] + lx * math.cos(theta) + LZ * math.sin(theta)
+ey = p_pos[1] + ly
+ez = p_pos[2] + (-lx * math.sin(theta) + LZ * math.cos(theta))
+errs = [abs(wx-ex), abs(wy-ey), abs(wz-ez)]
+if max(errs) < 1.0:
+    print("OK")
+else:
+    print(f"MISMATCH world=({wx},{wy},{wz}) expected=({ex:.3f},{ey:.3f},{ez:.3f}) theta={math.degrees(theta):.2f}")
+PYEOF
+if [ "$(cat "$TMP_DIR/t19.check")" == "OK" ]; then
+    ok "t19: popup world == parent_transform * local (rotation-aware)"
+else
+    bad "t19: popup placement math wrong: $(cat "$TMP_DIR/t19.check")"
+fi
+
 say "protocol tests done"
 echo "-------------------------------------"
 echo "protocol: $PASS passed, $FAIL failed, $SKIP skipped"

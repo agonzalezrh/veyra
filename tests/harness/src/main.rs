@@ -53,7 +53,7 @@ fn log(ev: serde_json::Value) {
 }
 
 mod popup_tester;
-use popup_tester::run_popups;
+use popup_tester::{run_popups, run_popups_opts};
 
 fn opt_value(args: &[String], flag: &str) -> Option<String> {
     args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
@@ -721,7 +721,8 @@ fn main() {
     if cmd == "popups" {
         let cycles = opt_value(&args, "--cycles").and_then(|v| v.parse().ok()).unwrap_or(3);
         let duration = opt_value(&args, "--duration").and_then(|v| v.parse().ok()).unwrap_or(8000);
-        let code = run_popups(cycles, duration);
+        let hold = args.iter().any(|a| a == "--hold");
+        let code = run_popups_opts(cycles, duration, hold);
         std::process::exit(code);
     }
     let opts = parse_args();

@@ -631,6 +631,63 @@ else
 fi
 wait_process_exit $T18I_PID 10
 
+# ── t19i: popup follows a dragged parent (J2) ─────────────────────────
+# The popups tester maps a parent toplevel and holds a popup open
+# (--hold). We drag the parent window (content drag = translate), then
+# assert the drag-end log: the parent's final position plus its fan
+# rotation applied to the popup's parent-local offset reproduces the
+# popup's logged world position.
+say "t19i_popup_follows_dragged_parent"
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" popups \
+    --cycles 1 --duration 9000 --hold > "$TMP_DIR/t19i.json" 2>"$TMP_DIR/t19i.err" &
+T19I_PID=$!
+sleep 2
+# Drag the parent window from its center by (+160, +80) screen px.
+DISPLAY=:99 xdotool mousemove $CX $CY mousedown 1
+sleep 0.2
+DISPLAY=:99 xdotool mousemove $((CX+80)) $((CY+40))
+sleep 0.2
+DISPLAY=:99 xdotool mousemove $((CX+160)) $((CY+80))
+sleep 0.2
+DISPLAY=:99 xdotool mouseup 1
+sleep 0.5
+wait_process_exit $T19I_PID 8
+
+assert_log "$TMP_DIR/veyra.log" "drag finished with popups attached" \
+    "t19i: parent dragged while popup attached"
+T19I_MAP=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "popup mapped" | tail -1)
+T19I_DRAG=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "drag finished with popups attached" | tail -1)
+python3 - "$T19I_MAP" "$T19I_DRAG" <<'PYEOF' > "$TMP_DIR/t19i.check" 2>&1 || true
+import re, sys, math
+map_line, drag_line = sys.argv[1], sys.argv[2]
+m_local = re.search(r"local=\(([0-9.eE+-]+), ([0-9.eE+-]+)\)", map_line)
+lx, ly = float(m_local.group(1)), float(m_local.group(2))
+def vec(s, label):
+    m = re.search(label + r"=Vector3 \[([^\]]*)\]", s)
+    return [float(x) for x in m.group(1).split(",")]
+pos = vec(drag_line, "pos")
+m_rot = re.search(r"rot=Quaternion \{ v: Vector3 \[([^\]]*)\], s: ([0-9.eE+-]+) \}", drag_line)
+rv = [float(x) for x in m_rot.group(1).split(",")]
+theta = 2.0 * math.atan2(rv[1], float(m_rot.group(2)))
+m_world = re.search(r"popups=\[\(VisualId\([0-9]+\), \(([0-9.eE+-]+), ([0-9.eE+-]+), ([0-9.eE+-]+)\)\)\]", drag_line)
+wx, wy, wz = (float(m_world.group(i)) for i in (1, 2, 3))
+LZ = 10.0
+ex = pos[0] + lx * math.cos(theta) + LZ * math.sin(theta)
+ey = pos[1] + ly
+ez = pos[2] + (-lx * math.sin(theta) + LZ * math.cos(theta))
+errs = [abs(wx-ex), abs(wy-ey), abs(wz-ez)]
+if max(errs) < 1.0:
+    print("OK")
+else:
+    print(f"MISMATCH popup=({wx},{wy},{wz}) expected=({ex:.3f},{ey:.3f},{ez:.3f})")
+PYEOF
+if [ "$(cat "$TMP_DIR/t19i.check")" == "OK" ]; then
+    ok "t19i: popup world follows dragged+rotated parent (R * local verified)"
+else
+    bad "t19i: popup follow math wrong: $(cat "$TMP_DIR/t19i.check")"
+fi
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"
