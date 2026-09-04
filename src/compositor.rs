@@ -1347,12 +1347,6 @@ impl LookingGlass {
         let Some(vid) = self.scene.selected_id else { return ContentRouting::NoTarget };
         if !self.scene.is_active(vid) { return ContentRouting::NoTarget }
 
-        if kind == PointerEventKind::Down {
-            self.set_keyboard_focus(Some(vid));
-            self.scene.bring_to_front(vid);
-            info!(?vid, "focus set, brought to front");
-        }
-
         let (w, h) = self.window_size;
         let ndc_x = (x as f32 / w) * 2.0 - 1.0;
         let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
@@ -1369,6 +1363,45 @@ impl LookingGlass {
         if let Some((u, v)) = input_router::screen_to_visual_uv(
             &pv, ndc_x, ndc_y, &transform, gw, gh,
         ) {
+            // J3: title-bar BUTTONS win over focus/drag/resize. Clicking
+            // a button dispatches through the same handlers the context
+            // menu uses — no second semantics. Buttons deliberately do
+            // NOT take keyboard focus (GNOME convention).
+            let title_frac_f = title_h / (1.0 + title_h);
+            if kind == PointerEventKind::Down {
+                if let Some(button) =
+                    crate::chrome::hit_button(gw, gh, title_frac_f, u, v)
+                {
+                    info!(?vid, button = %button.name(), u, v, "title bar button pressed");
+                    match button {
+                        crate::chrome::TitleButton::Minimize => {
+                            self.begin_minimize(vid, crate::maximize::MinimizeSource::Compositor);
+                        }
+                        crate::chrome::TitleButton::Maximize => {
+                            self.toggle_maximize_for(vid, crate::maximize::MaximizeSource::Compositor);
+                        }
+                        crate::chrome::TitleButton::Close => {
+                            if let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() {
+                                for t in &self.toplevels {
+                                    if t.toplevel.wl_surface() == &wl_surface {
+                                        t.toplevel.send_close();
+                                        info!(?vid, "title bar: close sent");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return ContentRouting::Routed;
+                }
+            }
+
+            if kind == PointerEventKind::Down {
+                self.set_keyboard_focus(Some(vid));
+                self.scene.bring_to_front(vid);
+                info!(?vid, "focus set, brought to front");
+            }
+
             // Resize zones win over title-bar/content routing on pointer
             // down (I3b). An 8 logical-px band along the decorated border.
             if kind == PointerEventKind::Down && self.resize_session.is_none() {

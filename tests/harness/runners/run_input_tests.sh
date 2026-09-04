@@ -688,6 +688,43 @@ else
     bad "t19i: popup follow math wrong: $(cat "$TMP_DIR/t19i.check")"
 fi
 
+# ── t20i: title-bar buttons (J3) ──────────────────────────────────────
+# One client (640x480 content + 6% title bar ≈ 509 world units tall).
+# Window on screen: CX±320 x, CY±255 y (same math as the t8 resize
+# edges). The title strip is the top ~29 px; buttons sit right-aligned
+# inside it: minimize | maximize | close from the right edge.
+say "t20i_title_bar_buttons"
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --duration 16000 > "$TMP_DIR/t20i.json" 2>/dev/null &
+T20I_PID=$!
+sleep 1.5
+# Focus the window first (click content center), then exercise buttons.
+DISPLAY=:99 xdotool mousemove $CX $CY click 1
+sleep 0.3
+# Button geometry: strip ≈ 29 px tall, button side ≈ 21 px, right margin
+# ≈ 8 px, gap ≈ 6 px. Button vertical center ≈ YT + 14.
+BTY=$((YT+14))
+BCX=$((XR-19))                                # close
+BMX=$((XR-19-2*21-6))                         # maximize (two buttons left)
+# 1) minimize button -> "minimize applied"
+DISPLAY=:99 xdotool mousemove $((BMX-27)) $BTY click 1
+wait_for_log "$TMP_DIR/veyra.log" "minimize applied" 5
+ok "t20i: minimize button dispatched begin_minimize"
+# 2) restore via F10, then maximize button -> "maximize requested"
+DISPLAY=:99 xdotool key F10
+sleep 0.5
+DISPLAY=:99 xdotool mousemove $BMX $BTY click 1
+wait_for_log "$TMP_DIR/veyra.log" "maximize requested" 5
+ok "t20i: maximize button dispatched the maximize coordinator"
+# 3) unmaximize via F11, then close button -> "close sent"
+DISPLAY=:99 xdotool key F11
+sleep 0.5
+DISPLAY=:99 xdotool mousemove $BCX $BTY click 1
+wait_for_log "$TMP_DIR/veyra.log" "close sent" 5
+ok "t20i: close button sent xdg close"
+wait_process_exit $T20I_PID 12
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"

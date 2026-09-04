@@ -22,6 +22,7 @@ mod layout;
 mod maximize;
 mod fullscreen;
 mod focus_history;
+mod chrome;
 mod native_backend;
 mod navigation;
 mod perf;
