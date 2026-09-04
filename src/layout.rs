@@ -4,20 +4,89 @@ use cgmath::Vector3;
 
 use crate::scene::{Scene, VisualId};
 
+/// The camera-visible area of the z=0 workspace plane, in world units.
+///
+/// New windows must be placed fully inside these bounds: a position
+/// that avoids overlap but sits outside the frustum gets clipped by
+/// the screen edge, and its visible sliver then stacks on top of
+/// windows that ARE visible (reported as "windows overlap / are cut"
+/// in normal mode with three real applications).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisibleBounds {
+    pub half_w: f32,
+    pub half_h: f32,
+}
+
+impl VisibleBounds {
+    /// Bounds for a perspective camera at `cam_distance` from the
+    /// workspace plane (vertical `fov_y_deg`, aspect = framebuffer
+    /// width / height).
+    pub fn for_camera(cam_distance: f32, fov_y_deg: f32, aspect: f32) -> Self {
+        let half_h = (fov_y_deg.to_radians() / 2.0).tan() * cam_distance;
+        VisibleBounds {
+            half_w: half_h * aspect,
+            half_h,
+        }
+    }
+}
+
+/// Clearance kept between a placed window and the frustum edge. Covers
+/// the ±5° fan rotation of the first three windows (sin 5° · w/2 ≈ 31
+/// world units for a 700-wide window) plus projection slack.
+const EDGE_MARGIN: f32 = 48.0;
+
 /// Compute an initial placement position for a new visual of the given size.
-/// Uses a spiral pattern that spreads out from the origin.
-/// Skips positions that would significantly overlap existing visuals.
-/// Visuals in `detached_set` are not considered for overlap (they were
-/// manually positioned and are authoritative).
+///
+/// Strategy (three tiers, first fit wins):
+/// 1. Spiral outward from the workspace center, skipping candidates
+///    that overlap existing visuals — preserves the current look when
+///    there is room.
+/// 2. Fine row-major scan over the visible area — catches spots the
+///    coarse 7-step spiral misses (narrow side columns etc.).
+/// 3. Cascade from the center with a per-window diagonal offset —
+///    every window stays FULLY VISIBLE, overlapping when the frustum
+///    is simply too small to pack them (same behavior as conventional
+///    2D compositors; the user drags windows apart).
+///
+/// The hard requirement is tier-3 visibility: a placement outside the
+/// camera frustum gets clipped by the screen edge, and its visible
+/// sliver stacks on top of windows that ARE visible (reported as
+/// "windows overlap / are cut" with three real applications open).
+/// Windows never open partially off-screen.
 pub fn place_new_visual(
     width: f32,
     height: f32,
     scene: &Scene,
+    bounds: VisibleBounds,
 ) -> Vector3<f32> {
-    let base_spacing = 300.0f32;
+    // The incoming height is content-only; the rendered window adds a
+    // title bar (same default the Visual will carry).
+    let height = height * (1.0 + crate::scene::DecorationConfig::default().title_bar_height);
+    // Scale the spiral to the frustum so its rings stay reachable on
+    // small nested windows (a fixed 300-unit base pushes every ring
+    // past the ±331-unit half-height of a 720p view).
+    let base_spacing = (bounds.half_h * 0.45).clamp(90.0, 300.0);
+
+    let fits_bounds =
+        |x: f32, y: f32| -> bool {
+            x - width * 0.5 >= -bounds.half_w + EDGE_MARGIN
+                && x + width * 0.5 <= bounds.half_w - EDGE_MARGIN
+                && y - height * 0.5 >= -bounds.half_h + EDGE_MARGIN
+                && y + height * 0.5 <= bounds.half_h - EDGE_MARGIN
+        };
+    let overlaps_existing = |x: f32, y: f32| -> bool {
+        scene.visuals.iter().any(|v| {
+            if scene.detached_set.contains(&v.id) { return false; }
+            let vw = v.total_width();
+            let vh = v.total_height();
+            let dx = (x - v.transform.position.x).abs();
+            let dy = (y - v.transform.position.y).abs();
+            dx < (vw + width) * 0.5 && dy < (vh + height) * 0.5
+        })
+    };
+
+    // Tier 1: the 7-step spiral.
     for i in 0..100 {
-        // First window opens centered on the workspace; later windows
-        // spiral outward (2π/7 steps, flattened vertically).
         let (x, y) = if i == 0 {
             (0.0, 0.0)
         } else {
@@ -25,24 +94,50 @@ pub fn place_new_visual(
             let radius = base_spacing + (i as f32).sqrt() * base_spacing * 0.5;
             (radius * angle.cos(), radius * angle.sin() * 0.6) // flatten vertically
         };
-        let candidate = Vector3::new(x, y, 0.0);
-
-        // Check for significant overlap with non-detached visuals
-        let overlaps = scene.visuals.iter().any(|v| {
-            if scene.detached_set.contains(&v.id) { return false; }
-            let vw = v.total_width();
-            let vh = v.total_height();
-            let dx = (candidate.x - v.transform.position.x).abs();
-            let dy = (candidate.y - v.transform.position.y).abs();
-            dx < (vw + width) * 0.5 && dy < (vh + height) * 0.5
-        });
-
-        if !overlaps {
-            return candidate;
+        if fits_bounds(x, y) && !overlaps_existing(x, y) {
+            return Vector3::new(x, y, 0.0);
         }
     }
-    // Fallback: far away
-    Vector3::new(800.0, 0.0, 0.0)
+
+    // Tier 2: fine row-major scan of the visible area.
+    let step_x = (width * 0.25).clamp(48.0, 160.0);
+    let step_y = (height * 0.25).clamp(48.0, 160.0);
+    let min_cx = -bounds.half_w + EDGE_MARGIN + width * 0.5;
+    let max_cx = bounds.half_w - EDGE_MARGIN - width * 0.5;
+    let min_cy = -bounds.half_h + EDGE_MARGIN + height * 0.5;
+    let max_cy = bounds.half_h - EDGE_MARGIN - height * 0.5;
+    if min_cx <= max_cx && min_cy <= max_cy {
+        let mut y = min_cy;
+        while y <= max_cy {
+            let mut x = min_cx;
+            while x <= max_cx {
+                if !overlaps_existing(x, y) {
+                    return Vector3::new(x, y, 0.0);
+                }
+                x += step_x;
+            }
+            y += step_y;
+        }
+    }
+
+    // Tier 3: cascade from the center — fully visible, overlap allowed.
+    // The offset walks down-right diagonally; when the window cannot
+    // fit at the offset position either, it is clamped symmetrically
+    // (max visibility).
+    let n = scene
+        .visuals
+        .iter()
+        .filter(|v| !scene.detached_set.contains(&v.id))
+        .count() as f32;
+    let cascade = 36.0 * n;
+    let clamp_center = |v: f32, low: f32, high: f32| -> f32 {
+        if low <= high { v.clamp(low, high) } else { (low + high) * 0.5 }
+    };
+    Vector3::new(
+        clamp_center(cascade * 0.7, min_cx, max_cx),
+        clamp_center(-cascade, min_cy, max_cy),
+        0.0,
+    )
 }
 
 /// Layout mode for arranging visuals in the scene.
@@ -324,10 +419,16 @@ mod tests {
 
     // ── Layout placement tests ────────────────────────────────────────
 
+    /// Typical nested-session frustum: camera 800 units from the plane,
+    /// 45° vertical FOV, 16:9 framebuffer → visible world ±589 × ±331.
+    fn bounds_16_9() -> VisibleBounds {
+        VisibleBounds::for_camera(800.0, 45.0, 1280.0 / 720.0)
+    }
+
     #[test]
     fn place_first_visual_empty_scene() {
         let scene = Scene::default();
-        let pos = place_new_visual(200.0, 100.0, &scene);
+        let pos = place_new_visual(200.0, 100.0, &scene, bounds_16_9());
         // First placement in an empty scene opens CENTERED on the workspace
         assert_eq!(pos.x, 0.0, "first visual must open at origin: x={}", pos.x);
         assert_eq!(pos.y, 0.0, "first visual must open at origin: y={}", pos.y);
@@ -336,20 +437,106 @@ mod tests {
     #[test]
     fn place_returns_different_positions() {
         // Verify the spiral produces different positions for successive items
-        let scene = Scene::default();
-        let p0 = place_new_visual(200.0, 100.0, &scene);
-        // With no visuals in the scene, every call returns position 0
-        // (empty scene = first spiral position)
-        let p1 = place_new_visual(200.0, 100.0, &scene);
-        // Both return the same because there are no visuals to compare against
-        assert_eq!(p0, p1, "spiral returns consistent first position");
+        let mut scene = Scene::default();
+        let b = bounds_16_9();
+        let p0 = place_new_visual(200.0, 100.0, &scene, b);
+        // Register the placed window so the next call sees it.
+        let mut v0 = crate::scene::Visual::new_test(200, 100);
+        v0.transform.position = p0;
+        scene.add(v0);
+        let p1 = place_new_visual(200.0, 100.0, &scene, b);
+        assert_ne!(p0, p1, "second placement must move away from the first");
     }
 
     #[test]
     fn place_fallback_on_empty() {
         let scene = Scene::default();
-        let pos = place_new_visual(500.0, 500.0, &scene);
+        let pos = place_new_visual(500.0, 500.0, &scene, bounds_16_9());
         // Empty scene always returns first spiral position
         assert!(pos.x.abs() < 1000.0);
+    }
+
+    /// The reported bug: foot (700×500), zenity (400×150) and
+    /// weston-terminal (600×450) opened in that order. The old spiral
+    /// pushed weston-terminal to x≈697 (right edge x≈997) while the
+    /// 16:9 frustum ends at x≈589 — the window was clipped by the
+    /// screen edge and its sliver stacked on top of foot. These three
+    /// windows physically cannot pack without overlap in this frustum,
+    /// so placement must guarantee full VISIBILITY (tier-3 cascade)
+    /// rather than off-screen non-overlap.
+    #[test]
+    fn real_apps_stay_fully_visible() {
+        let mut scene = Scene::default();
+        let bounds = bounds_16_9();
+        let apps: [(&str, i32, i32); 3] = [
+            ("foot", 700, 500),
+            ("zenity", 400, 150),
+            ("weston-terminal", 600, 450),
+        ];
+        for (name, w, h) in apps {
+            let pos = place_new_visual(w as f32, h as f32, &scene, bounds);
+            let wt = w as f32;
+            let ht = h as f32 * 1.06; // title bar, as the placement assumes
+            // The HARD requirement: the whole window is inside the
+            // frustum (the placement's own edge margin, minus rounding).
+            assert!(
+                pos.x - wt * 0.5 >= -bounds.half_w + EDGE_MARGIN - 1.0
+                    && pos.x + wt * 0.5 <= bounds.half_w - EDGE_MARGIN + 1.0,
+                "{}: x={} pokes outside visible x-range ±{}",
+                name, pos.x, bounds.half_w
+            );
+            assert!(
+                pos.y - ht * 0.5 >= -bounds.half_h + EDGE_MARGIN - 1.0
+                    && pos.y + ht * 0.5 <= bounds.half_h - EDGE_MARGIN + 1.0,
+                "{}: y={} pokes outside visible y-range ±{}",
+                name, pos.y, bounds.half_h
+            );
+            let mut v = crate::scene::Visual::new_test(w, h);
+            v.transform.position = pos;
+            scene.add(v);
+        }
+    }
+
+    /// When the windows DO fit, placement must remain non-overlapping
+    /// (small windows in the same frustum leave room for the spiral or
+    /// the fine scan to find clear spots).
+    #[test]
+    fn small_windows_do_not_overlap() {
+        let mut scene = Scene::default();
+        let bounds = bounds_16_9();
+        let apps: [(i32, i32); 3] = [(300, 200), (250, 150), (280, 220)];
+        let mut placed: Vec<(f32, f32, f32, f32)> = Vec::new();
+        for (w, h) in apps {
+            let pos = place_new_visual(w as f32, h as f32, &scene, bounds);
+            let wt = w as f32;
+            let ht = h as f32 * 1.06;
+            for (px, py, pw, ph) in &placed {
+                let dx = (pos.x - px).abs();
+                let dy = (pos.y - py).abs();
+                assert!(
+                    dx >= (pw + wt) * 0.5 || dy >= (ph + ht) * 0.5,
+                    "window at ({}, {}) overlaps an earlier one (dx={} dy={})",
+                    pos.x, pos.y, dx, dy
+                );
+            }
+            placed.push((pos.x, pos.y, wt, ht));
+            let mut v = crate::scene::Visual::new_test(w, h);
+            v.transform.position = pos;
+            scene.add(v);
+        }
+    }
+
+    /// A window larger than the frustum (or a tiny frustum) must still
+    /// be placed VISIBLE — the cascade fallback centers it so the
+    /// clipping is symmetric instead of pushing it off-screen.
+    #[test]
+    fn oversized_window_falls_back_inside_bounds() {
+        let scene = Scene::default();
+        // Tiny frustum: half-extents 300×200; window 700×500 cannot fit.
+        let bounds = VisibleBounds { half_w: 300.0, half_h: 200.0 };
+        let pos = place_new_visual(700.0, 500.0, &scene, bounds);
+        // Center clamped so as much of the window as possible is visible.
+        assert!(pos.x >= -bounds.half_w && pos.x <= bounds.half_w);
+        assert!(pos.y >= -bounds.half_h && pos.y <= bounds.half_h);
     }
 }

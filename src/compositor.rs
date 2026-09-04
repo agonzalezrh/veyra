@@ -804,6 +804,7 @@ impl LookingGlass {
                                         tex_size.w as f32 * visual.transform.scale.x,
                                         tex_size.h as f32 * visual.transform.scale.y,
                                         &self.scene,
+                                        self.visible_bounds(),
                                     );
                                     visual.transform.position = pos;
                                     visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
@@ -992,7 +993,7 @@ impl LookingGlass {
                 smithay::utils::Size::new(w as i32, h as i32),
             ),
         );
-        visual.transform.position = layout::place_new_visual(w as f32, h as f32, &self.scene);
+        visual.transform.position = layout::place_new_visual(w as f32, h as f32, &self.scene, self.visible_bounds());
         let vid = visual.id;
 
         // Try to create an InputSink from the producer before moving it
@@ -1301,6 +1302,21 @@ impl LookingGlass {
             smithay::wayland::selection::data_device::set_data_device_focus::<Self>(dh, seat, client.clone());
             smithay::wayland::selection::primary_selection::set_primary_focus::<Self>(dh, seat, client);
         }
+    }
+
+    /// The camera-visible area of the z=0 workspace plane, for placing
+    /// new windows where the user can actually see them (J1 follow-up:
+    /// placement used to ignore the frustum and clip windows at the
+    /// screen edge). Uses the camera's distance to the workspace origin
+    /// and the standard 45° vertical FOV.
+    fn visible_bounds(&self) -> layout::VisibleBounds {
+        let (w, h) = self.window_size;
+        let aspect = if h > 0.0 { w / h } else { 1.0 };
+        let dist = {
+            let p = self.camera.position;
+            (p.x * p.x + p.y * p.y + p.z * p.z).sqrt()
+        };
+        layout::VisibleBounds::for_camera(dist, 45.0, aspect)
     }
 
     fn route_to_content(&mut self, kind: PointerEventKind, x: f64, y: f64) -> ContentRouting {
