@@ -155,6 +155,9 @@ impl Launcher {
             .collect();
     }
 
+    /// Filter the visible entries (unused until the shell grows a
+    /// launcher search field — J4 follow-up).
+    #[allow(dead_code)]
     pub fn set_filter(&mut self, filter: &str) {
         self.filter = filter.to_lowercase();
     }

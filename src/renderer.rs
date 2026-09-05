@@ -854,6 +854,14 @@ fn draw_textured_quad(
     }
 }
 
+/// Screen-space overlay state for one frame (J4): the shell taskbar
+/// and the context menu. Both are camera-independent 2D planes drawn
+/// after the 3D world.
+pub struct Overlays<'a> {
+    pub context_menu: Option<&'a ContextMenu>,
+    pub taskbar: Option<&'a crate::shell::TaskbarLayout>,
+}
+
 pub fn render_scene(
     backend: &mut dyn PresentationBackend,
     scene: &Scene,
@@ -861,7 +869,7 @@ pub fn render_scene(
     proj: &Matrix4<f32>,
     perf: &mut PerfStats,
     visible_ids: Option<&[crate::scene::VisualId]>,
-    context_menu: Option<&ContextMenu>,
+    overlays: &Overlays,
 ) -> Result<(), SwapBuffersError> {
     use crate::perf::PipelineStage;
 
@@ -994,8 +1002,84 @@ pub fn render_scene(
     }
     perf.record_stage(PipelineStage::RenderDraw, t_draw.elapsed().as_nanos() as u64);
 
+    // Render the desktop shell taskbar (J4): 2D screen-space plane at
+    // the bottom of the framebuffer, camera-independent. Same overlay
+    // discipline as the context menu: depth off, px-space rects.
+    if let Some(tb) = overlays.taskbar {
+        let _ = renderer.with_context(|gl| unsafe {
+            rebind_surface(gl);
+            gl.Disable(ffi::DEPTH_TEST);
+            gl.Enable(ffi::BLEND);
+            gl.BlendFunc(ffi::SRC_ALPHA, ffi::ONE_MINUS_SRC_ALPHA);
+            ensure_font_atlas(gl);
+
+            let stride = 4 * std::mem::size_of::<f32>() as i32;
+            let solid_rect = |px: f32, py: f32, pw: f32, ph: f32,
+                              r: f32, g: f32, b: f32, a: f32| {
+                let cx = ((px + pw / 2.0) / w) * 2.0 - 1.0;
+                let cy = -(((py + ph / 2.0) / h) * 2.0 - 1.0);
+                let mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(cx, cy, 0.0))
+                    * cgmath::Matrix4::from_nonuniform_scale(
+                        pw / w * 2.0,
+                        ph / h * 2.0,
+                        1.0,
+                    );
+                gl.UseProgram(draw.solid_prog);
+                gl.UniformMatrix4fv(draw.solid_u_mvp, 1, 0, mvp.as_ptr());
+                gl.Uniform4f(draw.solid_u_color, r, g, b, a);
+                gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
+                gl.EnableVertexAttribArray(draw.solid_a_pos);
+                gl.VertexAttribPointer(draw.solid_a_pos, 2, ffi::FLOAT, 0, stride, std::ptr::null());
+                gl.EnableVertexAttribArray(draw.solid_a_uv);
+                gl.VertexAttribPointer(
+                    draw.solid_a_uv,
+                    2,
+                    ffi::FLOAT,
+                    0,
+                    stride,
+                    (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void,
+                );
+                gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+                gl.DisableVertexAttribArray(draw.solid_a_pos);
+                gl.DisableVertexAttribArray(draw.solid_a_uv);
+            };
+
+            let bar_y = h - tb.bar_h;
+            // Bar background + top hairline.
+            solid_rect(0.0, bar_y, w, tb.bar_h, 0.10, 0.11, 0.12, 0.97);
+            solid_rect(0.0, bar_y, w, 1.0, 0.28, 0.30, 0.32, 0.9);
+
+            for it in &tb.items {
+                // Button background: active = desaturated green,
+                // inactive = quiet neutral, dim = darker still.
+                let (r, g, b) = if it.active {
+                    (0.20, 0.34, 0.20)
+                } else if it.dim {
+                    (0.14, 0.15, 0.16)
+                } else {
+                    (0.19, 0.20, 0.22)
+                };
+                let iy = bar_y + 3.0;
+                let ih = tb.bar_h - 6.0;
+                solid_rect(it.x, iy, it.w, ih, r, g, b, 0.97);
+                // Label, vertically centered, clipped by the button's
+                // own width via the pre-fitted label string.
+                let text_color = if it.active { (0.85, 0.92, 0.85) } else { (0.72, 0.74, 0.76) };
+                let scale = 2.0f32;
+                let ch = (7.0f32 * scale / h) * 2.0;
+                let cw = (5.0f32 * scale / w) * 2.0;
+                let text_x = ((it.x + 6.0) / w) * 2.0 - 1.0;
+                let text_y = -(iy + ih / 2.0 + (7.0 * scale / 2.0) / h * 2.0 - 1.0);
+                draw_text(gl, draw, &it.label, text_x, text_y, cw, ch, text_color.0, text_color.1, text_color.2);
+            }
+
+            gl.Enable(ffi::DEPTH_TEST);
+            gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
+        });
+    }
+
     // Render context menu overlay (if visible)
-    if let Some(menu) = context_menu {
+    if let Some(menu) = overlays.context_menu {
         if menu.visible {
             let _ = renderer.with_context(|gl| unsafe {
                 rebind_surface(gl);

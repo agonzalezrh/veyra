@@ -1152,6 +1152,9 @@ impl LookingGlass {
             self.shelf.apply_shelf_transforms(&mut self.scene);
         }
 
+        // J4 shell plane: rebuild the taskbar model from live state
+        // each frame (before the backend mutable borrow).
+        let taskbar = self.build_taskbar();
         // Step 4: Camera + render
         let back: &mut dyn PresentationBackend = match self.backend.as_mut() {
             Some(b) => b.as_mut(),
@@ -1210,7 +1213,11 @@ impl LookingGlass {
             self.perf.record_frame();
             return;
         }
-        let context_lost = match renderer::render_scene(back, &self.scene, &view, &proj, &mut self.perf, ws_visible, context_menu) {
+        let overlays = renderer::Overlays {
+            context_menu,
+            taskbar: Some(&taskbar),
+        };
+        let context_lost = match renderer::render_scene(back, &self.scene, &view, &proj, &mut self.perf, ws_visible, &overlays) {
             Err(SwapBuffersError::ContextLost(e)) => {
                 error!(?e, "Context lost");
                 true
@@ -1353,6 +1360,105 @@ impl LookingGlass {
             (p.x * p.x + p.y * p.y + p.z * p.z).sqrt()
         };
         layout::VisibleBounds::for_camera(dist, 45.0, aspect)
+    }
+
+    /// J4: assemble the taskbar model for this frame from live state —
+    /// window buttons in MRU order, workspace buttons, launcher pins.
+    /// Pure projection of existing state; the shell owns nothing.
+    fn build_taskbar(&self) -> crate::shell::TaskbarLayout {
+        let (w, h) = self.window_size;
+        // Window buttons: MRU order first (focus history), then any
+        // toplevel windows the history does not know about, on the
+        // ACTIVE workspace only.
+        let ws_ids = self.workspace_manager.active().visual_ids.clone();
+        let label_of = |vid: VisualId| -> String {
+            self.toplevels
+                .iter()
+                .find(|t| t.visual_id == Some(vid))
+                .map(|t| {
+                    let title = t.title.trim();
+                    if title.is_empty() { t.app_id.clone() } else { title.to_string() }
+                })
+                .unwrap_or_else(|| "window".to_string())
+        };
+        let mut order: Vec<VisualId> = Vec::new();
+        for vid in self.focus_history.order() {
+            if ws_ids.contains(vid) && self.toplevels.iter().any(|t| t.visual_id == Some(*vid)) {
+                order.push(*vid);
+            }
+        }
+        for vid in &ws_ids {
+            if !order.contains(vid) && self.toplevels.iter().any(|t| t.visual_id == Some(*vid)) {
+                order.push(*vid);
+            }
+        }
+        let windows: Vec<(VisualId, String, bool, bool)> = order
+            .iter()
+            .map(|vid| {
+                (
+                    *vid,
+                    label_of(*vid),
+                    self.scene.focused_id == Some(*vid),
+                    self.is_minimized(*vid),
+                )
+            })
+            .collect();
+        // Launcher pins: first few filtered entries.
+        let launches: Vec<(usize, String)> = self
+            .launcher
+            .filtered()
+            .iter()
+            .take(4)
+            .enumerate()
+            .map(|(i, e)| (i, e.name.clone()))
+            .collect();
+        crate::shell::TaskbarLayout::build(
+            w,
+            h,
+            &windows,
+            self.workspace_manager.len(),
+            self.workspace_manager.active_id(),
+            &launches,
+        )
+    }
+
+    /// Handle a click inside the taskbar strip. Returns true when the
+    /// click was consumed (caller must skip scene picking).
+    fn handle_taskbar_click(&mut self, x: f64, y: f64) -> bool {
+        let (_, h) = self.window_size;
+        let layout = self.build_taskbar();
+        let Some(item) = layout.hit(h, x, y) else { return false };
+        match item.hit.clone() {
+            crate::shell::TaskbarHit::Window(vid) => {
+                if self.is_minimized(vid) {
+                    info!(?vid, "taskbar: restore window");
+                    self.restore_minimized(vid, crate::maximize::MinimizeSource::Compositor);
+                } else if self.scene.focused_id == Some(vid) {
+                    info!(?vid, "taskbar: minimize focused window");
+                    self.begin_minimize(vid, crate::maximize::MinimizeSource::Compositor);
+                } else {
+                    info!(?vid, "taskbar: activate window");
+                    self.scene.select(Some(vid));
+                    self.scene.bring_to_front(vid);
+                    self.set_keyboard_focus(Some(vid));
+                }
+                true
+            }
+            crate::shell::TaskbarHit::Workspace(idx) => {
+                info!(workspace = idx, "taskbar: switch workspace");
+                if idx != self.workspace_manager.active_id() {
+                    self.switch_workspace(idx);
+                }
+                true
+            }
+            crate::shell::TaskbarHit::Launch(idx) => {
+                info!(index = idx, name = %item.label, "taskbar: launch");
+                if self.launcher.launch(idx).is_none() {
+                    info!(index = idx, "taskbar: launch failed");
+                }
+                true
+            }
+        }
     }
 
     /// Zoom the camera out (never in) so every non-detached visual of
@@ -2641,6 +2747,17 @@ impl LookingGlass {
         self.press_pos = (x, y);
         self.event_serial = self.event_serial.wrapping_add(1);
         self.interaction.window_size = self.window_size;
+        // J4: the shell plane owns the bottom strip — clicks there route
+        // to the taskbar (workspace switch, window activate/minimize,
+        // launcher) and never reach the 3D scene.
+        {
+            let (_, h) = self.window_size;
+            let bar_top = h - crate::shell::TaskbarLayout::bar_height(h);
+            if y >= bar_top as f64 && self.handle_taskbar_click(x, y) {
+                self.schedule_render();
+                return;
+            }
+        }
         let ws_ids = self.workspace_manager.active().visual_ids.clone();
         let mode = self.interaction.handle_pointer_down(
             x, y, &mut self.scene, &self.camera, self.spatial_mode, shift, ctrl, alt,

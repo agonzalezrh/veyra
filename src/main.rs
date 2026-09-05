@@ -23,6 +23,7 @@ mod maximize;
 mod fullscreen;
 mod focus_history;
 mod chrome;
+mod shell;
 mod native_backend;
 mod navigation;
 mod perf;

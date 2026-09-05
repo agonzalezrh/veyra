@@ -725,6 +725,45 @@ wait_for_log "$TMP_DIR/veyra.log" "close sent" 5
 ok "t20i: close button sent xdg close"
 wait_process_exit $T20I_PID 12
 
+# ── t21i: desktop shell taskbar (J4) ──────────────────────────────────
+# Two clients at the harness size (1280x720): bar top = 684, height 36.
+# 3 workspaces -> workspace buttons x=6..96 (button 1 ~x=21). Window
+# buttons start at x=104, 170px wide (launcher pins shrink only from
+# the right, and the 170px cap keeps positions fixed): item0 (B, most
+# recent) at 104..274, item1 (A) at 278..448. Flow: activate A, then
+# B's button twice (focused -> minimize -> restore), then workspace 2.
+say "t21i_taskbar"
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --duration 14000 > "$TMP_DIR/t21ia.json" 2>/dev/null &
+T21IA_PID=$!
+sleep 1.5
+JSON_DUMP=1
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
+    --duration 14000 > "$TMP_DIR/t21ib.json" 2>/dev/null &
+T21IB_PID=$!
+sleep 1.5
+# Activate A (not focused): taskbar routes to the focus coordinator.
+DISPLAY=:99 xdotool mousemove 360 702 click 1
+wait_for_log "$TMP_DIR/veyra.log" "taskbar: activate window" 5
+assert_log "$TMP_DIR/veyra.log" "focus history updated" "t21i: taskbar activation focused the window"
+# B's button: B is not focused now -> activate B...
+DISPLAY=:99 xdotool mousemove 150 702 click 1
+sleep 0.5
+# ...and again (now focused) -> minimize.
+DISPLAY=:99 xdotool mousemove 150 702 click 1
+wait_for_log "$TMP_DIR/veyra.log" "taskbar: minimize focused window" 5
+assert_log "$TMP_DIR/veyra.log" "minimize applied" "t21i: taskbar minimized the window"
+# Third click on the minimized window's button -> restore.
+DISPLAY=:99 xdotool mousemove 150 702 click 1
+wait_for_log "$TMP_DIR/veyra.log" "taskbar: restore window" 5
+assert_log "$TMP_DIR/veyra.log" "minimize restored" "t21i: taskbar restored the window"
+# Workspace button 1 -> switch.
+DISPLAY=:99 xdotool mousemove 21 702 click 1
+wait_for_log "$TMP_DIR/veyra.log" "taskbar: switch workspace" 5
+assert_log "$TMP_DIR/veyra.log" "switched workspace" "t21i: taskbar switched workspace"
+wait_process_exit $T21IA_PID 12
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"
