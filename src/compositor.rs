@@ -844,6 +844,18 @@ impl LookingGlass {
                                 self.wayland_surfaces.insert(visual_id, surface.clone());
                                 self.scene.add(visual);
                                 self.workspace_manager.active_mut().add(visual_id);
+                                // J1-fix: if the freshly placed row extends
+                                // past the visible frustum, zoom the CAMERA
+                                // out to frame the workspace row (camera-only
+                                // operation; visual transforms untouched).
+                                // 2D normal mode only — spatial navigation
+                                // owns its own camera.
+                                if !self.spatial_mode
+                                    && restored.is_none()
+                                    && reopened.is_none()
+                                {
+                                    self.auto_fit_camera();
+                                }
                                 // Reopen targets a specific workspace: move the
                                 // visual there if it differs from the active one.
                                 if let Some(ws_idx) = reopen_workspace {
@@ -1341,6 +1353,47 @@ impl LookingGlass {
             (p.x * p.x + p.y * p.y + p.z * p.z).sqrt()
         };
         layout::VisibleBounds::for_camera(dist, 45.0, aspect)
+    }
+
+    /// Zoom the camera out (never in) so every non-detached visual of
+    /// the active workspace fits inside the view frustum. Pure camera
+    /// operation — visual transforms are never modified. Called after a
+    /// new window lands in a position the current view cannot show
+    /// (J1-fix follow-up: two default-size windows no longer overlap or
+    /// clip; the view widens instead).
+    fn auto_fit_camera(&mut self) {
+        let (w, h) = self.window_size;
+        let aspect = if h > 0.0 { w / h } else { 1.0 };
+        let tan_half = (45.0f32.to_radians() / 2.0).tan();
+        let ws_ids = self.workspace_manager.active().visual_ids.clone();
+        let mut req_w = 0.0f32;
+        let mut req_h = 0.0f32;
+        for v in &self.scene.visuals {
+            if self.scene.detached_set.contains(&v.id) || !ws_ids.contains(&v.id) {
+                continue;
+            }
+            let vw = v.total_width();
+            let vh = v.total_height();
+            let ext_x = v.transform.position.x.abs() + vw * 0.5;
+            let ext_y = v.transform.position.y.abs() + vh * 0.5;
+            req_w = req_w.max(ext_x);
+            req_h = req_h.max(ext_y);
+        }
+        // Edge breathing room in world units.
+        let margin = 48.0;
+        let need_h = (req_h + margin) / tan_half;
+        let need_w = (req_w + margin) / (tan_half * aspect);
+        let need = need_h.max(need_w);
+        let dist = {
+            let p = self.camera.position;
+            (p.x * p.x + p.y * p.y + p.z * p.z).sqrt()
+        };
+        if need > dist + 1.0 && need < 6000.0 {
+            // Normal mode camera looks along -z from (x, y, z): push z.
+            self.camera.position.z = need;
+            info!(dist = need, prev = dist, req_w, req_h, "camera auto-fit");
+            self.schedule_render();
+        }
     }
 
     fn route_to_content(&mut self, kind: PointerEventKind, x: f64, y: f64) -> ContentRouting {

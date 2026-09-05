@@ -120,24 +120,23 @@ pub fn place_new_visual(
         }
     }
 
-    // Tier 3: cascade from the center — fully visible, overlap allowed.
-    // The offset walks down-right diagonally; when the window cannot
-    // fit at the offset position either, it is clamped symmetrically
-    // (max visibility).
-    let n = scene
+    // Tier 3: row-append to the right of the rightmost visual, same
+    // row center — then the compositor auto-fits the CAMERA so the
+    // whole row is visible (a camera operation; visual transforms are
+    // never touched). This is the spatial-desktop answer to "does not
+    // fit": windows stay fully non-overlapping and the view zooms out,
+    // instead of a cramped cascade. The FIRST window (empty row)
+    // centers on the workspace.
+    let right = scene
         .visuals
         .iter()
         .filter(|v| !scene.detached_set.contains(&v.id))
-        .count() as f32;
-    let cascade = 36.0 * n;
-    let clamp_center = |v: f32, low: f32, high: f32| -> f32 {
-        if low <= high { v.clamp(low, high) } else { (low + high) * 0.5 }
-    };
-    Vector3::new(
-        clamp_center(cascade * 0.7, min_cx, max_cx),
-        clamp_center(-cascade, min_cy, max_cy),
-        0.0,
-    )
+        .map(|v| v.transform.position.x + v.total_width() * 0.5)
+        .reduce(f32::max);
+    match right {
+        Some(r) => Vector3::new(r + EDGE_MARGIN + width * 0.5, 0.0, 0.0),
+        None => Vector3::new(0.0, 0.0, 0.0),
+    }
 }
 
 /// Layout mode for arranging visuals in the scene.
@@ -456,16 +455,14 @@ mod tests {
         assert!(pos.x.abs() < 1000.0);
     }
 
-    /// The reported bug: foot (700×500), zenity (400×150) and
-    /// weston-terminal (600×450) opened in that order. The old spiral
-    /// pushed weston-terminal to x≈697 (right edge x≈997) while the
-    /// 16:9 frustum ends at x≈589 — the window was clipped by the
-    /// screen edge and its sliver stacked on top of foot. These three
-    /// windows physically cannot pack without overlap in this frustum,
-    /// so placement must guarantee full VISIBILITY (tier-3 cascade)
-    /// rather than off-screen non-overlap.
+    /// THE REPORTED BUG (revised contract): foot, zenity and
+    /// weston-terminal cannot fit side by side in a 16:9 frustum
+    /// (they need ~92% of it). Placement therefore appends them to a
+    /// non-overlapping ROW (the compositor auto-fits the camera so the
+    /// row is fully visible). Placement itself guarantees: first
+    /// window centered, later windows never overlapping.
     #[test]
-    fn real_apps_stay_fully_visible() {
+    fn real_apps_row_append_without_overlap() {
         let mut scene = Scene::default();
         let bounds = bounds_16_9();
         let apps: [(&str, i32, i32); 3] = [
@@ -473,24 +470,23 @@ mod tests {
             ("zenity", 400, 150),
             ("weston-terminal", 600, 450),
         ];
+        let mut prev_right: Option<f32> = None;
         for (name, w, h) in apps {
             let pos = place_new_visual(w as f32, h as f32, &scene, bounds);
-            let wt = w as f32;
-            let ht = h as f32 * 1.06; // title bar, as the placement assumes
-            // The HARD requirement: the whole window is inside the
-            // frustum (the placement's own edge margin, minus rounding).
-            assert!(
-                pos.x - wt * 0.5 >= -bounds.half_w + EDGE_MARGIN - 1.0
-                    && pos.x + wt * 0.5 <= bounds.half_w - EDGE_MARGIN + 1.0,
-                "{}: x={} pokes outside visible x-range ±{}",
-                name, pos.x, bounds.half_w
-            );
-            assert!(
-                pos.y - ht * 0.5 >= -bounds.half_h + EDGE_MARGIN - 1.0
-                    && pos.y + ht * 0.5 <= bounds.half_h - EDGE_MARGIN + 1.0,
-                "{}: y={} pokes outside visible y-range ±{}",
-                name, pos.y, bounds.half_h
-            );
+            match prev_right {
+                None => {
+                    assert_eq!(pos.x, 0.0, "{}: first window centered", name);
+                }
+                Some(r) => {
+                    assert!(
+                        pos.x - w as f32 * 0.5 >= r,
+                        "{}: must append right of the previous window",
+                        name
+                    );
+                    assert_eq!(pos.y, 0.0, "{}: row keeps y=0", name);
+                }
+            }
+            prev_right = Some(pos.x + w as f32 * 0.5);
             let mut v = crate::scene::Visual::new_test(w, h);
             v.transform.position = pos;
             scene.add(v);
@@ -533,10 +529,61 @@ mod tests {
     fn oversized_window_falls_back_inside_bounds() {
         let scene = Scene::default();
         // Tiny frustum: half-extents 300×200; window 700×500 cannot fit.
+        // Tier 3 now appends to the row at y=0 (the compositor zooms the
+        // camera out to frame it) instead of clamping.
         let bounds = VisibleBounds { half_w: 300.0, half_h: 200.0 };
         let pos = place_new_visual(700.0, 500.0, &scene, bounds);
-        // Center clamped so as much of the window as possible is visible.
-        assert!(pos.x >= -bounds.half_w && pos.x <= bounds.half_w);
-        assert!(pos.y >= -bounds.half_h && pos.y <= bounds.half_h);
+        // First window of an empty scene: row-append starts at the
+        // workspace center.
+        assert_eq!(pos.x, 0.0);
+        assert_eq!(pos.y, 0.0);
+    }
+
+    /// THE TWO-WINDOW REGRESSION: when two default-size windows cannot
+    /// fit side by side in the visible frustum (16:9 shows ±589 world
+    /// units; two 640-wide windows need 1280+), the second window is
+    /// appended to the row to the RIGHT of the first — never stacked
+    /// nearly coincident on top of it. The compositor then auto-fits
+    /// the camera so the row is visible.
+    #[test]
+    fn second_window_appends_to_row_when_tight() {
+        let mut scene = Scene::default();
+        let bounds = bounds_16_9();
+        let a = place_new_visual(640.0, 508.8, &scene, bounds);
+        assert_eq!(a, Vector3::new(0.0, 0.0, 0.0), "first window centered");
+        let mut va = crate::scene::Visual::new_test(640, 480);
+        va.transform.position = a;
+        scene.add(va);
+        let b = place_new_visual(640.0, 508.8, &scene, bounds);
+        // Right edge of A is x=320; B's center = 320 + 48 + 320 = 688.
+        assert!(
+            (b.x - 688.0).abs() < 1.0 && b.y.abs() < 1.0,
+            "second window must append to the row, got {:?}",
+            b
+        );
+    }
+
+    /// Three windows: the row keeps growing to the right with the same
+    /// margin — no overlap anywhere even when the frustum is long
+    /// exceeded (the camera fit is the compositor's job).
+    #[test]
+    fn three_windows_row_without_overlap() {
+        let mut scene = Scene::default();
+        let bounds = bounds_16_9();
+        let mut prev_right = 0.0f32;
+        for i in 0..3 {
+            let pos = place_new_visual(640.0, 508.8, &scene, bounds);
+            if i > 0 {
+                assert!(
+                    pos.x - 320.0 >= prev_right,
+                    "window {} must not overlap the previous row member",
+                    i
+                );
+            }
+            prev_right = pos.x + 320.0;
+            let mut v = crate::scene::Visual::new_test(640, 480);
+            v.transform.position = pos;
+            scene.add(v);
+        }
     }
 }
