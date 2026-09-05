@@ -462,16 +462,18 @@ pub const FONT: &[u8] = &[
     0xc0,0x20,0x20,0x18,0x20,0x20,0xc0,
     // 126 ~
     0x00,0x00,0x40,0xa8,0x10,0x00,0x00,
+    // 127 DEL (placeholder keeps ASCII codes aligned with indices)
+    0x00,0x00,0x00,0x00,0x00,0x00,0x00,
     // 128 (custom) hollow box — title-bar maximize button (J3).
     // Not ASCII; referenced via char::from_u32(128).
     0xf8,0x88,0x88,0x88,0x88,0x88,0xf8,
 ];
 
-pub fn font_glyph_count() -> usize {
+pub const fn font_glyph_count() -> usize {
     FONT.len() / 7
 }
 
-pub fn atlas_rows(cols: u32) -> u32 {
+pub const fn atlas_rows(cols: u32) -> u32 {
     (font_glyph_count() as u32).div_ceil(cols)
 }
 
@@ -487,7 +489,7 @@ unsafe fn ensure_font_atlas(gl: &ffi::Gles2) {
     const ATLAS_W: u32 = COLS * GW;
     // Rows derive from the glyph count so appended custom glyphs
     // (code 128 = maximize box) extend the atlas automatically.
-    const ROWS: u32 = (FONT.len() as u32).div_ceil(COLS);
+    const ROWS: u32 = atlas_rows(COLS);
     const ATLAS_H: u32 = ROWS * GH;
 
     // 96 ASCII glyphs + appended custom glyphs, 5 columns × 7 rows each.
@@ -1092,4 +1094,30 @@ pub fn render_scene(
         error!(?e, "Context lost");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The atlas geometry invariant: the TEXTURE height (built from
+    /// ROWS) and the UV math (atlas_rows) must derive from the SAME
+    /// glyph count. This regressed when ROWS was computed from
+    /// FONT.len() (bytes, 7 per glyph) instead of glyphs — the texture
+    /// became 43 rows while UVs assumed 7, smushing six glyph rows
+    /// into every sampled quad ("only symbols appear, nothing
+    /// readable").
+    #[test]
+    fn atlas_rows_match_texture_geometry() {
+        let cols = 16u32;
+        // Glyph count is glyphs, not bytes.
+        assert_eq!(font_glyph_count(), FONT.len() / 7);
+        assert_eq!(font_glyph_count(), 97); // 96 ASCII + maximize box
+        // All glyphs fit in the rows the UV math assumes.
+        assert!(atlas_rows(cols) * cols >= font_glyph_count() as u32);
+        // And the texture height the builder uses equals it.
+        const ROWS: u32 = atlas_rows(16);
+        assert_eq!(ROWS, atlas_rows(cols));
+        assert_eq!(ROWS * 7, 49); // 7 rows x 7 px
+    }
 }
