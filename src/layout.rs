@@ -58,6 +58,7 @@ pub fn place_new_visual(
     height: f32,
     scene: &Scene,
     bounds: VisibleBounds,
+    eligible: &[crate::scene::VisualId],
 ) -> Vector3<f32> {
     // The incoming height is content-only; the rendered window adds a
     // title bar (same default the Visual will carry).
@@ -77,6 +78,11 @@ pub fn place_new_visual(
     let overlaps_existing = |x: f32, y: f32| -> bool {
         scene.visuals.iter().any(|v| {
             if scene.detached_set.contains(&v.id) { return false; }
+            // Workspace-scoped (same rule as apply_layout, I6): windows
+            // on OTHER workspaces must not influence placement here, or
+            // a fresh workspace's first window appends to another
+            // workspace's row and lands outside its view.
+            if !eligible.contains(&v.id) { return false; }
             let vw = v.total_width();
             let vh = v.total_height();
             let dx = (x - v.transform.position.x).abs();
@@ -130,7 +136,7 @@ pub fn place_new_visual(
     let right = scene
         .visuals
         .iter()
-        .filter(|v| !scene.detached_set.contains(&v.id))
+        .filter(|v| !scene.detached_set.contains(&v.id) && eligible.contains(&v.id))
         .map(|v| v.transform.position.x + v.total_width() * 0.5)
         .reduce(f32::max);
     match right {
@@ -424,10 +430,17 @@ mod tests {
         VisibleBounds::for_camera(800.0, 45.0, 1280.0 / 720.0)
     }
 
+
+    /// All visuals currently in the scene (tests place within one
+    /// workspace, so every visual is eligible).
+    fn all_eligible(scene: &Scene) -> Vec<crate::scene::VisualId> {
+        scene.visuals.iter().map(|v| v.id).collect()
+    }
+
     #[test]
     fn place_first_visual_empty_scene() {
         let scene = Scene::default();
-        let pos = place_new_visual(200.0, 100.0, &scene, bounds_16_9());
+        let pos = place_new_visual(200.0, 100.0, &scene, bounds_16_9(), &all_eligible(&scene));
         // First placement in an empty scene opens CENTERED on the workspace
         assert_eq!(pos.x, 0.0, "first visual must open at origin: x={}", pos.x);
         assert_eq!(pos.y, 0.0, "first visual must open at origin: y={}", pos.y);
@@ -438,19 +451,19 @@ mod tests {
         // Verify the spiral produces different positions for successive items
         let mut scene = Scene::default();
         let b = bounds_16_9();
-        let p0 = place_new_visual(200.0, 100.0, &scene, b);
+        let p0 = place_new_visual(200.0, 100.0, &scene, b, &all_eligible(&scene));
         // Register the placed window so the next call sees it.
         let mut v0 = crate::scene::Visual::new_test(200, 100);
         v0.transform.position = p0;
         scene.add(v0);
-        let p1 = place_new_visual(200.0, 100.0, &scene, b);
+        let p1 = place_new_visual(200.0, 100.0, &scene, b, &all_eligible(&scene));
         assert_ne!(p0, p1, "second placement must move away from the first");
     }
 
     #[test]
     fn place_fallback_on_empty() {
         let scene = Scene::default();
-        let pos = place_new_visual(500.0, 500.0, &scene, bounds_16_9());
+        let pos = place_new_visual(500.0, 500.0, &scene, bounds_16_9(), &all_eligible(&scene));
         // Empty scene always returns first spiral position
         assert!(pos.x.abs() < 1000.0);
     }
@@ -472,7 +485,7 @@ mod tests {
         ];
         let mut prev_right: Option<f32> = None;
         for (name, w, h) in apps {
-            let pos = place_new_visual(w as f32, h as f32, &scene, bounds);
+            let pos = place_new_visual(w as f32, h as f32, &scene, bounds, &all_eligible(&scene));
             match prev_right {
                 None => {
                     assert_eq!(pos.x, 0.0, "{}: first window centered", name);
@@ -503,7 +516,7 @@ mod tests {
         let apps: [(i32, i32); 3] = [(300, 200), (250, 150), (280, 220)];
         let mut placed: Vec<(f32, f32, f32, f32)> = Vec::new();
         for (w, h) in apps {
-            let pos = place_new_visual(w as f32, h as f32, &scene, bounds);
+            let pos = place_new_visual(w as f32, h as f32, &scene, bounds, &all_eligible(&scene));
             let wt = w as f32;
             let ht = h as f32 * 1.06;
             for (px, py, pw, ph) in &placed {
@@ -532,7 +545,7 @@ mod tests {
         // Tier 3 now appends to the row at y=0 (the compositor zooms the
         // camera out to frame it) instead of clamping.
         let bounds = VisibleBounds { half_w: 300.0, half_h: 200.0 };
-        let pos = place_new_visual(700.0, 500.0, &scene, bounds);
+        let pos = place_new_visual(700.0, 500.0, &scene, bounds, &all_eligible(&scene));
         // First window of an empty scene: row-append starts at the
         // workspace center.
         assert_eq!(pos.x, 0.0);
@@ -549,12 +562,12 @@ mod tests {
     fn second_window_appends_to_row_when_tight() {
         let mut scene = Scene::default();
         let bounds = bounds_16_9();
-        let a = place_new_visual(640.0, 508.8, &scene, bounds);
+        let a = place_new_visual(640.0, 508.8, &scene, bounds, &all_eligible(&scene));
         assert_eq!(a, Vector3::new(0.0, 0.0, 0.0), "first window centered");
         let mut va = crate::scene::Visual::new_test(640, 480);
         va.transform.position = a;
         scene.add(va);
-        let b = place_new_visual(640.0, 508.8, &scene, bounds);
+        let b = place_new_visual(640.0, 508.8, &scene, bounds, &all_eligible(&scene));
         // Right edge of A is x=320; B's center = 320 + 48 + 320 = 688.
         assert!(
             (b.x - 688.0).abs() < 1.0 && b.y.abs() < 1.0,
@@ -572,7 +585,7 @@ mod tests {
         let bounds = bounds_16_9();
         let mut prev_right = 0.0f32;
         for i in 0..3 {
-            let pos = place_new_visual(640.0, 508.8, &scene, bounds);
+            let pos = place_new_visual(640.0, 508.8, &scene, bounds, &all_eligible(&scene));
             if i > 0 {
                 assert!(
                     pos.x - 320.0 >= prev_right,
@@ -585,5 +598,27 @@ mod tests {
             v.transform.position = pos;
             scene.add(v);
         }
+    }
+
+    /// THE REPORTED BUG: opening an app on a DIFFERENT workspace while
+    /// workspace 0 already has a row must NOT append to workspace 0's
+    /// row (the window landed at x≈1056, far outside the fresh
+    /// workspace's view — "appears in the taskbar but is not visible").
+    #[test]
+    fn placement_is_workspace_scoped() {
+        let mut scene = Scene::default();
+        let bounds = bounds_16_9();
+        // Workspace 0: one window far right in its row.
+        let mut v0 = crate::scene::Visual::new_test(640, 480);
+        v0.transform.position = Vector3::new(688.0, 0.0, 0.0);
+        scene.add(v0);
+        // Workspace 1 contains only itself (empty row).
+        let ws1_eligible = [crate::scene::VisualId(99)];
+        let pos = place_new_visual(640.0, 508.8, &scene, bounds, &ws1_eligible);
+        assert_eq!(
+            pos,
+            Vector3::new(0.0, 0.0, 0.0),
+            "a fresh workspace's first window must center, not append to another workspace's row"
+        );
     }
 }

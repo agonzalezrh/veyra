@@ -1065,11 +1065,20 @@ pub fn render_scene(
                 // Label, vertically centered, clipped by the button's
                 // own width via the pre-fitted label string.
                 let text_color = if it.active { (0.85, 0.92, 0.85) } else { (0.72, 0.74, 0.76) };
-                let scale = 2.0f32;
+                // Glyph scale derives from the bar height (DPI-aware,
+                // same family as MenuMetrics) — a fixed 2.0 renders
+                // 7-logical-px text on scaled displays.
+                let scale = (((tb.bar_h - 6.0) * 0.58) / 7.0).round().clamp(2.0, 6.0);
                 let ch = (7.0f32 * scale / h) * 2.0;
                 let cw = (5.0f32 * scale / w) * 2.0;
                 let text_x = ((it.x + 6.0) / w) * 2.0 - 1.0;
-                let text_y = -(iy + ih / 2.0 + (7.0 * scale / 2.0) / h * 2.0 - 1.0);
+                // First glyph center: convert the row center from PIXELS
+                // to NDC, then subtract half a glyph (draw_text centers
+                // glyphs at y + char_h/2). The old expression added
+                // pixels to NDC (-701!) — labels rendered far below the
+                // viewport.
+                let center_ndc = -(((iy + ih / 2.0) / h) * 2.0 - 1.0);
+                let text_y = center_ndc - ch / 2.0;
                 draw_text(gl, draw, &it.label, text_x, text_y, cw, ch, text_color.0, text_color.1, text_color.2);
             }
 

@@ -730,8 +730,9 @@ wait_process_exit $T20I_PID 12
 # 3 workspaces -> workspace buttons x=6..96 (button 1 ~x=21). Window
 # buttons start at x=104, 170px wide (launcher pins shrink only from
 # the right, and the 170px cap keeps positions fixed): item0 (B, most
-# recent) at 104..274, item1 (A) at 278..448. Flow: activate A, then
-# B's button twice (focused -> minimize -> restore), then workspace 2.
+# recent) at 104..274, item1 (A) at 278..448. Semantics: click ALWAYS
+# activates (never minimizes — the toggle read as erratic in physical
+# testing); minimize comes from F9, restore from the taskbar click.
 say "t21i_taskbar"
 JSON_DUMP=1
 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
@@ -747,17 +748,27 @@ sleep 1.5
 DISPLAY=:99 xdotool mousemove 360 702 click 1
 wait_for_log "$TMP_DIR/veyra.log" "taskbar: activate window" 5
 assert_log "$TMP_DIR/veyra.log" "focus history updated" "t21i: taskbar activation focused the window"
-# B's button: B is not focused now -> activate B...
+# Activate B: routes through the same coordinator.
 DISPLAY=:99 xdotool mousemove 150 702 click 1
 sleep 0.5
-# ...and again (now focused) -> minimize.
-DISPLAY=:99 xdotool mousemove 150 702 click 1
-wait_for_log "$TMP_DIR/veyra.log" "taskbar: minimize focused window" 5
-assert_log "$TMP_DIR/veyra.log" "minimize applied" "t21i: taskbar minimized the window"
-# Third click on the minimized window's button -> restore.
+# F9 minimizes the focused window (B)...
+DISPLAY=:99 xdotool key F9
+wait_for_log "$TMP_DIR/veyra.log" "minimize applied" 5
+# ...and the taskbar click on the minimized window restores it.
 DISPLAY=:99 xdotool mousemove 150 702 click 1
 wait_for_log "$TMP_DIR/veyra.log" "taskbar: restore window" 5
 assert_log "$TMP_DIR/veyra.log" "minimize restored" "t21i: taskbar restored the window"
+# Clicking the ALREADY-focused window's button is a no-op (never
+# minimizes): B was focused by the restore.
+T21I_MIN_BEFORE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -ac "minimize applied")
+DISPLAY=:99 xdotool mousemove 150 702 click 1
+sleep 0.4
+T21I_MIN_AFTER=$(strip_ansi "$TMP_DIR/veyra.log" | grep -ac "minimize applied")
+if [ "$T21I_MIN_AFTER" -eq "$T21I_MIN_BEFORE" ]; then
+    ok "t21i: focused-window click does not minimize"
+else
+    bad "t21i: focused-window click minimized (before=$T21I_MIN_BEFORE after=$T21I_MIN_AFTER)"
+fi
 # Workspace button 1 -> switch.
 DISPLAY=:99 xdotool mousemove 21 702 click 1
 wait_for_log "$TMP_DIR/veyra.log" "taskbar: switch workspace" 5

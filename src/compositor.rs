@@ -824,11 +824,14 @@ impl LookingGlass {
                                     })
                                 });
                                 if restored.is_none() && reopened.is_none() {
+                                    let ws_eligible =
+                                        self.workspace_manager.active().visual_ids.clone();
                                     let pos = layout::place_new_visual(
                                         tex_size.w as f32 * visual.transform.scale.x,
                                         tex_size.h as f32 * visual.transform.scale.y,
                                         &self.scene,
                                         self.visible_bounds(),
+                                        &ws_eligible,
                                     );
                                     visual.transform.position = pos;
                                     visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
@@ -1029,7 +1032,8 @@ impl LookingGlass {
                 smithay::utils::Size::new(w as i32, h as i32),
             ),
         );
-        visual.transform.position = layout::place_new_visual(w as f32, h as f32, &self.scene, self.visible_bounds());
+        let ws_eligible = self.workspace_manager.active().visual_ids.clone();
+        visual.transform.position = layout::place_new_visual(w as f32, h as f32, &self.scene, self.visible_bounds(), &ws_eligible);
         let vid = visual.id;
 
         // Try to create an InputSink from the producer before moving it
@@ -1430,12 +1434,16 @@ impl LookingGlass {
         let Some(item) = layout.hit(h, x, y) else { return false };
         match item.hit.clone() {
             crate::shell::TaskbarHit::Window(vid) => {
+                // GNOME semantics: a taskbar click ALWAYS activates (or
+                // restores) — it never minimizes. The earlier minimize-
+                // on-focused-click toggle read as erratic ("sometimes
+                // changes window, sometimes minimizes"); minimize stays
+                // on the title-bar button and the keyboard.
                 if self.is_minimized(vid) {
                     info!(?vid, "taskbar: restore window");
                     self.restore_minimized(vid, crate::maximize::MinimizeSource::Compositor);
                 } else if self.scene.focused_id == Some(vid) {
-                    info!(?vid, "taskbar: minimize focused window");
-                    self.begin_minimize(vid, crate::maximize::MinimizeSource::Compositor);
+                    info!(?vid, "taskbar: already focused");
                 } else {
                     info!(?vid, "taskbar: activate window");
                     self.scene.select(Some(vid));
@@ -2669,7 +2677,14 @@ impl LookingGlass {
                     if let Some(ws) = self.workspace_manager.get_mut(current_ws) {
                         ws.remove(target);
                     }
+                    // The window keeps its world position: if it now sits
+                    // outside the target workspace's view, the auto-fit on
+                    // the next switch will frame it. Moving to the ACTIVE
+                    // workspace (no-op switch) fits immediately.
                     info!(?target, workspace = ws_idx, "context menu: move to workspace");
+                    if ws_idx == current_ws {
+                        self.auto_fit_camera();
+                    }
                 }
             }
             MenuAction::Group => {
@@ -3237,6 +3252,10 @@ impl LookingGlass {
         };
         self.set_keyboard_focus(focus_target);
         info!(workspace = idx, old = old_id, restored = ?focus_target, "switched workspace");
+        // J4 follow-up: a workspace whose saved camera cannot show its
+        // row (e.g. a window moved here from another workspace) must
+        // still be readable after the switch.
+        self.auto_fit_camera();
         true
     }
 
