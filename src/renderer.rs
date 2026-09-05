@@ -156,7 +156,8 @@ unsafe fn draw_text(
 /// ride the window's own model matrix, so title text and buttons
 /// rotate/scale/move with the decoration exactly like the client
 /// surface. Glyphs are offset slightly along the window normal
-/// (−0.5 px in window z) to avoid z-fighting with the window quad.
+/// (+0.5 px along the window normal, toward the camera) to avoid
+/// z-fighting with the window quad.
 ///
 /// `win` = decorated (width, height) the model matrix was built with;
 /// `run` = (left edge px, vertical center px, glyph height px), all
@@ -231,7 +232,10 @@ unsafe fn draw_text_in_window(
         let glyph_local = Matrix4::from_translation(cgmath::Vector3::new(
             cx * to_model_x,
             y_center_px * to_model_y,
-            -0.5,
+            // +z is TOWARD the camera (camera sits at +z looking down -z):
+            // glyphs must be slightly IN FRONT of the window quad or the
+            // depth test discards them (they are drawn after it).
+            0.5,
         )) * Matrix4::from_nonuniform_scale(
             char_w_px * to_model_x,
             char_h_px * to_model_y,
@@ -595,31 +599,34 @@ void main() {
         bool title_edge = uv.x < tbx || uv.x > 1.0 - tbx ||
                           uv.y < tby || uv.y > th - tby;
         if (title_edge) {
+            // Muted states: full-saturation gold/green/cyan on every
+            // window read as visual noise (physical feedback).
             if (u_selected > 0.5) {
-                gl_FragColor = vec4(0.8, 0.64, 0.0, 1.0);
+                gl_FragColor = vec4(0.55, 0.45, 0.10, 1.0);
             } else if (u_focused > 0.5) {
-                gl_FragColor = vec4(0.2, 0.7, 0.2, 1.0);
+                gl_FragColor = vec4(0.22, 0.46, 0.22, 1.0);
             } else {
-                gl_FragColor = vec4(0.0, 0.7, 0.7, 1.0);
+                gl_FragColor = vec4(0.14, 0.22, 0.23, 1.0);
             }
         } else {
+            // Strip interior: same hue family, quieter.
             if (u_selected > 0.5) {
-                gl_FragColor = vec4(0.45, 0.35, 0.1, 0.9);
+                gl_FragColor = vec4(0.30, 0.24, 0.08, 0.9);
             } else if (u_focused > 0.5) {
-                gl_FragColor = vec4(0.15, 0.35, 0.15, 0.9);
+                gl_FragColor = vec4(0.12, 0.24, 0.12, 0.9);
             } else {
-                gl_FragColor = vec4(0.1, 0.25, 0.25, 0.9);
+                gl_FragColor = vec4(0.09, 0.15, 0.16, 0.9);
             }
         }
     } else {
         vec2 content_uv = vec2(uv.x, (uv.y - th) / (1.0 - th));
         if (any(edge)) {
             if (u_selected > 0.5) {
-                gl_FragColor = vec4(1.0, 0.84, 0.0, 1.0);
+                gl_FragColor = vec4(0.62, 0.50, 0.10, 1.0);
             } else if (u_focused > 0.5) {
-                gl_FragColor = vec4(0.3, 0.9, 0.3, 1.0);
+                gl_FragColor = vec4(0.24, 0.52, 0.24, 1.0);
             } else {
-                gl_FragColor = vec4(0.0, 1.0, 1.0, 1.0);
+                gl_FragColor = vec4(0.16, 0.26, 0.27, 1.0);
             }
         } else {
             gl_FragColor = texture2D(u_tex, content_uv) * u_tint;
@@ -823,9 +830,10 @@ fn draw_textured_quad(
         gl.Uniform1f(draw.u_title_h, title_h);
         gl.Uniform1f(draw.u_edge, 1.0);
         gl.Uniform4f(draw.u_tint, 1.0, 1.0, 1.0, 1.0);
-        // ~2.5px chrome ring regardless of window size
-        let ring_u = 2.5 / gw.max(1.0);
-        let ring_v = 2.5 / gh.max(1.0);
+        // ~1.5px chrome ring regardless of window size (2.5px read as
+        // a heavy frame in physical testing).
+        let ring_u = 1.5 / gw.max(1.0);
+        let ring_v = 1.5 / gh.max(1.0);
         gl.Uniform4f(draw.u_border, ring_u, ring_v, ring_u, ring_v);
         gl.ActiveTexture(ffi::TEXTURE0);
         gl.BindTexture(ffi::TEXTURE_2D, tex_id);
