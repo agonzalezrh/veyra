@@ -52,8 +52,10 @@ fn log(ev: serde_json::Value) {
     let _ = out.flush();
 }
 
+mod dnd_tester;
 mod popup_tester;
 use popup_tester::{run_popups, run_popups_opts};
+use dnd_tester::{run_dnd, Role};
 
 fn opt_value(args: &[String], flag: &str) -> Option<String> {
     args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
@@ -723,6 +725,22 @@ fn main() {
         let duration = opt_value(&args, "--duration").and_then(|v| v.parse().ok()).unwrap_or(8000);
         let hold = args.iter().any(|a| a == "--hold");
         let code = run_popups_opts(cycles, duration, hold);
+        std::process::exit(code);
+    }
+    // Raw drag-and-drop tester (G-B2) has its own connection flow.
+    if cmd == "dnd" {
+        let role = match opt_value(&args, "--role").as_deref() {
+            Some("source") => Role::Source,
+            Some("dest") => Role::Dest,
+            _ => {
+                eprintln!("dnd: --role source|dest required");
+                std::process::exit(1);
+            }
+        };
+        let mime = opt_value(&args, "--mime").unwrap_or_else(|| "text/plain".into());
+        let payload = opt_value(&args, "--payload").unwrap_or_else(|| "veyra-dnd".into());
+        let duration = opt_value(&args, "--duration").and_then(|v| v.parse().ok()).unwrap_or(15000);
+        let code = run_dnd(role, mime, payload, duration);
         std::process::exit(code);
     }
     let opts = parse_args();

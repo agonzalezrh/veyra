@@ -21,6 +21,7 @@ use smithay::input::Seat;
 use smithay::input::SeatHandler;
 use smithay::input::SeatState;
 use smithay::wayland::selection::data_device::{ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler};
+use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::wayland::selection::primary_selection::{PrimarySelectionHandler, PrimarySelectionState};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
@@ -294,6 +295,11 @@ pub struct LookingGlass {
     pub fullscreen: crate::fullscreen::FullscreenCoordinator,
     /// In-progress pointer resize session (I3b), None when idle.
     pub resize_session: Option<crate::resize::ResizeSession>,
+    /// Client-initiated wl_data_device drag in progress (G-B2). While
+    /// set, compositor window manipulation is suppressed and pointer
+    /// motion/release are always forwarded to the seat pointer so
+    /// Smithay's DnDGrab can drive the protocol.
+    pub dnd_active: bool,
     /// Relative pointer manager for sending relative motion deltas.
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
     /// DMA-BUF buffer import state.
@@ -301,6 +307,7 @@ pub struct LookingGlass {
 }
 
 /// Result of routing a pointer event to the selected visual's content.
+#[derive(Clone, Copy, PartialEq)]
 enum ContentRouting { Routed, TitleBarHit, NoTarget }
 
 /// Monotonic milliseconds timestamp for input events.
@@ -420,6 +427,7 @@ impl LookingGlass {
             maximize: crate::maximize::MaximizeCoordinator::default(),
             fullscreen: crate::fullscreen::FullscreenCoordinator::default(),
             resize_session: None,
+            dnd_active: false,
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<LookingGlass>(display_handle),
             dmabuf_manager: crate::dmabuf::DmabufManager::new(display_handle),
         }
@@ -1676,12 +1684,14 @@ impl LookingGlass {
                     match kind {
                         PointerEventKind::Motion => {
                             self.last_wayland_focus = Some(wl_surface.clone());
-                            ph.motion(self, Some((wl_surface.clone(), pos)), &mot_ev);
+                            let origin = self.surface_global_origin(vid);
+                            ph.motion(self, origin.map(|o| (wl_surface.clone(), o)), &mot_ev);
                             ph.frame(self);
                         }
                         PointerEventKind::Down | PointerEventKind::Up => {
                             self.last_wayland_focus = Some(wl_surface.clone());
-                            ph.motion(self, Some((wl_surface.clone(), pos)), &mot_ev);
+                            let origin = self.surface_global_origin(vid);
+                            ph.motion(self, origin.map(|o| (wl_surface.clone(), o)), &mot_ev);
                             ph.button(self, &btn_ev);
                             ph.frame(self);
                             info!(?vid, ?pos, ?kind, "wl_pointer.enter + button + frame");
@@ -2822,6 +2832,28 @@ impl LookingGlass {
                 return;
             }
         }
+        // G-B2: during a client DnD grab no new compositor manipulation
+        // may start, but the press still reaches the seat pointer so
+        // Smithay's button bookkeeping stays consistent. The focus is
+        // the SPATIAL pick at the pointer position — route_to_content
+        // routes to the selected visual, which is the drag origin, not
+        // the surface under the pointer.
+        if self.dnd_active {
+            if let Some(ph) = self.pointer_handle.clone() {
+                let serial = self.next_serial();
+                let time = now_ms();
+                let focus = self.pick_wayland_target(x, y)
+                    .and_then(|(vid, s, _)| self.surface_global_origin(vid).map(|o| (s, o)));
+                ph.motion(self, focus, &MotionEvent { location: (x, y).into(), serial, time });
+                ph.button(self, &ButtonEvent {
+                    serial, time, button: 0x110,
+                    state: smithay::backend::input::ButtonState::Pressed,
+                });
+                ph.frame(self);
+            }
+            let _ = self.display_handle.flush_clients();
+            return;
+        }
         let ws_ids = self.workspace_manager.active().visual_ids.clone();
         let mode = self.interaction.handle_pointer_down(
             x, y, &mut self.scene, &self.camera, self.spatial_mode, shift, ctrl, alt,
@@ -2890,6 +2922,35 @@ impl LookingGlass {
         }
         let has_active = self.interaction.is_dragging();
         let dragged_vid = if has_active { self.scene.selected_id } else { None };
+        // G-B2: while a client DnD grab is active the release MUST
+        // always reach the seat pointer — Smithay's DnDGrab ends the
+        // drag there and negotiates the drop/cancel. The focus is the
+        // SPATIAL pick at the release point (same path as motion):
+        // route_to_content routes to the SELECTED visual — the drag
+        // origin — which would drop onto the wrong surface. Focus None
+        // over empty space is correct: DnDGrab sends
+        // wl_data_device.leave and finishes with a cancelled
+        // (unvalidated) drop on the source.
+        if self.dnd_active {
+            if let Some(ph) = self.pointer_handle.clone() {
+                let serial = self.next_serial();
+                let time = now_ms();
+                let focus = self.pick_wayland_target(x, y)
+                    .and_then(|(vid, s, _)| self.surface_global_origin(vid).map(|o| (s, o)));
+                ph.motion(self, focus.clone(), &MotionEvent { location: (x, y).into(), serial, time });
+                ph.button(self, &ButtonEvent {
+                    serial, time, button: 0x110,
+                    state: smithay::backend::input::ButtonState::Released,
+                });
+                ph.frame(self);
+                if focus.is_none() {
+                    self.last_wayland_focus = None;
+                }
+            }
+            self.schedule_render();
+            let _ = self.display_handle.flush_clients();
+            return;
+        }
         self.interaction.handle_pointer_up();
         if has_active {
             // J2 observability: after a drag ends, log where the dragged
@@ -2946,8 +3007,13 @@ impl LookingGlass {
                     delta_unaccel: (dx, dy).into(),
                     utime: time as u64 * 1000,
                 };
-                ph.motion(self, Some((surface.clone(), pos)), &mot_ev);
-                ph.relative_motion(self, Some((surface.clone(), pos)), &rel_ev);
+                // Same focus-location convention as everywhere else:
+                // the locked surface's global origin (below title bar).
+                let origin = self.wayland_surfaces.iter()
+                    .find(|(_, s)| **s == surface)
+                    .and_then(|(vid, _)| self.surface_global_origin(*vid));
+                ph.motion(self, origin.map(|o| (surface.clone(), o)), &mot_ev);
+                ph.relative_motion(self, origin.map(|o| (surface, o)), &rel_ev);
             }
             return;
         }
@@ -2960,6 +3026,17 @@ impl LookingGlass {
         if self.nav_button == 2 {
             self.workspace_manager.active_mut().auto_orbit = false;
             self.handle_pan(dx, dy);
+            return;
+        }
+        // Client DnD grab (G-B2): ALL motion feeds Smithay's DnDGrab
+        // through the seat pointer. route_hover picks the target with
+        // the SAME 3D spatial path as normal input (pick_wayland_target
+        // → Scene.pick_visible), so a moved/rotated window's drag
+        // target follows its world transform; camera state is not
+        // involved. Compositor window manipulation stays suppressed.
+        if self.dnd_active {
+            self.route_hover(x, y);
+            self.schedule_render();
             return;
         }
         // Pointer resize session (I3b): suppress drag/hover routing while
@@ -3011,6 +3088,35 @@ impl LookingGlass {
         if !was_dragging && !self.interaction.is_dragging() {
             self.route_hover(x, y);
         }
+    }
+
+    /// Global (screen-space) top-left of a visual's CLIENT surface —
+    /// the location smithay 0.7 expects in the pointer-focus tuple:
+    /// both wl_pointer and wl_data_device derive surface-local
+    /// coordinates as `global_pointer - focus_location`. The origin is
+    /// the content quad's top-left corner (below the title bar) under
+    /// the full world transform, so moved/rotated/parented visuals
+    /// report coordinates that match where they are RENDERED.
+    fn surface_global_origin(
+        &self,
+        vid: VisualId,
+    ) -> Option<smithay::utils::Point<f64, smithay::utils::Logical>> {
+        let v = self.scene.visuals.iter().find(|v| v.id == vid)?;
+        let t = self.scene.world_transform(vid);
+        let gw = v.total_width();
+        let gh = v.total_height();
+        let title_frac = v.decoration.title_bar_height / (1.0 + v.decoration.title_bar_height);
+        let corner_local = cgmath::Vector3::new(
+            v.transform.scale.x * (-gw / 2.0),
+            v.transform.scale.y * (gh / 2.0 - gh * title_frac),
+            0.0,
+        );
+        let corner_world = t.rotation * corner_local + t.position;
+        let (w, h) = self.window_size;
+        Some((
+            (w as f32 / 2.0 + corner_world.x) as f64,
+            (h as f32 / 2.0 - corner_world.y) as f64,
+        ).into())
     }
 
     /// Pick the Wayland surface under the given screen position via 3D ray cast.
@@ -3092,7 +3198,8 @@ impl LookingGlass {
             serial: self.next_serial(),
             time: now_ms(),
         };
-        ph.motion(self, Some((wl_surface, pos)), &mot_ev);
+        let origin = self.surface_global_origin(vid);
+        ph.motion(self, origin.map(|o| (wl_surface, o)), &mot_ev);
     }
 
     /// Center the camera on the currently selected visual.
@@ -3192,7 +3299,7 @@ impl LookingGlass {
             return;
         };
 
-        if let Some((_, wl_surface, pos)) = self.pick_wayland_target(x, y) {
+        if let Some((vid, wl_surface, _pos)) = self.pick_wayland_target(x, y) {
             // Ensure pointer focus is on the target surface before axis events.
             self.last_wayland_focus = Some(wl_surface.clone());
             let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
@@ -3201,7 +3308,8 @@ impl LookingGlass {
                 serial: self.next_serial(),
                 time: now_ms(),
             };
-            ph.motion(self, Some((wl_surface, pos)), &mot_ev);
+            let origin = self.surface_global_origin(vid);
+            ph.motion(self, origin.map(|o| (wl_surface, o)), &mot_ev);
 
             let time = now_ms();
             let frame = smithay::input::pointer::AxisFrame::new(time)
@@ -3632,6 +3740,12 @@ impl LookingGlass {
             self.pointer_constraints.unlock();
             return;
         }
+        // An active client DnD grab is cancelled first: the spatial
+        // escape chain below knows nothing about protocol drags.
+        if self.dnd_active {
+            self.cancel_dnd_grab();
+            return;
+        }
 
         use crate::focus::CameraMode;
         let in_workspace_overview = matches!(self.focus_manager.camera_mode, CameraMode::WorkspaceOverview);
@@ -3805,6 +3919,25 @@ impl LookingGlass {
             self.interaction.handle_pointer_up();
             info!("interaction cancelled");
         }
+        self.cancel_dnd_grab();
+    }
+
+    /// Abort an in-progress client DnD grab (G-B2): unset the seat
+    /// pointer grab so Smithay's DnDGrab runs its unset path (cancel
+    /// on the source, leave on the target, offer cleanup). No stale
+    /// drag state may survive a cancel, client death, or recovery.
+    pub fn cancel_dnd_grab(&mut self) {
+        if !self.dnd_active {
+            return;
+        }
+        if let Some(ph) = self.pointer_handle.clone() {
+            if let Some(serial) = ph.with_grab(|s, _| s) {
+                ph.unset_grab(self, serial, now_ms());
+            }
+        }
+        self.dnd_active = false;
+        info!("dnd: grab cancelled");
+        self.schedule_render();
     }
 
     /// Run full recovery: cancel interaction → exit focus → exit overview → reset camera.
@@ -4065,6 +4198,26 @@ impl XdgShellHandler for LookingGlass {
         {
             let mut info = self.toplevels.remove(idx);
             info.lifecycle = SurfaceLifecycle::Destroyed;
+            // G-B2: if the dying surface participates in the active DnD
+            // (drag origin or current target), abort the grab so no
+            // stale drag state outlives the client.
+            if self.dnd_active {
+                let dying = info.wl_surface.clone();
+                let mut participates = false;
+                if let Some(ph) = self.pointer_handle.as_ref() {
+                    if let Some(sd) = ph.grab_start_data() {
+                        if let Some((f, _)) = sd.focus {
+                            participates |= f == dying;
+                        }
+                    }
+                    if let Some(f) = ph.current_focus() {
+                        participates |= f == dying;
+                    }
+                }
+                if participates {
+                    self.cancel_dnd_grab();
+                }
+            }
             if let Some(vid) = info.visual_id {
                 let was_focused = self.scene.focused_id == Some(vid)
                     || self.scene.selected_id == Some(vid);
@@ -4312,12 +4465,25 @@ impl SelectionHandler for LookingGlass {
 }
 
 impl ClientDndGrabHandler for LookingGlass {
-    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
-        info!("DnG grab ended");
-        // Clear any spatial interaction state if a DnD operation was in progress
+    fn started(&mut self, source: Option<WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
+        // A client began a wl_data_device drag (G-B2): the compositor
+        // must stop manipulating windows for the remainder of the
+        // gesture and feed pointer motion/release to the seat pointer
+        // so Smithay's DnDGrab can drive enter/motion/leave/drop.
+        // Race guard: a spatial drag started from the same press (5px
+        // threshold) must not keep running alongside the protocol drag.
         if self.interaction.is_dragging() {
             self.interaction.handle_pointer_up();
         }
+        self.dnd_active = true;
+        info!(has_source = source.is_some(), has_icon = icon.is_some(),
+              "dnd: client drag started");
+        self.schedule_render();
+    }
+
+    fn dropped(&mut self, target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
+        self.dnd_active = false;
+        info!(?target, validated, "dnd: drop finished");
         self.schedule_render();
     }
 }

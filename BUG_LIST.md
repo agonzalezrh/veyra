@@ -12,10 +12,15 @@ System XKB config loaded from `/etc/default/keyboard`. Fallback to env vars.
 ### ~~Pointer Constraints~~ — ✅ G6 (Fixed)
 `zwp_pointer_constraints_v1` + `wp_relative_pointer_v1` implemented. Locked/confined pointer skips spatial InteractionController.
 
-## P2: Remaining
+### ~~DnD event processing~~ — ✅ G-B2 (Fixed)
+Full client-initiated drag-and-drop via Smithay's `DnDGrab`: implicit-grab
+start_drag validation, spatially-picked enter/motion/leave/drop, v3 action
+negotiation, data transfer, Escape/client-death cleanup. Target selection
+reuses the same 3D `pick_wayland_target` path as normal pointer input.
+Verified by t22i–t25i (happy path, cancel+reuse, target change + moved
+window, source death) in `run_input_tests.sh`.
 
 ### 1. Clipboard MIME types (G3 partial)
-
 **Area**: DataDevice / Selection handler
 **File**: `src/compositor.rs`
 **What's done**: Selection handler wired to Smithay's `set_data_device_selection` and `set_primary_selection`. Data device focus updated on keyboard focus changes.
@@ -56,6 +61,7 @@ System XKB config loaded from `/etc/default/keyboard`. Fallback to env vars.
 | 10 | Buffer Scale | Only Scale::Integer(1) advertised | Low |
 | 11 | Subsurface support | Not explicitly handled | Low |
 | 12 | Serial Validation | Popup serial validation may not catch all edge cases | Medium |
+| 15 | Duplicate Button Press | wl_data_device test client received the same wl_pointer.button(press) twice with one serial (observed under Xvfb/winit; masked by latches so far). Verify whether the compositor double-sends button events to clients — real apps would double-handle clicks. Track the originating layer (winit event loop vs ph.button call sites vs client queue dispatch). | Medium |
 
 ## P4: Feature Gaps
 
@@ -68,8 +74,8 @@ System XKB config loaded from `/etc/default/keyboard`. Fallback to env vars.
 
 ## Recommended Fix Order for G-B Remaining
 
-1. **DnD event processing** (P2, #2) — complete G4 by implementing drag grab methods
-2. **Clipboard MIME types** (P2, #1) — pass actual MIME types instead of empty vec
-3. **DRM presentation** (P2, #3) — page flip implementation for native backend
-4. **Fractional scaling** (P3) — for HiDPI
-5. **Output change events** (P3) — for hotplug support
+1. **Clipboard MIME types** (P2, #1) — pass actual MIME types instead of empty vec
+2. **DRM presentation** (P2, #3) — page flip implementation for native backend
+3. **Fractional scaling** (P3) — for HiDPI
+4. **Output change events** (P3) — for hotplug support
+5. **Duplicate Button Press** (P3, #15) — verify/fix double delivery of wl_pointer presses

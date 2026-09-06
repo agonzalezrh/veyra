@@ -780,6 +780,253 @@ wait_for_log "$TMP_DIR/veyra.log" "taskbar: switch workspace" 5
 assert_log "$TMP_DIR/veyra.log" "switched workspace" "t21i: taskbar switched workspace"
 wait_process_exit $T21IA_PID 12
 
+# ── G-B2: drag-and-drop (wl_data_device) ─────────────────────────────
+# Real protocol DnD between two raw clients. Target selection reuses
+# the SAME 3D spatial picking as normal input (pick_wayland_target →
+# Scene.pick_visible): a moved window's drag target follows its world
+# transform. Window screen centers are parsed from veyra's "surface
+# mapped" logs (pos = world center; ortho world→screen is 1:1: sx =
+# WIN_W/2 + x, sy = WIN_H/2 - y). xdotool mousedown/mouseup bracket the
+# drag: press → client start_drag (implicit-grab serial) → motion →
+# enter/motion/leave offers → release → drop negotiation.
+
+# Screen center of the last window mapped with the given app_id.
+win_screen_center() { # app_id -> echoes "sx sy" (empty on miss)
+    strip_ansi "$TMP_DIR/veyra.log" | grep "surface mapped" | grep "app_id=$1" | tail -1 \
+        | python3 -c "
+import sys, re
+line = sys.stdin.read()
+m = re.search(r'pos=Vector3 \[([^,]+), ([^,\]]+)', line)
+if not m: sys.exit(1)
+x, y = float(m.group(1)), float(m.group(2))
+print(int($WIN_W / 2 + x), int($WIN_H / 2 - y))
+"
+}
+
+say "t22i_dnd_happy_path"
+DISPLAY=:99 xdotool key Escape   # pin camera (ResetCamera) for 1:1 ortho
+sleep 0.5
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" dnd \
+    --role source --mime text/plain --payload "veyra-drag-payload" --duration 12000 \
+    > "$TMP_DIR/t22i_src.json" 2>"$TMP_DIR/t22i_src.err" &
+T22I_SRC_PID=$!
+sleep 1.5
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" dnd \
+    --role dest --mime text/plain --duration 12000 \
+    > "$TMP_DIR/t22i_dst.json" 2>"$TMP_DIR/t22i_dst.err" &
+T22I_DST_PID=$!
+sleep 1.5
+SRC_POS=$(win_screen_center dnd-source)
+DST_POS=$(win_screen_center dnd-dest)
+if [ -n "$SRC_POS" ] && [ -n "$DST_POS" ]; then
+    ok "t22i: dnd windows mapped at known world positions"
+    SRC_X=${SRC_POS% *}; SRC_Y=${SRC_POS#* }
+    DST_X=${DST_POS% *}; DST_Y=${DST_POS#* }
+    # Press on source content (center, below the title strip).
+    DISPLAY=:99 xdotool mousemove $((SRC_X)) $((SRC_Y+20)) mousedown 1
+    sleep 0.4
+    wait_for_log "$TMP_DIR/veyra.log" "dnd: client drag started" 5
+    ok "t22i: compositor observed client drag start"
+    # Move onto the dest in steps (enter fires on the first landing).
+    DISPLAY=:99 xdotool mousemove $((SRC_X+(DST_X-SRC_X)/2)) $((SRC_Y+20+(DST_Y-SRC_Y)/2))
+    sleep 0.2
+    DISPLAY=:99 xdotool mousemove $((DST_X)) $((DST_Y+20))
+    sleep 0.5
+    # Release over the dest content: drop must be negotiated + delivered.
+    DISPLAY=:99 xdotool mouseup 1
+    sleep 2
+    assert_json "$TMP_DIR/t22i_dst.json" \
+        "any(e['ev']=='dnd_enter' for e in events)" \
+        "t22i: dest received wl_data_device.enter"
+    assert_json "$TMP_DIR/t22i_dst.json" \
+        "any(e['ev']=='dnd_mime' and e['mime']=='text/plain' for e in events)" \
+        "t22i: dest offer advertises text/plain"
+    assert_json "$TMP_DIR/t22i_dst.json" \
+        "any(e['ev']=='dnd_motion' for e in events)" \
+        "t22i: dest received motion while dragging"
+    assert_json "$TMP_DIR/t22i_dst.json" \
+        "any(e['ev']=='dnd_drop' for e in events)" \
+        "t22i: dest received the drop"
+    assert_json "$TMP_DIR/t22i_dst.json" \
+        "any(e['ev']=='dnd_data' and e['payload']=='veyra-drag-payload' for e in events)" \
+        "t22i: dest received the transferred payload"
+    assert_json "$TMP_DIR/t22i_src.json" \
+        "any(e['ev']=='dnd_drag_started' for e in events)" \
+        "t22i: source started the drag on button press"
+    assert_json "$TMP_DIR/t22i_src.json" \
+        "any(e['ev']=='dnd_send' for e in events)" \
+        "t22i: source served the send request"
+    assert_json "$TMP_DIR/t22i_src.json" \
+        "any(e['ev']=='dnd_drop_performed' for e in events)" \
+        "t22i: source observed drop performed"
+    assert_json "$TMP_DIR/t22i_src.json" \
+        "any(e['ev']=='dnd_finished' for e in events)" \
+        "t22i: source observed dnd_finished (validated drop)"
+    assert_log "$TMP_DIR/veyra.log" "dnd: drop finished" "t22i: compositor logged the drop"
+else
+    skip "t22i: dnd window positions not parsed from log"
+fi
+wait_process_exit $T22I_SRC_PID 16
+wait_process_exit $T22I_DST_PID 16
+
+say "t23i_dnd_cancel_and_reuse"
+# Release over EMPTY space: the drop is unvalidated — source cancelled,
+# dest never sees a drop. A subsequent identical drag must still work
+# (proves no stale grab survives the cancel path).
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" dnd \
+    --role source --mime text/plain --payload "cancel-me" --duration 30000 \
+    > "$TMP_DIR/t23i_src.json" 2>"$TMP_DIR/t23i_src.err" &
+T23I_SRC_PID=$!
+sleep 1.5
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" dnd \
+    --role dest --mime text/plain --duration 30000 \
+    > "$TMP_DIR/t23i_dst.json" 2>"$TMP_DIR/t23i_dst.err" &
+T23I_DST_PID=$!
+sleep 1.5
+SRC_POS=$(win_screen_center dnd-source)
+DST_POS=$(win_screen_center dnd-dest)
+if [ -n "$SRC_POS" ] && [ -n "$DST_POS" ]; then
+    SRC_X=${SRC_POS% *}; SRC_Y=${SRC_POS#* }
+    DST_X=${DST_POS% *}; DST_Y=${DST_POS#* }
+    # Cancelled drag: press, cross the dest (enter+leave), release on empty.
+    DISPLAY=:99 xdotool mousemove $((SRC_X)) $((SRC_Y+20)) mousedown 1
+    sleep 0.4
+    DISPLAY=:99 xdotool mousemove $((DST_X)) $((DST_Y+20))
+    sleep 0.4
+    DISPLAY=:99 xdotool mousemove 60 60
+    sleep 0.4
+    DISPLAY=:99 xdotool mouseup 1
+    sleep 1.5
+    assert_json "$TMP_DIR/t23i_dst.json" \
+        "any(e['ev']=='dnd_enter' for e in events)" \
+        "t23i: dest saw the enter before the leave"
+    assert_json "$TMP_DIR/t23i_dst.json" \
+        "any(e['ev']=='dnd_leave' for e in events)" \
+        "t23i: dest received leave when the cursor moved off"
+    if grep -qF '"ev":"dnd_drop"' "$TMP_DIR/t23i_dst.json"; then
+        bad "t23i: dest received a drop from an empty-space release"
+    else
+        ok "t23i: no drop delivered on empty-space release"
+    fi
+    assert_json "$TMP_DIR/t23i_src.json" \
+        "any(e['ev']=='dnd_cancelled' for e in events)" \
+        "t23i: source saw the drag cancelled"
+    # Reuse: an identical drag right after must still deliver (no stale
+    # grab, no stuck offer state).
+    DISPLAY=:99 xdotool mousemove $((SRC_X)) $((SRC_Y+20)) mousedown 1
+    sleep 0.4
+    DISPLAY=:99 xdotool mousemove $((DST_X)) $((DST_Y+20))
+    sleep 0.5
+    DISPLAY=:99 xdotool mouseup 1
+    sleep 2
+    assert_json "$TMP_DIR/t23i_dst.json" \
+        "any(e['ev']=='dnd_data' and e['payload']=='cancel-me' for e in events)" \
+        "t23i: drag works again after a cancelled drag (no stale state)"
+else
+    skip "t23i: dnd window positions not parsed from log"
+fi
+wait_process_exit $T23I_SRC_PID 16
+wait_process_exit $T23I_DST_PID 16
+
+say "t24i_dnd_target_change_and_moved_window"
+# Enter dest, leave to empty, re-enter (target change), drop. Then move
+# the DEST window by its title bar and drop onto its NEW position —
+# the spatial pick must follow the world transform.
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" dnd \
+    --role source --mime text/plain --payload "moved-target" --duration 30000 \
+    > "$TMP_DIR/t24i_src.json" 2>"$TMP_DIR/t24i_src.err" &
+T24I_SRC_PID=$!
+sleep 1.5
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" dnd \
+    --role dest --mime text/plain --duration 30000 \
+    > "$TMP_DIR/t24i_dst.json" 2>"$TMP_DIR/t24i_dst.err" &
+T24I_DST_PID=$!
+sleep 1.5
+SRC_POS=$(win_screen_center dnd-source)
+DST_POS=$(win_screen_center dnd-dest)
+if [ -n "$SRC_POS" ] && [ -n "$DST_POS" ]; then
+    SRC_X=${SRC_POS% *}; SRC_Y=${SRC_POS#* }
+    DST_X=${DST_POS% *}; DST_Y=${DST_POS#* }
+    # enter → leave → re-enter → drop.
+    DISPLAY=:99 xdotool mousemove $((SRC_X)) $((SRC_Y+20)) mousedown 1
+    sleep 0.4
+    DISPLAY=:99 xdotool mousemove $((DST_X)) $((DST_Y+20))
+    sleep 0.4
+    DISPLAY=:99 xdotool mousemove 60 60
+    sleep 0.4
+    DISPLAY=:99 xdotool mousemove $((DST_X)) $((DST_Y+20))
+    sleep 0.5
+    DISPLAY=:99 xdotool mouseup 1
+    sleep 2
+    ENTERS=$(grep -cF '"ev":"dnd_enter"' "$TMP_DIR/t24i_dst.json")
+    if [ "$ENTERS" -ge 2 ]; then
+        ok "t24i: dest re-entered after target change (2+ enters)"
+    else
+        bad "t24i: expected 2+ enters after leave/re-enter, got $ENTERS"
+    fi
+    assert_json "$TMP_DIR/t24i_dst.json" \
+        "any(e['ev']=='dnd_data' and e['payload']=='moved-target' for e in events)" \
+        "t24i: drop delivered after target change"
+    # Move the dest window 80px left by its title bar, then drag onto
+    # the moved position: the DnD target must follow the transform.
+    DISPLAY=:99 xdotool mousemove $((DST_X)) $((DST_Y-110)) mousedown 1
+    sleep 0.3
+    DISPLAY=:99 xdotool mousemove $((DST_X-80)) $((DST_Y-110))
+    sleep 0.3
+    DISPLAY=:99 xdotool mouseup 1
+    sleep 0.6
+    DISPLAY=:99 xdotool mousemove $((SRC_X)) $((SRC_Y+20)) mousedown 1
+    sleep 0.4
+    DISPLAY=:99 xdotool mousemove $((DST_X-80)) $((DST_Y+20))
+    sleep 0.5
+    DISPLAY=:99 xdotool mouseup 1
+    sleep 2
+    assert_json "$TMP_DIR/t24i_dst.json" \
+        "any(e['ev']=='dnd_data' and e['payload']=='moved-target' for e in events) and sum(1 for e in events if e['ev']=='dnd_data')>=2" \
+        "t24i: drop lands on the window at its MOVED position (spatial pick)"
+else
+    skip "t24i: dnd window positions not parsed from log"
+fi
+wait_process_exit $T24I_SRC_PID 16
+wait_process_exit $T24I_DST_PID 16
+
+say "t25i_dnd_source_death_cleanup"
+# Kill the source mid-drag: the compositor must abort the grab (no
+# stale drag state) and survive.
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" dnd \
+    --role source --mime text/plain --payload "dead-source" --duration 12000 \
+    > "$TMP_DIR/t25i_src.json" 2>"$TMP_DIR/t25i_src.err" &
+T25I_SRC_PID=$!
+sleep 1.5
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" dnd \
+    --role dest --mime text/plain --duration 8000 \
+    > "$TMP_DIR/t25i_dst.json" 2>"$TMP_DIR/t25i_dst.err" &
+T25I_DST_PID=$!
+sleep 1.5
+SRC_POS=$(win_screen_center dnd-source)
+DST_POS=$(win_screen_center dnd-dest)
+if [ -n "$SRC_POS" ] && [ -n "$DST_POS" ]; then
+    SRC_X=${SRC_POS% *}; SRC_Y=${SRC_POS#* }
+    DST_X=${DST_POS% *}; DST_Y=${DST_POS#* }
+    DISPLAY=:99 xdotool mousemove $((SRC_X)) $((SRC_Y+20)) mousedown 1
+    sleep 0.4
+    DISPLAY=:99 xdotool mousemove $((DST_X)) $((DST_Y+20))
+    sleep 0.4
+    kill -9 $T25I_SRC_PID 2>/dev/null
+    sleep 1.5
+    assert_log "$TMP_DIR/veyra.log" "dnd: grab cancelled" \
+        "t25i: source death aborted the drag grab"
+    # The compositor must still be alive and processing input.
+    DISPLAY=:99 xdotool mousemove $((DST_X)) $((DST_Y+20)) click 1
+    wait_for_log "$TMP_DIR/veyra.log" "focus history updated" 5
+    ok "t25i: compositor alive and interactive after source death"
+    DISPLAY=:99 xdotool mouseup 1 2>/dev/null
+else
+    skip "t25i: dnd window positions not parsed from log"
+    kill -9 $T25I_SRC_PID 2>/dev/null
+fi
+wait_process_exit $T25I_DST_PID 12
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"
