@@ -5,6 +5,16 @@ graphical session. All assertions are on **Wayland protocol behavior**
 (client JSON event logs, compositor logs) — never screenshots or
 timing sleeps.
 
+Exception: `visual_check` (input suite) POSTs a captured PNG straight
+to a local vision endpoint (`scripts/visual_check.py`, default: the
+vLLM server from `~/.config/opencode/opencode.json`) and asserts on
+the returned text verdict only. Screenshots never enter any
+interactive AI agent's prompt context — providers cap images per
+prompt, so a session that reads them directly dies after 4. Endpoint
+overrides: `VEYRA_VLM_URL`/`VEYRA_VLM_KEY`/`VEYRA_VLM_MODEL`;
+disable with `VEYRA_VISUAL=0` (infrastructure failures degrade to
+SKIP, real visual FAILs count as test failures).
+
 ## Architecture
 
 Two stacks, both fully headless:
@@ -70,9 +80,10 @@ client-kit pointer  [--duration MS]
 
 ## Known limitations
 
-- Pixel output on Xvfb/llvmpipe renders only the clear color (input and
-  protocol paths are unaffected). Visual/screenshot testing belongs on
-  real hardware (laptop) per the test matrix.
+- Xvfb/llvmpipe rendering is software-only (no GPU), but window chrome
+  and the taskbar do render — verified by `visual_check` in the input
+  suite. Photographic-quality/GPU visual testing belongs on real
+  hardware (laptop) per the test matrix.
 - Chromium smoke test not yet included (not installed on this server).
 - VKMS/DRM-native path deferred (needs DRM device enumeration, seatd,
   uinput injection) — see the capability report.

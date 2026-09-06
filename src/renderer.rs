@@ -188,6 +188,15 @@ unsafe fn draw_text_in_window(
 
     let stride = 4 * std::mem::size_of::<f32>() as i32;
     gl.UseProgram(draw.program);
+    // Depth-only pull toward the camera: glyph fragments beat their
+    // own window quad on the depth tie (drawn after it at the same
+    // plane), while genuinely-closer windows still occlude them —
+    // a behind-window's title can no longer bleed through the window
+    // in front. Position is untouched: chrome stays glued to the
+    // window plane. Scope: the whole window-chrome run; the menu's
+    // screen-space draw_text runs with depth disabled anyway.
+    gl.Enable(ffi::POLYGON_OFFSET_FILL);
+    gl.PolygonOffset(0.0, -1.0);
     gl.Uniform1f(draw.u_selected, 0.0);
     gl.Uniform1f(draw.u_focused, 0.0);
     gl.Uniform1f(draw.u_title_h, 0.0);
@@ -203,6 +212,10 @@ unsafe fn draw_text_in_window(
     // (gw, gh, 1), so model x = px_x / gw, y = px_y / gh, z = px_z.
     let to_model_x = 1.0 / gw.max(1.0);
     let to_model_y = 1.0 / gh.max(1.0);
+    // Chrome glyphs stay ON the window's plane (no z displacement — a
+    // displaced glyph is depth-closer than every other window at that
+    // plane, so titles bled through windows in front). Occlusion ties
+    // are resolved with a depth-only polygon offset below.
     for (i, ch) in text.chars().enumerate() {
         let code = ch as u32;
         if !(32..=128).contains(&code) { continue; }
@@ -232,10 +245,7 @@ unsafe fn draw_text_in_window(
         let glyph_local = Matrix4::from_translation(cgmath::Vector3::new(
             cx * to_model_x,
             y_center_px * to_model_y,
-            // +z is TOWARD the camera (camera sits at +z looking down -z):
-            // glyphs must be slightly IN FRONT of the window quad or the
-            // depth test discards them (they are drawn after it).
-            0.5,
+            0.0,
         )) * Matrix4::from_nonuniform_scale(
             char_w_px * to_model_x,
             char_h_px * to_model_y,
@@ -252,6 +262,8 @@ unsafe fn draw_text_in_window(
         gl.DisableVertexAttribArray(draw.a_pos);
         gl.DisableVertexAttribArray(draw.a_uv);
     }
+
+    gl.Disable(ffi::POLYGON_OFFSET_FILL);
 
     // Restore main VBO
     let verts: [f32; 16] = [
@@ -1045,6 +1057,7 @@ pub fn render_scene(
             };
 
             let bar_y = h - tb.bar_h;
+            eprintln!("TB_DRAW w={} h={} bar_h={} items={} bar_y={}", w, h, tb.bar_h, tb.items.len(), bar_y);
             // Bar background + top hairline.
             solid_rect(0.0, bar_y, w, tb.bar_h, 0.10, 0.11, 0.12, 0.97);
             solid_rect(0.0, bar_y, w, 1.0, 0.28, 0.30, 0.32, 0.9);
@@ -1082,6 +1095,7 @@ pub fn render_scene(
                 draw_text(gl, draw, &it.label, text_x, text_y, cw, ch, text_color.0, text_color.1, text_color.2);
             }
 
+            eprintln!("TB_ERR gl={:x}", gl.GetError());
             gl.Enable(ffi::DEPTH_TEST);
             gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
         });

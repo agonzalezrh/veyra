@@ -10,6 +10,7 @@ mod config;
 mod context_menu;
 mod client_resize;
 mod closed;
+mod debug_journal;
 mod dmabuf;
 mod drm_backend;
 mod focus;
@@ -64,6 +65,7 @@ use smithay::wayland::socket::ListeningSocketSource;
 use tracing_subscriber::EnvFilter;
 
 fn main() {
+    crate::debug_journal::init_from_env();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -95,7 +97,33 @@ fn main() {
     let (backend, winit_source) =
         winit::init::<GlesRenderer>().expect("Failed to initialize winit backend");
 
+    // Clamp the nested window to the output. Smithay's default winit
+    // window is 1280x800; on smaller outputs (e.g. the harness's
+    // 1280x720 Xvfb screen) the overflow renders the shell taskbar —
+    // and the bottom of the framebuffer — off-screen, while the
+    // compositor's default window_size (1280x720) silently disagrees
+    // with the actual GL viewport.
+    if let Some(monitor) = backend.window().current_monitor() {
+        let ms = monitor.size();
+        let win = backend.window().inner_size();
+        if win.width > ms.width || win.height > ms.height {
+            backend
+                .window()
+                .request_inner_size(smithay::reexports::winit::dpi::PhysicalSize::new(
+                    ms.width, ms.height,
+                ));
+            tracing::info!(monitor_w = ms.width, monitor_h = ms.height, "clamped nested window to output size");
+        }
+    }
+    let initial_size = backend.window_size();
+
     let mut state = LookingGlass::new(&display_handle, Box::new(WinitPresentationBackend(backend)), config.clone());
+    // Trust the actual winit window over the struct default: without a
+    // WM (raw Xvfb) no Resized event may arrive, leaving window_size
+    // stale and desynchronizing projection, input mapping, and the
+    // shell plane from the real framebuffer.
+    state.window_size = (initial_size.w as f32, initial_size.h as f32);
+    tracing::info!(window_size = ?state.window_size, "render size");
 
     // Handle --native flag: construct DrmGraphicsBackend instead
     if use_native {

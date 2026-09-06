@@ -744,6 +744,11 @@ XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-ki
     --duration 14000 > "$TMP_DIR/t21ib.json" 2>/dev/null &
 T21IB_PID=$!
 sleep 1.5
+# Visual evidence: the taskbar with two window buttons + labels.
+capture "$TMP_DIR/t21i_taskbar.png"
+visual_check "$TMP_DIR/t21i_taskbar.png" \
+    "Is there a horizontal taskbar/panel along the bottom edge of the screen containing two window buttons?" \
+    "t21i: taskbar renders with two window buttons"
 # Activate A (not focused): taskbar routes to the focus coordinator.
 DISPLAY=:99 xdotool mousemove 360 702 click 1
 wait_for_log "$TMP_DIR/veyra.log" "taskbar: activate window" 5

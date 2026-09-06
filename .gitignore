@@ -1,1 +1,4 @@
 /target/
+
+# Manual-run artifacts (harness writes to its own tmp dir)
+/*.log

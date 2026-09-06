@@ -628,13 +628,13 @@ impl LookingGlass {
         });
         let Some(wl_buffer) = wl_buffer else { return };
         // Damage must fit the buffer being imported: race-resized clients
-        // report damage in previous-buffer coordinates (see sanitize_damage).
-        let last_size = if is_popup {
-            self.popups.iter().find(|p| p.wl_surface == *surface).and_then(|p| p.size)
-        } else {
-            self.toplevels.iter().find(|t| t.toplevel.wl_surface() == surface).and_then(|t| t.size)
-        };
-        let damage = Self::sanitize_damage(damage, last_size);
+        // report damage in previous-buffer coordinates. Clamping against
+        // the CURRENT buffer's dimensions (not the last committed size —
+        // on a shrink 464→432 the stale bound let a 464-tall damage
+        // upload into the 432-tall texture: GL_INVALID_VALUE spam).
+        let buf_size = smithay::backend::renderer::buffer_dimensions(&wl_buffer)
+            .map(|s| (s.w, s.h));
+        let damage = Self::sanitize_damage(damage, buf_size);
 
         if let Some(backend) = self.backend.as_mut() {
             let renderer = backend.renderer();
@@ -847,16 +847,13 @@ impl LookingGlass {
                                 self.wayland_surfaces.insert(visual_id, surface.clone());
                                 self.scene.add(visual);
                                 self.workspace_manager.active_mut().add(visual_id);
-                                // J1-fix: if the freshly placed row extends
-                                // past the visible frustum, zoom the CAMERA
-                                // out to frame the workspace row (camera-only
-                                // operation; visual transforms untouched).
-                                // 2D normal mode only — spatial navigation
-                                // owns its own camera.
-                                if !self.spatial_mode
-                                    && restored.is_none()
-                                    && reopened.is_none()
-                                {
+                                // J1-fix: frame whatever is now on the
+                                // active workspace — including restored
+                                // windows, which keep their persisted
+                                // transforms and may sit outside the
+                                // current view (the "sometimes cut"
+                                // report). Camera-only, zoom-out-only.
+                                if !self.spatial_mode {
                                     self.auto_fit_camera();
                                 }
                                 // Reopen targets a specific workspace: move the
@@ -885,6 +882,13 @@ impl LookingGlass {
                                        total_h = map_total_h,
                                        scale = ?map_scale,
                                        "surface mapped");
+                                crate::debug_journal::event("map", &[
+                                    ("vid", crate::debug_journal::d(visual_id)),
+                                    ("app", crate::debug_journal::s(&self.toplevels[idx].app_id)),
+                                    ("pos", format!("{:?}", map_pos)),
+                                    ("size", format!("[{},{}]", map_total_w, map_total_h)),
+                                ]);
+                                self.debug_snapshot();
                             }
                         }
                     } else if let Some(vid) = existing_vid {
@@ -1314,6 +1318,10 @@ impl LookingGlass {
             if self.toplevels.iter().any(|t| t.visual_id == Some(vid)) {
                 self.focus_history.touch(vid);
                 info!(?vid, order = ?self.focus_history.order(), "focus history updated");
+                crate::debug_journal::event("focus", &[
+                    ("vid", crate::debug_journal::d(vid)),
+                    ("mru", crate::debug_journal::d(self.focus_history.order())),
+                ]);
             }
         }
 
@@ -1366,14 +1374,54 @@ impl LookingGlass {
         layout::VisibleBounds::for_camera(dist, 45.0, aspect)
     }
 
+    /// Emit a full window-table snapshot to the debug journal (if
+    /// enabled). Cheap enough to call after every state transition.
+    fn debug_snapshot(&self) {
+        if !crate::debug_journal::enabled() {
+            return;
+        }
+        let rows: Vec<crate::debug_journal::WindowRow> = self
+            .scene
+            .visuals
+            .iter()
+            .map(|v| {
+                let info = self.toplevels.iter().find(|t| t.visual_id == Some(v.id));
+                crate::debug_journal::WindowRow {
+                    vid: v.id,
+                    app_id: info.map(|t| t.app_id.clone()).unwrap_or_default(),
+                    title: v.chrome.title.clone(),
+                    workspace: self.workspace_for_visual(v.id),
+                    pos: (
+                        v.transform.position.x,
+                        v.transform.position.y,
+                        v.transform.position.z,
+                    ),
+                    size: (v.total_width(), v.total_height()),
+                    focused: self.scene.focused_id == Some(v.id),
+                    minimized: v.window_state == crate::scene::WindowState::Minimized,
+                    maximized: info.map(|t| t.maximized).unwrap_or(false),
+                    fullscreen: info.map(|t| t.fullscreened).unwrap_or(false),
+                }
+            })
+            .collect();
+        crate::debug_journal::snapshot(
+            &rows,
+            self.scene.focused_id,
+            self.workspace_manager.active_id(),
+            self.camera.position.z,
+        );
+    }
+
     /// J4: assemble the taskbar model for this frame from live state —
-    /// window buttons in MRU order, workspace buttons, launcher pins.
-    /// Pure projection of existing state; the shell owns nothing.
+    /// window buttons in STABLE map order (not MRU: the order must not
+    /// jump when a window is selected — physical feedback), workspace
+    /// buttons, launcher pins. Pure projection of existing state; the
+    /// shell owns nothing.
     fn build_taskbar(&self) -> crate::shell::TaskbarLayout {
         let (w, h) = self.window_size;
-        // Window buttons: MRU order first (focus history), then any
-        // toplevel windows the history does not know about, on the
-        // ACTIVE workspace only.
+        // Window buttons: STABLE map order (toplevel registration
+        // order), active workspace only. Selection is communicated by
+        // highlighting, never by reordering.
         let ws_ids = self.workspace_manager.active().visual_ids.clone();
         let label_of = |vid: VisualId| -> String {
             self.toplevels
@@ -1385,17 +1433,11 @@ impl LookingGlass {
                 })
                 .unwrap_or_else(|| "window".to_string())
         };
-        let mut order: Vec<VisualId> = Vec::new();
-        for vid in self.focus_history.order() {
-            if ws_ids.contains(vid) && self.toplevels.iter().any(|t| t.visual_id == Some(*vid)) {
-                order.push(*vid);
-            }
-        }
-        for vid in &ws_ids {
-            if !order.contains(vid) && self.toplevels.iter().any(|t| t.visual_id == Some(*vid)) {
-                order.push(*vid);
-            }
-        }
+        let order: Vec<VisualId> = ws_ids
+            .iter()
+            .filter(|vid| self.toplevels.iter().any(|t| t.visual_id == Some(**vid)))
+            .copied()
+            .collect();
         let windows: Vec<(VisualId, String, bool, bool)> = order
             .iter()
             .map(|vid| {
@@ -1441,11 +1483,13 @@ impl LookingGlass {
                 // on the title-bar button and the keyboard.
                 if self.is_minimized(vid) {
                     info!(?vid, "taskbar: restore window");
+                    crate::debug_journal::event("taskbar_restore", &[("vid", crate::debug_journal::d(vid))]);
                     self.restore_minimized(vid, crate::maximize::MinimizeSource::Compositor);
                 } else if self.scene.focused_id == Some(vid) {
                     info!(?vid, "taskbar: already focused");
                 } else {
                     info!(?vid, "taskbar: activate window");
+                    crate::debug_journal::event("taskbar_activate", &[("vid", crate::debug_journal::d(vid))]);
                     self.scene.select(Some(vid));
                     self.scene.bring_to_front(vid);
                     self.set_keyboard_focus(Some(vid));
@@ -1454,6 +1498,7 @@ impl LookingGlass {
             }
             crate::shell::TaskbarHit::Workspace(idx) => {
                 info!(workspace = idx, "taskbar: switch workspace");
+                crate::debug_journal::event("taskbar_workspace", &[("to", idx.to_string())]);
                 if idx != self.workspace_manager.active_id() {
                     self.switch_workspace(idx);
                 }
@@ -2425,6 +2470,8 @@ impl LookingGlass {
         }
         self.scene.set_minimized(vid, true);
         info!(?vid, ?source, "minimize applied");
+        crate::debug_journal::event("minimize", &[("vid", crate::debug_journal::d(vid))]);
+        self.debug_snapshot();
 
         // J1: the minimized window leaves the application MRU immediately
         // (acceptance table: minimize A → MRU drops A). Entries are
@@ -2489,6 +2536,8 @@ impl LookingGlass {
         self.scene.focus(Some(vid));
         self.set_keyboard_focus(Some(vid));
         info!(?vid, ?source, "minimize restored");
+        crate::debug_journal::event("restore", &[("vid", crate::debug_journal::d(vid))]);
+        self.debug_snapshot();
         self.schedule_render();
     }
 
@@ -3252,6 +3301,10 @@ impl LookingGlass {
         };
         self.set_keyboard_focus(focus_target);
         info!(workspace = idx, old = old_id, restored = ?focus_target, "switched workspace");
+        crate::debug_journal::event("workspace", &[
+            ("to", idx.to_string()), ("from", old_id.to_string()),
+        ]);
+        self.debug_snapshot();
         // J4 follow-up: a workspace whose saved camera cannot show its
         // row (e.g. a window moved here from another workspace) must
         // still be readable after the switch.

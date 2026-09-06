@@ -129,6 +129,32 @@ start_weston_headless() { # socket_name
 }
 
 strip_ansi() { sed 's/\x1b\[[0-9;]*m//g' "$1" 2>/dev/null; }
+capture() { # file_path — grab the Xvfb framebuffer (input suite only)
+    DISPLAY=:99 timeout 5 import -window root "$1" 2>/dev/null && \
+        echo "  [harness] captured $1"
+}
+
+# Visual assertion through an out-of-band vision model: the PNG is
+# POSTed straight to the local vLLM endpoint and only the text verdict
+# returns, so screenshots never enter an interactive agent's prompt
+# context (providers cap images per prompt; a session with >4 dies).
+# Infrastructure problems degrade to SKIP — log assertions remain the
+# source of truth. Disable with VEYRA_VISUAL=0.
+visual_check() { # png_path question message
+    local png="$1" question="$2" msg="$3"
+    if [ "${VEYRA_VISUAL:-1}" != "1" ]; then
+        skip "$msg (visual checks disabled)"
+        return 0
+    fi
+    local out
+    out=$(timeout 150 python3 "$HARNESS_DIR/../scripts/visual_check.py" \
+        "$png" "$question" 2>&1)
+    case "$out" in
+        PASS*) ok "$msg [visual]" ;;
+        FAIL*) bad "$msg [visual] ($out)" ;;
+        *)     skip "$msg [visual] (${out:-no output})" ;;
+    esac
+}
 
 start_veyra_nested() { # parent_socket log_file
     setup_veerya_runtime
