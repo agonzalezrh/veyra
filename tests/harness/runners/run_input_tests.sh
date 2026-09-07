@@ -1027,6 +1027,123 @@ else
 fi
 wait_process_exit $T25I_DST_PID 12
 
+# ── G-B1: real-client clipboard (foot) ───────────────────────────────
+# Direction 1: client sets the clipboard → foot (real Wayland client)
+# pastes it via ctrl+shift+v; verified through the out-of-band visual
+# channel. Direction 2: foot copies a typed word (double-click select +
+# ctrl+shift+c) → the clip client reads the payload AND the exact MIME
+# set a real toolkit advertises.
+say "tcfoot_clipboard_real_client"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode set --mimes "text/plain,text/plain;charset=utf-8" --payload "VEYRA_CLIP_FOOT" --duration 30000 \
+    > "$TMP_DIR/tcfoot_set.json" 2>"$TMP_DIR/tcfoot_set.err" &
+TCFOOT_SET_PID=$!
+sleep 1.5
+if ! command -v foot >/dev/null 2>&1; then
+    skip "tcfoot: foot not installed (optional real-client verification)"
+    wait_process_exit $TCFOOT_SET_PID 12
+else
+    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" \
+        foot --log-level=info --window-size-pixels=640x480 > "$TMP_DIR/tcfoot1.log" 2>&1 &
+    TCFOOT1_PID=$!
+    sleep 2.5
+    # Diagnostic: a late-binding client maps and thereby triggers the
+    # compositor's selection refresh (map path) — this guarantees BOTH
+    # the diagnostic client AND foot hold an offer for the current
+    # clipboard. It runs BEFORE the paste so it cannot steal the
+    # keystroke.
+    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+        --mode paste --mimes "text/plain" --duration 15000 \
+        > "$TMP_DIR/tcfoot_diag.json" 2>"$TMP_DIR/tcfoot_diag.err" &
+    TCFOOT_DIAG_PID=$!
+    sleep 2
+    assert_json "$TMP_DIR/tcfoot_diag.json" \
+        "any(e['ev']=='clip_data' and e['payload']=='VEYRA_CLIP_FOOT' for e in events)" \
+        "tcfoot: late-binding client sees the current clipboard"
+    # Keystroke-forwarding diagnostic: the keyboard client logs keys +
+    # modifiers. NOTE: earlier maximize tests (t10/t11/t12b) leave a
+    # STUCK META modifier (BUG_LIST P3 #16 — duplicated XTEST input),
+    # so reset modifiers first; without the reset clients see
+    # Super+Ctrl+Shift+V and app keybindings never match.
+    DISPLAY=:99 xdotool keyup super alt ctrl shift 2>/dev/null
+    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" keyboard \
+        --duration 4000 > "$TMP_DIR/tcfoot_keys.json" 2>"$TMP_DIR/tcfoot_keys.err" &
+    TCFOOT_KB_PID=$!
+    sleep 1.5
+    DISPLAY=:99 xdotool key --clearmodifiers ctrl+shift+v
+    sleep 1
+    wait_process_exit $TCFOOT_KB_PID 8
+    assert_json "$TMP_DIR/tcfoot_keys.json" \
+        "any(e['ev']=='key' and e.get('char')=='\u0016' for e in events)" \
+        "tcfoot: ctrl+shift+v forwarded to the focused client"
+    # Foot UI verification depends on a clean modifier state — blocked
+    # by BUG_LIST #16 (stuck META modifier from the maximize tests'
+    # duplicated XTEST input). Once #16 is fixed these assertions run
+    # for real; until then they are skipped with that reason.
+    LOGO_STUCK=$(grep -c '"logo":true' "$TMP_DIR/tcfoot_keys.json" || true)
+    if [ "$LOGO_STUCK" -gt 0 ]; then
+        skip "tcfoot: foot paste/copy UI blocked by BUG_LIST #16 (stuck META modifier; mechanism verified via raw clients)"
+    else
+        ok "tcfoot: modifier state clean (BUG_LIST #16 resolved?)"
+        # Refocus foot (click its content center) and paste.
+        DISPLAY=:99 xdotool mousemove 940 380 click 1
+        sleep 0.5
+        DISPLAY=:99 xdotool key --clearmodifiers ctrl+shift+v
+        sleep 1.2
+        capture "$TMP_DIR/tcfoot_paste.png"
+        visual_check "$TMP_DIR/tcfoot_paste.png" \
+            "Does this screenshot show a terminal window containing the text VEYRA_CLIP_FOOT?" \
+            "tcfoot: foot pasted the compositor clipboard"
+    fi
+    wait_process_exit $TCFOOT_DIAG_PID 15
+    kill $TCFOOT1_PID 2>/dev/null; wait $TCFOOT1_PID 2>/dev/null
+
+    # Direction 2: foot → compositor → clip client.
+    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" \
+        foot --log-level=info --override=mouse.selection-target=clipboard \
+        --window-size-pixels=640x480 > "$TMP_DIR/tcfoot2.log" 2>&1 &
+    TCFOOT2_PID=$!
+    sleep 2.5
+    # foot copies via mouse selection with mouse.selection-target=
+    # clipboard (any selection auto-copies to the clipboard). Double-
+    # click the typed word: foot2 maps as the sole window (world (0,0)
+    # → screen center 640,360); the VLM-calibrated word position is
+    # (475,153) — content left + prompt width, first grid line under
+    # foot's CSD header.
+    DISPLAY=:99 xdotool type "hello-clip"
+    sleep 0.5
+    FOOT_POS=$(win_screen_center foot)
+    LOGO_STUCK2=$(grep -c '"logo":true' "$TMP_DIR/tcfoot_keys.json" || true)
+    if [ -n "$FOOT_POS" ] && [ "$LOGO_STUCK2" -eq 0 ]; then
+        FX=${FOOT_POS% *}; FY=${FOOT_POS#* }
+        DISPLAY=:99 xdotool keyup super alt ctrl shift 2>/dev/null
+        DISPLAY=:99 xdotool mousemove $((FX-165)) $((FY-207)) click --repeat 2 --delay 60 1
+        sleep 0.6
+        capture "$TMP_DIR/tcfoot_select.png"
+        visual_check "$TMP_DIR/tcfoot_select.png" \
+            "Is any text in the terminal visibly selected (highlighted or inverted colors)? Answer yes/no and say which word." \
+            "tcfoot: double-click selected the typed word"
+        XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+            --mode paste --mimes "text/plain" --duration 6000 \
+            > "$TMP_DIR/tcfoot_paste2.json" 2>"$TMP_DIR/tcfoot_paste2.err" &
+        TCFOOT_P2_PID=$!
+        sleep 3
+        assert_json "$TMP_DIR/tcfoot_paste2.json" \
+            "any(e['ev']=='clip_data' and 'hello-clip' in e.get('payload','') for e in events)" \
+            "tcfoot: foot clipboard copy reaches the clip client"
+        assert_json "$TMP_DIR/tcfoot_paste2.json" \
+            "len([e['mime'] for e in events if e['ev']=='clip_mime'])>=2" \
+            "tcfoot: foot advertises multiple MIME types (real-app set)"
+        wait_process_exit $TCFOOT_P2_PID 10
+    elif [ "$LOGO_STUCK2" -gt 0 ]; then
+        skip "tcfoot: foot copy direction blocked by BUG_LIST #16 (stuck META modifier)"
+    else
+        skip "tcfoot: foot window position not parsed; copy direction skipped"
+    fi
+    kill $TCFOOT2_PID 2>/dev/null; wait $TCFOOT2_PID 2>/dev/null
+    wait_process_exit $TCFOOT_SET_PID 12
+fi
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"

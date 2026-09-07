@@ -54,6 +54,7 @@ use smithay::wayland::shm::ShmState;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::SystemTime;
 
 use cgmath::Matrix4;
@@ -81,6 +82,18 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
+// G-B1 selection bookkeeping shared with `ClientData::disconnected`
+// (which has no LookingGlass access): who owns each selection, the
+// keyboard-focus client used to restore focus after the refresh, and
+// a flag requesting the dead-selection cleanup broadcast. The toggle
+// itself runs from the frame path — calling into smithay's seat state
+// from inside the client-destruction dispatch context killed the
+// compositor (re-entrant teardown).
+static SELECTION_OWNER_CLIPBOARD: Mutex<Option<Client>> = Mutex::new(None);
+static SELECTION_OWNER_PRIMARY: Mutex<Option<Client>> = Mutex::new(None);
+static KBD_FOCUS_CLIENT: Mutex<Option<Client>> = Mutex::new(None);
+static SELECTION_REFRESH_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[derive(Debug, Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
@@ -92,6 +105,29 @@ impl ClientData for ClientState {
     }
     fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
         info!(?client_id, ?reason, "client disconnected");
+        // G-B1: smithay does not clear a selection whose owning client
+        // disconnected — paste-receiving clients would keep a dead
+        // offer and hang waiting for data. If the owner just died,
+        // toggle the data-device/primary focus (None → current) to
+        // force smithay's dead-selection cleanup: the send_selection
+        // broadcast detects the dead source, clears the selection and
+        // sends Selection{null} to every device, then focus is
+        // restored so the focused client is re-offered the (empty)
+        // state.
+        let was_clipboard = SELECTION_OWNER_CLIPBOARD
+            .lock()
+            .unwrap()
+            .take_if(|c| c.id() == client_id)
+            .is_some();
+        let was_primary = SELECTION_OWNER_PRIMARY
+            .lock()
+            .unwrap()
+            .take_if(|c| c.id() == client_id)
+            .is_some();
+        if was_clipboard || was_primary {
+            SELECTION_REFRESH_PENDING.store(true, std::sync::atomic::Ordering::SeqCst);
+            info!(?client_id, "selection owner disconnected; refresh scheduled");
+        }
     }
 }
 
@@ -897,6 +933,18 @@ impl LookingGlass {
                                     ("size", format!("[{},{}]", map_total_w, map_total_h)),
                                 ]);
                                 self.debug_snapshot();
+                                // G-B1: a freshly mapped client may have
+                                // bound its data device just now — smithay
+                                // never sends the CURRENT selection to
+                                // newly registered devices. Schedule the
+                                // selection refresh so the new client
+                                // learns the active clipboard (the
+                                // broadcast must not run inside this
+                                // commit dispatch; see
+                                // ClientData::disconnected).
+                                SELECTION_REFRESH_PENDING
+                                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                                self.schedule_render();
                             }
                         }
                     } else if let Some(vid) = existing_vid {
@@ -1069,6 +1117,13 @@ impl LookingGlass {
 
     pub fn render(&mut self) {
         use crate::perf::PipelineStage;
+
+        // G-B1: flush a pending selection refresh (owner disconnect)
+        // before drawing — the toggle must NOT run inside the client
+        // destruction dispatch (see ClientData::disconnected).
+        if SELECTION_REFRESH_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.refresh_selection_state();
+        }
 
         // Always render to complete pending wl_surface.frame callbacks.
         // If nothing changed, begin_frame/render_scene/finish_frame are
@@ -1355,11 +1410,33 @@ impl LookingGlass {
 
     /// Update the data device focus to match the keyboard focus.
     /// This ensures clipboard/primary selection is offered to the correct client.
+    /// G-B1: force smithay to re-evaluate the clipboard/primary
+    /// selections. Smithay clears a selection whose source client died
+    /// during any selection broadcast (send_selection's alive check) —
+    /// toggling the data-device focus None → current triggers exactly
+    /// that broadcast: dead selections are cleared and every device
+    /// receives Selection{null}, then the focused client is re-offered
+    /// the current state.
+    fn refresh_selection_state(&mut self) {
+        let kbd = KBD_FOCUS_CLIENT.lock().unwrap().clone();
+        if let Some(ref seat) = self.seat {
+            let dh = &self.display_handle;
+            smithay::wayland::selection::data_device::set_data_device_focus::<Self>(dh, seat, None);
+            smithay::wayland::selection::primary_selection::set_primary_focus::<Self>(dh, seat, None);
+            smithay::wayland::selection::data_device::set_data_device_focus::<Self>(dh, seat, kbd.clone());
+            smithay::wayland::selection::primary_selection::set_primary_focus::<Self>(dh, seat, kbd);
+            info!("selection state refreshed after owner disconnect");
+        }
+    }
+
     fn update_data_device_focus(&mut self, vid: Option<VisualId>) {
         let client = vid.and_then(|vid| {
             self.wayland_surfaces.get(&vid)
                 .and_then(|s| Resource::client(s))
         });
+        // G-B1: publish the keyboard-focus client for the selection
+        // disconnect cleanup (it restores focus after the toggle).
+        *KBD_FOCUS_CLIENT.lock().unwrap() = client.clone();
         if let Some(ref seat) = self.seat {
             let dh = &self.display_handle;
             smithay::wayland::selection::data_device::set_data_device_focus::<Self>(dh, seat, client.clone());
@@ -3494,6 +3571,26 @@ impl LookingGlass {
             self.swallow_release = None;
             return;
         }
+        // BUG_LIST #16: duplicated XTEST input has been observed to
+        // deliver the SAME modifier press twice (e.g. the maximize
+        // sequences: keydown super → key Up → keyup super leaves one
+        // unmatched down). Modifiers never auto-repeat, so a press
+        // while the modifier is already held is a duplicate — ignore
+        // it, and ignore a release of a modifier that is not held.
+        // Non-modifier keys are untouched (their releases MUST pass).
+        {
+            let dup = match linux_key {
+                keys::CTRL_L | keys::CTRL_R => self.ctrl_pressed == pressed,
+                keys::SHIFT_L | keys::SHIFT_R => self.shift_pressed == pressed,
+                keys::ALT_L | keys::ALT_R => self.alt_pressed == pressed,
+                keys::META_L | keys::META_R => self.meta_pressed == pressed,
+                _ => false,
+            };
+            if dup {
+                tracing::debug!(?linux_key, pressed, "duplicate modifier event ignored");
+                return;
+            }
+        }
         match linux_key {
             keys::CTRL_L | keys::CTRL_R => { self.ctrl_pressed = pressed; }
             keys::SHIFT_L | keys::SHIFT_R => { self.shift_pressed = pressed; }
@@ -4412,27 +4509,28 @@ impl ShmHandler for LookingGlass {
 impl SelectionHandler for LookingGlass {
     type SelectionUserData = ();
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<smithay::wayland::selection::SelectionSource>, _seat: Seat<Self>) {
-        // Collect MIME types from the source so clients can negotiate formats
+        // G-B1: smithay's wl_data_device.set_selection arm already
+        // stores the CLIENT source in the seat data (device.rs:144) —
+        // wrapping the mime types into a compositor-side selection
+        // here would be immediately superseded and would break
+        // cancel-on-replace / clear-on-death semantics (those need
+        // the client source identity). This hook therefore only
+        // records WHO owns the selection (for disconnect cleanup)
+        // and logs the negotiated mime set. The owner is the
+        // keyboard-focused client: smithay DENIES set_selection from
+        // any other client (device.rs SetSelection guard).
+        let owner = source.as_ref().and_then(|_| KBD_FOCUS_CLIENT.lock().unwrap().clone());
         let mime_types: Vec<String> = source
             .as_ref()
-            .map(|s| s.mime_types().clone())
+            .map(|s| s.mime_types())
             .unwrap_or_default();
+        info!(?ty, ?owner, mimes = ?mime_types, "selection source changed");
         match ty {
             SelectionTarget::Clipboard => {
-                if let Some(ref seat) = self.seat {
-                    let dh = &self.display_handle;
-                    smithay::wayland::selection::data_device::set_data_device_selection::<Self>(
-                        dh, seat, mime_types, (),
-                    );
-                }
+                *SELECTION_OWNER_CLIPBOARD.lock().unwrap() = owner;
             }
             SelectionTarget::Primary => {
-                if let Some(ref seat) = self.seat {
-                    let dh = &self.display_handle;
-                    smithay::wayland::selection::primary_selection::set_primary_selection::<Self>(
-                        dh, seat, mime_types, (),
-                    );
-                }
+                *SELECTION_OWNER_PRIMARY.lock().unwrap() = owner;
             }
         }
     }

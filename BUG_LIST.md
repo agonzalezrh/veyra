@@ -62,6 +62,7 @@ window, source death) in `run_input_tests.sh`.
 | 11 | Subsurface support | Not explicitly handled | Low |
 | 12 | Serial Validation | Popup serial validation may not catch all edge cases | Medium |
 | 15 | Duplicate Button Press | wl_data_device test client received the same wl_pointer.button(press) twice with one serial (observed under Xvfb/winit; masked by latches so far). Verify whether the compositor double-sends button events to clients — real apps would double-handle clicks. Track the originating layer (winit event loop vs ph.button call sites vs client queue dispatch). | Medium |
+| 16 | Stuck META Modifier | After the maximize test sequences (`xdotool keydown super; xdotool key Up; keyup super`), clients observe `logo:true` for the REST of the session — app keybindings like ctrl+shift+v never match. Almost certainly the same duplicated-XTEST-input anomaly as #15 (one unmatched super keydown). Verify duplication at the winit/X layer; consider debouncing modifier presses by serial. | Medium |
 
 ## P4: Feature Gaps
 

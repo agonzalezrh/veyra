@@ -519,6 +519,121 @@ else
     bad "t19: popup placement math wrong: $(cat "$TMP_DIR/t19.check")"
 fi
 
+# ── G-B1: clipboard MIME types ────────────────────────────────────────
+# Full clipboard path: wl_data_device.set_selection → SelectionHandler
+# → set_data_device_selection(mime set) → data_offer to other clients →
+# receive → SelectionHandler::send_selection → wl_data_source.send.
+# The setter needs keyboard focus (smithay denies set_selection from
+# unfocused clients); Veyra's focus-on-map grants it at map time.
+MIME_SET="text/plain,text/plain;charset=utf-8,text/uri-list"
+
+say "tc1_clipboard_multi_mime_roundtrip"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode set --mimes "$MIME_SET" --payload "veyra-clip-first" --duration 6000 \
+    > "$TMP_DIR/tc1_set.json" 2>"$TMP_DIR/tc1_set.err" &
+TC1_SET_PID=$!
+sleep 1.5
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode paste --mimes "text/plain;charset=utf-8" --duration 4000 \
+    > "$TMP_DIR/tc1_paste.json" 2>"$TMP_DIR/tc1_paste.err" &
+TC1_PASTE_PID=$!
+sleep 3
+assert_json "$TMP_DIR/tc1_paste.json" \
+    "any(e['ev']=='clip_selection' and e['has_offer']==True for e in events)" \
+    "tc1: paster received the clipboard selection offer"
+assert_json "$TMP_DIR/tc1_paste.json" \
+    "sorted(set(e['mime'] for e in events if e['ev']=='clip_mime'))==sorted(['text/plain','text/plain;charset=utf-8','text/uri-list'])" \
+    "tc1: paster observes EXACTLY the advertised MIME set (deduped across broadcasts)"
+assert_json "$TMP_DIR/tc1_paste.json" \
+    "any(e['ev']=='clip_data' and e['mime']=='text/plain;charset=utf-8' and e['payload']=='veyra-clip-first' for e in events)" \
+    "tc1: paster received the payload via utf-8 mime"
+assert_json "$TMP_DIR/tc1_set.json" \
+    "any(e['ev']=='clip_send' and e['mime']=='text/plain;charset=utf-8' and e['len']==len('veyra-clip-first') for e in events)" \
+    "tc1: setter served the send for the requested mime"
+wait_process_exit $TC1_SET_PID 10
+wait_process_exit $TC1_PASTE_PID 10
+
+say "tc2_clipboard_supported_and_unsupported_requests"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode set --mimes "$MIME_SET" --payload "veyra-clip-uri" --duration 7000 \
+    > "$TMP_DIR/tc2_set.json" 2>"$TMP_DIR/tc2_set.err" &
+TC2_SET_PID=$!
+sleep 1.5
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode paste --mimes "text/uri-list" --duration 2500 \
+    > "$TMP_DIR/tc2_p1.json" 2>"$TMP_DIR/tc2_p1.err" &
+TC2_P1_PID=$!
+wait_process_exit $TC2_P1_PID 8
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode paste --mimes "application/x-does-not-exist" --duration 2500 \
+    > "$TMP_DIR/tc2_p2.json" 2>"$TMP_DIR/tc2_p2.err" &
+TC2_P2_PID=$!
+wait_process_exit $TC2_P2_PID 8
+assert_json "$TMP_DIR/tc2_p1.json" \
+    "any(e['ev']=='clip_data' and e['mime']=='text/uri-list' and e['payload']=='veyra-clip-uri' for e in events)" \
+    "tc2: supported mime (text/uri-list) delivers the payload"
+assert_json "$TMP_DIR/tc2_set.json" \
+    "any(e['ev']=='clip_send' and e['mime']=='text/uri-list' for e in events)" \
+    "tc2: setter served the text/uri-list send"
+assert_json "$TMP_DIR/tc2_set.json" \
+    "not any(e['ev']=='clip_send' and e['mime']=='application/x-does-not-exist' for e in events)" \
+    "tc2: unsupported mime request never reaches the source"
+wait_process_exit $TC2_SET_PID 12
+
+say "tc3_clipboard_replacement"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode set --mimes "text/plain" --payload "first-payload" --duration 9000 \
+    > "$TMP_DIR/tc3_a.json" 2>"$TMP_DIR/tc3_a.err" &
+TC3_A_PID=$!
+sleep 1.5
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode paste --mimes "text/plain" --duration 2500 \
+    > "$TMP_DIR/tc3_p1.json" 2>"$TMP_DIR/tc3_p1.err" &
+TC3_P1_PID=$!
+wait_process_exit $TC3_P1_PID 8
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode set --mimes "text/plain" --payload "second-payload" --duration 4000 \
+    > "$TMP_DIR/tc3_c.json" 2>"$TMP_DIR/tc3_c.err" &
+TC3_C_PID=$!
+sleep 1.5
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode paste --mimes "text/plain" --duration 2500 \
+    > "$TMP_DIR/tc3_p2.json" 2>"$TMP_DIR/tc3_p2.err" &
+TC3_P2_PID=$!
+wait_process_exit $TC3_P2_PID 8
+assert_json "$TMP_DIR/tc3_p1.json" \
+    "any(e['ev']=='clip_data' and e['payload']=='first-payload' for e in events)" \
+    "tc3: first clipboard content delivered"
+assert_json "$TMP_DIR/tc3_a.json" \
+    "any(e['ev']=='clip_cancelled' for e in events)" \
+    "tc3: replaced source observed cancelled"
+assert_json "$TMP_DIR/tc3_p2.json" \
+    "any(e['ev']=='clip_data' and e['payload']=='second-payload' for e in events)" \
+    "tc3: clipboard replacement delivers the new content"
+wait_process_exit $TC3_A_PID 10
+wait_process_exit $TC3_C_PID 10
+
+say "tc4_clipboard_source_destruction"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode set --mimes "text/plain" --payload "dies-soon" --duration 4000 \
+    > "$TMP_DIR/tc4_set.json" 2>"$TMP_DIR/tc4_set.err" &
+TC4_SET_PID=$!
+sleep 1.5
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+    --mode paste --mimes "text/plain" --duration 8000 \
+    > "$TMP_DIR/tc4_paste.json" 2>"$TMP_DIR/tc4_paste.err" &
+TC4_PASTE_PID=$!
+sleep 2
+assert_json "$TMP_DIR/tc4_paste.json" \
+    "any(e['ev']=='clip_data' for e in events)" \
+    "tc4: paster received data while the source lived"
+wait_process_exit $TC4_SET_PID 10
+sleep 1
+assert_json "$TMP_DIR/tc4_paste.json" \
+    "any(e['ev']=='clip_cleared' for e in events)" \
+    "tc4: selection cleared when the source client died"
+wait_process_exit $TC4_PASTE_PID 12
+
 say "protocol tests done"
 echo "-------------------------------------"
 echo "protocol: $PASS passed, $FAIL failed, $SKIP skipped"

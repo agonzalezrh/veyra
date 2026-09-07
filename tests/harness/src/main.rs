@@ -52,10 +52,12 @@ fn log(ev: serde_json::Value) {
     let _ = out.flush();
 }
 
+mod clip_tester;
 mod dnd_tester;
 mod popup_tester;
 use popup_tester::{run_popups, run_popups_opts};
 use dnd_tester::{run_dnd, Role};
+use clip_tester::{run_clip, Mode as ClipMode};
 
 fn opt_value(args: &[String], flag: &str) -> Option<String> {
     args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
@@ -741,6 +743,27 @@ fn main() {
         let payload = opt_value(&args, "--payload").unwrap_or_else(|| "veyra-dnd".into());
         let duration = opt_value(&args, "--duration").and_then(|v| v.parse().ok()).unwrap_or(15000);
         let code = run_dnd(role, mime, payload, duration);
+        std::process::exit(code);
+    }
+    // Raw clipboard tester (G-B1) has its own connection flow.
+    if cmd == "clip" {
+        let mode = match opt_value(&args, "--mode").as_deref() {
+            Some("set") => ClipMode::Set,
+            Some("paste") => ClipMode::Paste,
+            _ => {
+                eprintln!("clip: --mode set|paste required");
+                std::process::exit(1);
+            }
+        };
+        let mimes: Vec<String> = opt_value(&args, "--mimes")
+            .unwrap_or_else(|| "text/plain".into())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let payload = opt_value(&args, "--payload").unwrap_or_else(|| "veyra-clip".into());
+        let duration = opt_value(&args, "--duration").and_then(|v| v.parse().ok()).unwrap_or(10000);
+        let code = run_clip(mode, mimes, payload, duration);
         std::process::exit(code);
     }
     let opts = parse_args();
