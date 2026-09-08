@@ -39,6 +39,13 @@ impl RenderScheduler {
         self.dirty || self.animating
     }
 
+    /// R6: whether a one-shot render is currently scheduled (dirty flag
+    /// only — an active animation paces via the timer, it does not
+    /// demand an immediate extra render on every ping).
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     /// Whether animation is currently active.
     pub fn is_animating(&self) -> bool {
         self.animating
@@ -122,3 +129,30 @@ mod tests {
         assert!(!s.is_animating());
     }
 }
+
+    /// R6: the pacing decision — continuous cadence only while an
+    /// animation runs or a client waits for a frame callback.
+    #[test]
+    fn pacing_decision_combinations() {
+        // Idle: nothing pending.
+        let mut s = RenderScheduler::new();
+        assert!(!s.is_dirty());
+        assert!(!s.needs_render());
+
+        // One-shot dirty: renders once, no animation pacing by itself.
+        s.schedule_render();
+        assert!(s.is_dirty());
+        assert!(s.needs_render());
+        s.clear();
+        assert!(!s.is_dirty() && !s.needs_render());
+
+        // Animation: needs_render persists after clear (animating set).
+        s.set_animating(true);
+        assert!(s.is_dirty(), "set_animating implies a render");
+        assert!(s.needs_render());
+        s.clear();
+        assert!(!s.is_dirty());
+        assert!(s.needs_render(), "animating keeps the cadence");
+        s.set_animating(false);
+        assert!(!s.needs_render());
+    }

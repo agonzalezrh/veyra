@@ -281,6 +281,16 @@ pub struct LookingGlass {
     last_wayland_focus: Option<WlSurface>,
     /// Render scheduling (dirty/animating state instead of fixed 16ms timer).
     pub scheduler: RenderScheduler,
+    /// R6: wake handle pinging the event loop — dirty state renders
+    /// immediately instead of waiting for the pacing timer.
+    pub render_ping: Option<smithay::reexports::calloop::ping::Ping>,
+    /// R6: pacing timer token (animations, pending frame callbacks).
+    /// None while the compositor is idle — the timer source is dropped
+    /// entirely, so an idle compositor wakes for nothing.
+    pacing_timer: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// R6: true while the pacing timer will fire again (armed or
+    /// self-rescheduling); false after it dropped on idle.
+    pacing_active: bool,
     /// Modifier key state for keyboard shortcuts.
     ctrl_pressed: bool,
     shift_pressed: bool,
@@ -356,6 +366,28 @@ fn now_ms() -> u32 {
     static PROCESS_START: OnceLock<std::time::Instant> = OnceLock::new();
     let start = PROCESS_START.get_or_init(std::time::Instant::now);
     std::time::Instant::now().duration_since(*start).as_millis() as u32
+}
+
+/// R6: cadence for continuous work — animation ticks and client
+/// frame-callback completion. Matches the previous fixed timer.
+const RENDER_PACING_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// R6: pacing timer callback — renders each tick and keeps the
+/// cadence only while continuous work remains; otherwise disarms the
+/// timer completely so an idle compositor neither renders nor wakes.
+fn pacing_timer_callback(
+    _deadline: std::time::Instant,
+    _meta: &mut (),
+    state: &mut LookingGlass,
+) -> smithay::reexports::calloop::timer::TimeoutAction {
+    use smithay::reexports::calloop::timer::TimeoutAction;
+    state.render();
+    if state.should_render() {
+        TimeoutAction::ToDuration(RENDER_PACING_INTERVAL)
+    } else {
+        state.pacing_active = false;
+        TimeoutAction::Drop
+    }
 }
 
 impl LookingGlass {
@@ -437,6 +469,9 @@ impl LookingGlass {
             event_serial: 0,
             last_down_vid: None,
             saved_state: None,
+            render_ping: None,
+            pacing_timer: None,
+            pacing_active: false,
             focus_manager: FocusManager::new(),
             interaction: InteractionController::new(),
             input_sinks: HashMap::new(),
@@ -1135,10 +1170,70 @@ impl LookingGlass {
         Some(vid)
     }
 
+    /// R6: whether a frame must be produced now — dirty state, an
+    /// active animation, or a mapped client still waiting for a frame
+    /// callback (a client that requested wl_surface.frame() stalls
+    /// forever unless the compositor presents).
+    pub fn should_render(&self) -> bool {
+        self.scheduler.needs_render() || self.has_pending_frame_callbacks()
+    }
+
+    /// R6: any mapped toplevel surface with an unanswered frame
+    /// callback request. The scan mirrors the completion loop in
+    /// render() (toplevels only).
+    pub fn has_pending_frame_callbacks(&self) -> bool {
+        self.toplevels.iter().any(|t| {
+            if t.lifecycle != SurfaceLifecycle::Mapped
+                && t.lifecycle != SurfaceLifecycle::Configured
+            {
+                return false;
+            }
+            let surface = t.toplevel.wl_surface();
+            with_states(surface, |states| {
+                !states
+                    .cached_state
+                    .get::<SurfaceAttributes>()
+                    .current()
+                    .frame_callbacks
+                    .is_empty()
+            })
+        })
+    }
+
+    /// R6: the render-loop pump, driven by the ping source. Renders
+    /// dirty state immediately and keeps the pacing timer armed only
+    /// while continuous work exists (animations, pending client frame
+    /// callbacks). When idle, the timer source is dropped — the
+    /// compositor neither renders nor wakes.
+    pub fn pump_render_loop(&mut self, handle: &smithay::reexports::calloop::LoopHandle<'_, Self>) {
+        if self.scheduler.is_dirty() {
+            self.render();
+        }
+        if self.should_render() && !self.pacing_active {
+            // Drop the inert source from the previous idle period (its
+            // timer fired and returned TimeoutAction::Drop).
+            if let Some(tok) = self.pacing_timer.take() {
+                handle.remove(tok);
+            }
+            if let Ok(tok) = handle.insert_source(
+                smithay::reexports::calloop::timer::Timer::from_duration(RENDER_PACING_INTERVAL),
+                pacing_timer_callback,
+            ) {
+                self.pacing_timer = Some(tok);
+                self.pacing_active = true;
+            }
+        }
+    }
+
     /// Schedule a render and record the request in perf stats.
     pub fn schedule_render(&mut self) {
         self.perf.record_requested();
         self.scheduler.schedule_render();
+        // R6: ping the event loop so dirty frames render immediately
+        // rather than waiting for the next pacing tick.
+        if let Some(ping) = &self.render_ping {
+            ping.ping();
+        }
     }
 
     pub fn render(&mut self) {

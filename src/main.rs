@@ -242,19 +242,22 @@ fn main() {
         )
         .expect("Failed to init wayland server source");
 
-    // Event-driven render scheduler — no periodic polling.
-    // The timer stays registered permanently, re-arming itself every time it
-    // fires. The timer only animates when the compositor has active
-    // transitions or auto-orbit. Client-triggered rendering is handled
-    // by the Wayland dispatch source above, which renders immediately.
-    use smithay::reexports::calloop::timer::{Timer, TimeoutAction};
-    let render_timer = Timer::from_duration(std::time::Duration::ZERO);
+    // R6: demand-driven render scheduling — no fixed-rate polling.
+    // Dirty state (commits, input, resizes, interaction) pings the loop
+    // and renders immediately. Continuous work (camera/focus animation,
+    // pending client frame callbacks) keeps a self-rescheduling pacing
+    // timer armed; when the compositor goes idle the timer source is
+    // dropped entirely — no render calls, no timer wakeups.
+    use smithay::reexports::calloop::ping;
+    let (render_ping, render_ping_source) =
+        ping::make_ping().expect("Failed to create render ping");
+    state.render_ping = Some(render_ping);
+    let loop_handle_for_pump = handle.clone();
     handle
-        .insert_source(render_timer, |_, _, state| {
-            state.render();
-            TimeoutAction::ToDuration(std::time::Duration::from_millis(16))
+        .insert_source(render_ping_source, move |_, _, state| {
+            state.pump_render_loop(&loop_handle_for_pump);
         })
-        .expect("Failed to register render timer");
+        .expect("Failed to register render ping source");
     // Ensure the initial frame renders
     state.schedule_render();
 
