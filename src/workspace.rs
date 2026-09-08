@@ -172,7 +172,13 @@ impl WorkspaceManager {
 
     /// Remove a workspace by ID. Fails (returns error) if it's the last one.
     /// If the removed workspace is the active one, switches to workspace 0 first.
-    /// Cleans up visual state in the removed workspace.
+    ///
+    /// R8: the removed workspace's visuals are REHOMED into a surviving
+    /// workspace (the active fallback when possible) together with their
+    /// transforms, detached state, and focus target. Visuals are
+    /// workspace-local; without rehoming they would remain alive in the
+    /// global scene but owned by nothing — unrendered, unpickable, and
+    /// unreachable through workspace navigation.
     pub fn remove(&mut self, id: usize, scene: &mut Scene) -> Result<(), String> {
         if self.workspaces.len() <= 1 {
             return Err("cannot remove the last workspace".into());
@@ -180,10 +186,40 @@ impl WorkspaceManager {
         if id >= self.workspaces.len() {
             return Err(format!("workspace {} does not exist", id));
         }
+        // Capture the dying workspace's current transforms unconditionally:
+        // for the active workspace this snapshots live transforms, and for
+        // an inactive one it is a no-op restatement of the saved state.
+        self.workspaces[id].save_transforms(scene);
+
+        // Rehome into a surviving workspace. Destination is the active
+        // fallback (workspace 0 after the caller's switch, or workspace 1
+        // when workspace 0 itself is being removed).
+        let dest = if id == 0 { 1 } else { 0 };
+        let mut dying_visuals = std::mem::take(&mut self.workspaces[id].visual_ids);
+        let dying_detached = std::mem::take(&mut self.workspaces[id].detached_set);
+        let dying_transforms = std::mem::take(&mut self.workspaces[id].transforms);
+        let dying_focus = self.workspaces[id].focused_id.take();
+        {
+            let d = &mut self.workspaces[dest];
+            for vid in dying_visuals.drain(..) {
+                if !d.visual_ids.contains(&vid) {
+                    d.visual_ids.push(vid);
+                }
+            }
+            for vid in dying_detached {
+                if !d.detached_set.contains(&vid) {
+                    d.detached_set.push(vid);
+                }
+            }
+            for (vid, t) in dying_transforms {
+                d.transforms.entry(vid).or_insert(t);
+            }
+            if d.focused_id.is_none() {
+                d.focused_id = dying_focus.filter(|vid| d.visual_ids.contains(vid));
+            }
+        }
         // If removing the active workspace, switch to 0
         if id == self.active_id {
-            // Save transforms first
-            self.workspaces[id].save_transforms(scene);
             self.active_id = 0;
         }
         // If active_id is after the removed one, adjust it
@@ -393,5 +429,94 @@ mod tests {
         ws2.detached_set.push(VisualId(2));
         assert!(ws1.detached_set.contains(&VisualId(1)));
         assert!(!ws2.detached_set.contains(&VisualId(1)));
+    }
+
+    // ── R8: workspace destruction rehomes visuals ──────────────────
+
+    /// Helper: a scene with a pickable test visual.
+    fn r8_scene_with_visual(pos_x: f32) -> (Scene, crate::scene::VisualId) {
+        let mut scene = Scene::default();
+        let mut v = crate::scene::Visual::new_test(320, 200);
+        v.transform.position.x = pos_x;
+        let vid = v.id;
+        scene.add(v);
+        (scene, vid)
+    }
+
+    /// Every live visual must keep exactly one owning workspace after a
+    /// destruction — no orphans in the global scene.
+    fn assert_no_orphans(mgr: &WorkspaceManager, scene: &Scene) {
+        for v in &scene.visuals {
+            let owners = mgr
+                .iter()
+                .filter(|ws| ws.contains(v.id))
+                .count();
+            assert_eq!(
+                owners, 1,
+                "visual {:?} must be owned by exactly one workspace, found {}",
+                v.id, owners
+            );
+        }
+    }
+
+    #[test]
+    fn remove_rehomes_visuals_of_inactive_workspace() {
+        let mut mgr = WorkspaceManager::new(3);
+        let (mut scene, vid) = r8_scene_with_visual(12.0);
+        mgr.workspaces[1].add(vid);
+        mgr.workspaces[1].detached_set.push(vid);
+        mgr.workspaces[1].focus(Some(vid));
+        mgr.workspaces[1].save_transforms(&scene);
+
+        mgr.remove(1, &mut scene).expect("remove ws1");
+
+        assert_eq!(mgr.len(), 2);
+        // Rehomed into workspace 0 (the surviving fallback for id != 0).
+        assert!(mgr.workspaces[0].contains(vid), "visual rehomed into ws0");
+        assert_eq!(mgr.workspaces[0].visual_ids.len(), 1);
+        assert!(mgr.workspaces[0].detached_set.contains(&vid), "detached state rehomed");
+        assert_eq!(mgr.workspaces[0].focused_id, Some(vid), "focus target rehomed");
+        let t = mgr.workspaces[0].transforms.get(&vid).expect("transform rehomed");
+        assert_eq!(t.position.x, 12.0, "saved transform preserved");
+        assert_no_orphans(&mgr, &scene);
+    }
+
+    #[test]
+    fn remove_rehomes_visuals_of_active_workspace() {
+        let mut mgr = WorkspaceManager::new(3);
+        let (mut scene, vid) = r8_scene_with_visual(5.0);
+        mgr.switch(2, &mut scene);
+        mgr.active_mut().add(vid);
+        mgr.active_mut().save_transforms(&scene);
+
+        mgr.remove(2, &mut scene).expect("remove active ws2");
+
+        assert_eq!(mgr.len(), 2);
+        assert_eq!(mgr.active_id(), 0);
+        // id != 0 → destination is workspace 0, which becomes the new active.
+        assert!(mgr.workspaces[0].contains(vid), "visual rehomed into the new active workspace");
+        let t = mgr.workspaces[0].transforms.get(&vid).expect("transform rehomed");
+        assert_eq!(t.position.x, 5.0);
+        assert_no_orphans(&mgr, &scene);
+    }
+
+    #[test]
+    fn remove_workspace_zero_rehomes_into_workspace_one() {
+        let mut mgr = WorkspaceManager::new(3);
+        let (mut scene, vid) = r8_scene_with_visual(7.0);
+        mgr.workspaces[0].add(vid);
+        mgr.workspaces[0].save_transforms(&scene);
+        mgr.switch(2, &mut scene); // ws0 is inactive; keep index-shift path exercised
+
+        mgr.remove(0, &mut scene).expect("remove ws0");
+
+        assert_eq!(mgr.len(), 2);
+        // dest was 1; after removal old ws1 shifted to index 0.
+        assert!(mgr.workspaces[0].contains(vid), "visual rehomed, index shifted");
+        // The visual must appear in the surviving workspaces exactly once
+        // in total — no duplicates from the merge.
+        let total: usize = mgr.iter().map(|ws| ws.visual_ids.iter().filter(|v| **v == vid).count()).sum();
+        assert_eq!(total, 1, "visual must be a member of exactly one workspace");
+        assert_no_orphans(&mgr, &scene);
     }
 }
