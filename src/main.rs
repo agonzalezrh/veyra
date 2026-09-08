@@ -67,6 +67,54 @@ use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 use tracing_subscriber::EnvFilter;
 
+/// Nested (winit) startup: window clamp, state construction, and the
+/// advertised-mode sync. Returns the source to insert into the loop.
+fn start_winit_state(
+    display_handle: &smithay::reexports::wayland_server::DisplayHandle,
+    config: &Config,
+) -> (LookingGlass, winit::WinitEventLoop) {
+    let (backend, winit_source) =
+        winit::init::<GlesRenderer>().expect("Failed to initialize winit backend");
+
+    // Clamp the nested window to the output. Smithay's default winit
+    // window is 1280x800; on smaller outputs (e.g. the harness's
+    // 1280x720 Xvfb screen) the overflow renders the shell taskbar —
+    // and the bottom of the framebuffer — off-screen, while the
+    // compositor's default window_size (1280x720) silently disagrees
+    // with the actual GL viewport.
+    if let Some(monitor) = backend.window().current_monitor() {
+        let ms = monitor.size();
+        let win = backend.window().inner_size();
+        if win.width > ms.width || win.height > ms.height {
+            let _ = backend.window().request_inner_size(
+                smithay::reexports::winit::dpi::PhysicalSize::new(ms.width, ms.height),
+            );
+            tracing::info!(
+                monitor_w = ms.width,
+                monitor_h = ms.height,
+                "clamped nested window to output size"
+            );
+        }
+    }
+    let initial_size = backend.window_size();
+
+    let mut state = LookingGlass::new(
+        display_handle,
+        Box::new(WinitPresentationBackend(backend)),
+        config.clone(),
+    );
+    // Trust the actual winit window over the struct default: without a
+    // WM (raw Xvfb) no Resized event may arrive, leaving window_size
+    // stale and desynchronizing projection, input mapping, and the
+    // shell plane from the real framebuffer.
+    state.window_size = (initial_size.w as f32, initial_size.h as f32);
+    tracing::info!(window_size = ?state.window_size, "render size");
+    // R11: the advertised output mode follows the actual backend size
+    // from the start — clients see the real monitor, not a fixed mode.
+    state.sync_output_mode(initial_size.w, initial_size.h, 60000);
+    (state, winit_source)
+}
+
 fn main() {
     crate::debug_journal::init_from_env();
     tracing_subscriber::fmt()
@@ -120,71 +168,37 @@ fn main() {
     let display: Display<LookingGlass> = Display::new().expect("Failed to create Wayland display");
     let display_handle = display.handle();
 
-    // Initialize the winit backend
-    let (backend, winit_source) =
-        winit::init::<GlesRenderer>().expect("Failed to initialize winit backend");
-
-    // Clamp the nested window to the output. Smithay's default winit
-    // window is 1280x800; on smaller outputs (e.g. the harness's
-    // 1280x720 Xvfb screen) the overflow renders the shell taskbar —
-    // and the bottom of the framebuffer — off-screen, while the
-    // compositor's default window_size (1280x720) silently disagrees
-    // with the actual GL viewport.
-    if let Some(monitor) = backend.window().current_monitor() {
-        let ms = monitor.size();
-        let win = backend.window().inner_size();
-        if win.width > ms.width || win.height > ms.height {
-            let _ = backend.window().request_inner_size(
-                smithay::reexports::winit::dpi::PhysicalSize::new(ms.width, ms.height),
-            );
-            tracing::info!(
-                monitor_w = ms.width,
-                monitor_h = ms.height,
-                "clamped nested window to output size"
-            );
-        }
-    }
-    let initial_size = backend.window_size();
-
-    let mut state = LookingGlass::new(
-        &display_handle,
-        Box::new(WinitPresentationBackend(backend)),
-        config.clone(),
-    );
-    // Trust the actual winit window over the struct default: without a
-    // WM (raw Xvfb) no Resized event may arrive, leaving window_size
-    // stale and desynchronizing projection, input mapping, and the
-    // shell plane from the real framebuffer.
-    state.window_size = (initial_size.w as f32, initial_size.h as f32);
-    tracing::info!(window_size = ?state.window_size, "render size");
-    // R11: the advertised output mode follows the actual backend size
-    // from the start — clients see the real monitor, not a fixed mode.
-    state.sync_output_mode(initial_size.w, initial_size.h, 60000);
-
-    // Handle --native flag: construct DrmGraphicsBackend instead
-    if use_native {
+    // P1 #2: --native NEVER initializes winit — the session owns the
+    // DRM device and libinput replaces the winit event source. Winit is
+    // started only for the nested path (or as a fallback when the
+    // native stack refuses cleanly).
+    let mut winit_source: Option<winit::WinitEventLoop> = None;
+    let mut state = if use_native {
         tracing::info!("Starting native DRM/KMS backend");
-        match crate::drm_backend::DrmGraphicsBackend::try_new() {
-            Ok(drm_backend) => {
-                state = LookingGlass::new(&display_handle, Box::new(drm_backend), config.clone());
+        match native_backend::create_native_state(&display_handle, &config) {
+            Ok((native_state, stack)) => {
+                if let Err(e) = native_backend::wire_native_input(&handle, &native_state, stack) {
+                    tracing::error!(e = %e, "native input setup failed");
+                    std::process::exit(1);
+                }
                 tracing::info!("Native backend initialized successfully");
-                // R11: a native state is fresh — adopt the KMS mode as
-                // both the framebuffer size and the advertised output
-                // mode (the winit initial size no longer applies).
-                let (w, h) = state.backend.as_ref().unwrap().size();
-                state.window_size = (w, h);
-                state.sync_output_mode(w as i32, h as i32, 60000);
-                tracing::info!(window_size = ?state.window_size, "render size");
+                native_state
             }
             Err(e) => {
                 tracing::error!(
-                    ?e,
+                    e = %e,
                     "Failed to initialize native backend, falling back to winit"
                 );
-                // Keep the winit backend already set up in `state`
+                let (s, src) = start_winit_state(&display_handle, &config);
+                winit_source = Some(src);
+                s
             }
         }
-    }
+    } else {
+        let (s, src) = start_winit_state(&display_handle, &config);
+        winit_source = Some(src);
+        s
+    };
 
     // Start in normal (2D, ortho) mode when requested.
     if start_normal {
@@ -282,94 +296,98 @@ fn main() {
     // Ensure the initial frame renders
     state.schedule_render();
 
-    // Winit event source
-    handle
-        .insert_source(winit_source, |event, _, state| match event {
-            WinitEvent::Resized { size, .. } => {
-                state.window_size = (size.w as f32, size.h as f32);
-                // Same greppable shape as the startup log so consumers
-                // (harness) always see the CURRENT render size.
-                tracing::info!(window_size = ?state.window_size, "render size");
-                // R11: the advertised output mode follows the resize.
-                state.sync_output_mode(size.w, size.h, 60000);
-                state.schedule_render();
-            }
-            WinitEvent::Input(event) => {
-                match event {
-                    InputEvent::Keyboard { event } => {
-                        let key = event.key_code();
-                        let pressed = event.state() == smithay::backend::input::KeyState::Pressed;
-                        state.handle_key(u32::from(key), pressed);
-                        state.schedule_render();
-                    }
-                    InputEvent::PointerMotionAbsolute { event } => {
-                        let x = event.x();
-                        let y = event.y();
-                        state.handle_pointer_move(x, y);
-                        state.schedule_render();
-                    }
-                    InputEvent::PointerButton { event } => {
-                        let pressed =
-                            event.state() == smithay::backend::input::ButtonState::Pressed;
-                        let (mx, my) = state.last_mouse;
-                        let btn_code = match event.button() {
-                            Some(MouseButton::Left) => 1u32,
-                            Some(MouseButton::Middle) => 2u32,
-                            Some(MouseButton::Right) => 3u32,
-                            _ => 0u32,
-                        };
-                        if pressed {
-                            state.nav_button = btn_code;
-                        } else {
-                            state.nav_button = 0;
-                        }
-                        match btn_code {
-                            1 => {
-                                if pressed {
-                                    // If context menu is open, clicking outside dismisses it
-                                    if state.context_menu.visible {
-                                        if !state.handle_menu_click(mx, my) {
-                                            state.context_menu.dismiss();
-                                        }
-                                        state.schedule_render();
-                                        return;
-                                    }
-                                    state.handle_pointer_down(mx, my, false, false, false);
-                                } else {
-                                    state.handle_pointer_up(mx, my);
-                                }
-                            }
-                            3 => {
-                                if pressed {
-                                    state.handle_context_menu(mx, my);
-                                }
-                            }
-                            2 => {}
-                            _ => {}
-                        }
-                        state.schedule_render();
-                    }
-                    InputEvent::PointerAxis { event } => {
-                        let v = event.amount(Axis::Vertical).unwrap_or(0.0);
-                        let h = event.amount(Axis::Horizontal).unwrap_or(0.0);
-                        let (mx, my) = state.last_mouse;
-                        state.handle_axis(mx, my, h, v);
-                        state.schedule_render();
-                    }
-                    _ => {}
+    // Winit event source (nested mode only — native mode takes input
+    // from libinput instead; the winit backend/window are discarded)
+    if let Some(winit_source) = winit_source.take() {
+        handle
+            .insert_source(winit_source, |event, _, state| match event {
+                WinitEvent::Resized { size, .. } => {
+                    state.window_size = (size.w as f32, size.h as f32);
+                    // Same greppable shape as the startup log so consumers
+                    // (harness) always see the CURRENT render size.
+                    tracing::info!(window_size = ?state.window_size, "render size");
+                    // R11: the advertised output mode follows the resize.
+                    state.sync_output_mode(size.w, size.h, 60000);
+                    state.schedule_render();
                 }
-            }
-            WinitEvent::CloseRequested => {
-                tracing::info!("Close requested");
-                state.save_state();
-                let _ = state.session.shutdown_sequence(|| {
-                    // State already saved above
-                });
-                std::process::exit(0);
-            }
-            _ => {}
-        })
-        .expect("Failed to register winit event source");
+                WinitEvent::Input(event) => {
+                    match event {
+                        InputEvent::Keyboard { event } => {
+                            let key = event.key_code();
+                            let pressed =
+                                event.state() == smithay::backend::input::KeyState::Pressed;
+                            state.handle_key(u32::from(key), pressed);
+                            state.schedule_render();
+                        }
+                        InputEvent::PointerMotionAbsolute { event } => {
+                            let x = event.x();
+                            let y = event.y();
+                            state.handle_pointer_move(x, y);
+                            state.schedule_render();
+                        }
+                        InputEvent::PointerButton { event } => {
+                            let pressed =
+                                event.state() == smithay::backend::input::ButtonState::Pressed;
+                            let (mx, my) = state.last_mouse;
+                            let btn_code = match event.button() {
+                                Some(MouseButton::Left) => 1u32,
+                                Some(MouseButton::Middle) => 2u32,
+                                Some(MouseButton::Right) => 3u32,
+                                _ => 0u32,
+                            };
+                            if pressed {
+                                state.nav_button = btn_code;
+                            } else {
+                                state.nav_button = 0;
+                            }
+                            match btn_code {
+                                1 => {
+                                    if pressed {
+                                        // If context menu is open, clicking outside dismisses it
+                                        if state.context_menu.visible {
+                                            if !state.handle_menu_click(mx, my) {
+                                                state.context_menu.dismiss();
+                                            }
+                                            state.schedule_render();
+                                            return;
+                                        }
+                                        state.handle_pointer_down(mx, my, false, false, false);
+                                    } else {
+                                        state.handle_pointer_up(mx, my);
+                                    }
+                                }
+                                3 => {
+                                    if pressed {
+                                        state.handle_context_menu(mx, my);
+                                    }
+                                }
+                                2 => {}
+                                _ => {}
+                            }
+                            state.schedule_render();
+                        }
+                        InputEvent::PointerAxis { event } => {
+                            let v = event.amount(Axis::Vertical).unwrap_or(0.0);
+                            let h = event.amount(Axis::Horizontal).unwrap_or(0.0);
+                            let (mx, my) = state.last_mouse;
+                            state.handle_axis(mx, my, h, v);
+                            state.schedule_render();
+                        }
+                        _ => {}
+                    }
+                }
+                WinitEvent::CloseRequested => {
+                    tracing::info!("Close requested");
+                    state.save_state();
+                    let _ = state.session.shutdown_sequence(|| {
+                        // State already saved above
+                    });
+                    std::process::exit(0);
+                }
+                _ => {}
+            })
+            .expect("Failed to register winit event source");
+    }
 
     tracing::info!(window_size = ?state.window_size, "render size");
     tracing::info!("Veyra running on {}", socket_name);

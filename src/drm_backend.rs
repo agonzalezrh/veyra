@@ -30,6 +30,7 @@ use smithay::backend::egl::EGLSurface;
 use smithay::backend::renderer::gles::ffi;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::session::libseat::LibSeatSession;
+use smithay::backend::session::Session;
 use smithay::backend::SwapBuffersError;
 use smithay::reexports::drm::control::Mode;
 use smithay::reexports::drm::control::{connector, Device as ControlDevice};
@@ -161,7 +162,7 @@ pub fn run_probe(frames: u32) -> Result<(), String> {
 /// driver's dma-buf RENDER limitation (software rasterizers cannot
 /// render into imported dma-bufs; see the M079 gate in try_new).
 pub fn run_flip_probe(frames: u32) -> Result<(), String> {
-    let mut backend = DrmGraphicsBackend::try_new_impl(false).map_err(|e| e.to_string())?;
+    let mut backend = DrmGraphicsBackend::try_new_impl(None, false).map_err(|e| e.to_string())?;
     info!(frames, size = ?backend.size(), "flip probe start");
     for i in 0..frames {
         backend
@@ -241,31 +242,67 @@ impl DrmGraphicsBackend {
 }
 
 impl DrmGraphicsBackend {
-    /// Attempt to create a native DRM/KMS backend.
+    /// Attempt to create a native DRM/KMS backend (probe path:
+    /// self-opened device, optional internal session).
     pub fn try_new() -> Result<Self, DrmBackendError> {
-        Self::try_new_impl(true)
+        Self::try_new_impl(None, true)
     }
 
-    /// Internal constructor; `render_gate=false` skips the M079
-    /// software-renderer refusal (flip-only probes never rasterize).
-    fn try_new_impl(render_gate: bool) -> Result<Self, DrmBackendError> {
+    /// P1 #2: session-managed construction — the DRM device is opened
+    /// THROUGH the libseat session, so device lifetime (and DRM
+    /// master) follows the seat and survives VT switches. `session`
+    /// is the caller's handle (shared with the libinput interface);
+    /// this backend holds a clone for master lifetime.
+    pub fn try_new_with_session(session: &LibSeatSession) -> Result<Self, DrmBackendError> {
+        Self::try_new_impl(Some(session.clone()), true)
+    }
+
+    /// Internal constructor; a `Some` session opens the device through
+    /// libseat (native startup path), `None` self-opens (probes,
+    /// virtual devices).
+    fn try_new_impl(
+        session: Option<LibSeatSession>,
+        render_gate: bool,
+    ) -> Result<Self, DrmBackendError> {
         info!("Initializing native DRM/KMS backend");
 
-        let (path, fd) = open_drm_device().ok_or(DrmBackendError::NoDevice)?;
-        info!(?path, "opened DRM device");
+        let (path, fd) = match &session {
+            // Session-owned device: open through libseat so the device
+            // is revoked/restored with seat (de)activation.
+            Some(session) => {
+                let (path, _) = open_drm_device().ok_or(DrmBackendError::NoDevice)?;
+                let mut s = session.clone();
+                let fd = s
+                    .open(
+                        &path,
+                        smithay::reexports::rustix::fs::OFlags::RDWR
+                            | smithay::reexports::rustix::fs::OFlags::CLOEXEC,
+                    )
+                    .map_err(|e| DrmBackendError::Drm(format!("session open: {:?}", e)))?;
+                info!(?path, "opened DRM device through libseat session");
+                (path, fd)
+            }
+            None => open_drm_device().ok_or(DrmBackendError::NoDevice)?,
+        };
+        if session.is_none() {
+            info!(?path, "opened DRM device");
+        }
 
-        // Session control is optional: required for real hardware (VT +
-        // master), unnecessary for virtual devices (VKMS) where master
-        // is acquired externally.
-        let session = match LibSeatSession::new() {
-            Ok((s, _notifier)) => {
-                info!("libseat session acquired");
-                Some(s)
-            }
-            Err(e) => {
-                warn!(err = %e, "no libseat session (continuing without VT control — OK for virtual devices)");
-                None
-            }
+        // Probe path: session control is optional (required for real
+        // hardware — VT + master — unnecessary for virtual devices like
+        // VKMS where master is acquired externally).
+        let session = match session {
+            Some(s) => Some(s),
+            None => match LibSeatSession::new() {
+                Ok((s, _notifier)) => {
+                    info!("libseat session acquired");
+                    Some(s)
+                }
+                Err(e) => {
+                    warn!(err = %e, "no libseat session (continuing without VT control — OK for virtual devices)");
+                    None
+                }
+            },
         };
 
         let device_fd = DeviceFd::from(fd);

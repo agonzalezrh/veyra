@@ -293,6 +293,9 @@ pub struct LookingGlass {
     /// P2 #9: per-GL-context render caches (DrawGl programs/VAOs, font
     /// atlas) — owned here so they reset exactly when the context does.
     pub render_caches: renderer::RenderCaches,
+    /// P1 #2: true while the libseat session is paused (VT switch) —
+    /// presentation is suspended until the seat reactivates.
+    pub session_paused: bool,
     /// R6: wake handle pinging the event loop — dirty state renders
     /// immediately instead of waiting for the pacing timer.
     pub render_ping: Option<smithay::reexports::calloop::ping::Ping>,
@@ -494,6 +497,7 @@ impl LookingGlass {
             pacing_timer: None,
             pacing_active: false,
             render_caches: Default::default(),
+            session_paused: false,
             focus_manager: FocusManager::new(),
             interaction: InteractionController::new(),
             input_sinks: HashMap::new(),
@@ -1393,6 +1397,13 @@ impl LookingGlass {
 
     pub fn render(&mut self) {
         use crate::perf::PipelineStage;
+
+        // P1 #2: the session owns the display — no presentation while
+        // the VT is backgrounded.
+        if self.session_paused {
+            self.scheduler.clear();
+            return;
+        }
 
         // G-B1: flush a pending selection refresh (owner disconnect)
         // before drawing — the toggle must NOT run inside the client

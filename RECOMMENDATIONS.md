@@ -9,14 +9,14 @@ All findings addressed in commits R1-R13 (79a65c4..c546355):
 | Finding | Status | Commit |
 |---------|--------|--------|
 | P1 #1 frame lifecycle | FIXED — render_scene draw-only; finish errors reach the frame owner | 79a65c4 |
-| P1 #2 --native | PARTIALLY STALE at review time — G-B3 (d9a606f) already landed GBM/EGL/page-flip presentation + M079 capability gate; remaining gap: --native still runs inside winit's event loop and has no libinput session loop (`native_backend::run_native` unused) | see G-B3 |
+| P1 #2 --native | FIXED — native-first startup (winit never initialized in native mode); libseat session owns the DRM device; libinput-over-udev feeds the same input methods as winit; session (de)activation gates presentation; clean refusal + winit fallback. Verified on VKMS (session, session-owned device open, KMS mode adoption, libinput wiring, loop runs); rendering on real GPUs requires hardware (M079 gate refuses software stacks cleanly) | G-B3 + this commit |
 | P1 #3 persistence identity | FIXED — chrome.app_id identity, consuming take for duplicate app_ids, saved-workspace restore, camera sync | 59a4a14 |
 | P1 #4 dmabuf cache | FIXED — cache removed; smithay's weak-keyed per-frame cleanup owns lifetime | 53e4171 |
 | P1 #5 group transforms | FIXED — one world-transform API (group * chain * local) used by render/pick/bounds/input; arrangement moves the GROUP transform; membership validation | f92bc6d |
 | P2 #6 fixed 16ms poll | FIXED — ping-driven immediate renders + self-disarming 16ms pacer; idle = no renders, no timer wakeups | 14d1211 |
 | P2 #7 pointer constraints | FIXED — focus-gated activation, real protocol deactivation, confinement enforced (region clamp) | faf347c |
 | P2 #8 workspace destruction | FIXED — visuals rehomed (membership, transforms, detached, focus) into a surviving workspace | b45e60e |
-| P2 #9 global GL caches + stderr | PARTIAL — production eprintln removed (R9); DRAW_GL/FONT_ATLAS context-scoping deferred (needs the renderer-context restructure) | 1c93a10 |
+| P2 #9 global GL caches + stderr | MOSTLY FIXED — production eprintln removed (R9); DrawGl/font-atlas caches now context-owned (RenderCaches in LookingGlass, reset on all three context-loss paths, statics deleted). Remaining: the raw-pointer surface-rebinding workaround and its expect() panic still need the safe presentation-API restructure | 1c93a10, 0e284af |
 | P2 #10 SystemTime | FIXED — Instant-anchored now_ms | 1c93a10 |
 | P2 #11 output mode sync | FIXED — output handle stored; mode synced at startup, on resize, and on --native | 0324dcf |
 | P3 #12 decoration conversion | FIXED — Visual::title_bar_fraction single API; all call sites converted | 6b03546 |
@@ -27,8 +27,11 @@ the frame contract (smithay's DummyRenderer cannot satisfy the
 GlesRenderer-typed backend; a structural guard test covers the
 invariant instead); no harness client exercises zwp_pointer_constraints;
 no automated advertised-mode-vs-projection resize comparison;
---native input/event-loop integration remains future work (M078
-follow-up).
+--native rendering on REAL hardware is validated only up to the M079
+gate in this environment (VKMS + llvmpipe cannot rasterize imported
+dma-bufs); the raw-pointer EGL surface-rebinding workaround in
+render_scene still needs the safe presentation-API restructure
+(P2 #9 remainder).
 
 ## Scope
 
