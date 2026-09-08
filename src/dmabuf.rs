@@ -1,8 +1,5 @@
-use std::sync::Mutex;
-
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::Format;
-use smithay::backend::renderer::gles::GlesTexture;
 use smithay::backend::renderer::ImportDma;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::DisplayHandle;
@@ -12,7 +9,6 @@ use tracing::warn;
 pub struct DmabufManager {
     pub state: DmabufState,
     pub global: DmabufGlobal,
-    pub textures: Mutex<Vec<(Dmabuf, GlesTexture)>>,
 }
 
 impl DmabufManager {
@@ -33,7 +29,6 @@ impl DmabufManager {
         DmabufManager {
             state,
             global,
-            textures: Mutex::new(Vec::new()),
         }
     }
 }
@@ -52,10 +47,16 @@ impl DmabufHandler for crate::compositor::LookingGlass {
         if let Some(backend) = self.backend.as_mut() {
             let renderer = backend.renderer();
             match renderer.import_dmabuf(&dmabuf, None) {
-                Ok(texture) => {
-                    if let Ok(mut cache) = self.dmabuf_manager.textures.lock() {
-                        cache.push((dmabuf, texture));
-                    }
+                Ok(_texture) => {
+                    // R4: the texture is intentionally NOT retained here.
+                    // smithay's GlesRenderer caches it keyed by a WEAK
+                    // dmabuf reference and frees the GL objects during
+                    // frame cleanup once the last strong reference (the
+                    // client's wl_buffer) is gone. Retaining the strong
+                    // dmabuf here defeated that pruning and leaked both
+                    // fds and GPU textures for every buffer a client
+                    // ever imported. The commit path re-imports through
+                    // ImportAll when the content is actually rendered.
                     if notifier.successful::<Self>().is_err() {
                         warn!("dmabuf import notification failed");
                     }
