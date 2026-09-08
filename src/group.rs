@@ -174,15 +174,11 @@ impl Scene {
     /// Compute a visual's world matrix, accounting for group transforms.
     ///
     /// world = group_transform * parent_transform * ... * local_transform
+    ///
+    /// R5: [`Scene::world_matrix`] composes groups directly; this
+    /// remains as the explicit spelling for existing call sites.
     pub fn world_matrix_with_groups(&self, id: VisualId) -> Matrix4<f32> {
-        let local = self.world_matrix(id);
-        // Find the first group containing this visual
-        for g in &self.groups {
-            if g.contains(id) {
-                return g.world_matrix() * local;
-            }
-        }
-        local
+        self.world_matrix(id)
     }
 
     /// Get all groups.
@@ -334,5 +330,77 @@ mod tests {
         let empty = SpatialGroup::new(vec![]);
         assert!(empty.is_empty());
         assert_eq!(empty.len(), 0);
+    }
+
+    /// R5: with REAL scene visuals — group translation/rotation,
+    /// picking, and arrangement must all move members together via the
+    /// group transform. This is the end-to-end contract that group
+    /// transforms are presentation-authoritative.
+    #[test]
+    fn group_transform_moves_members_in_render_pick_and_arrange() {
+        let mut scene = Scene::default();
+        let mut a = crate::scene::Visual::new_test(200, 100);
+        a.transform.position = cgmath::Vector3::new(0.0, 0.0, 0.0);
+        let va = a.id;
+        scene.add(a);
+        let mut b = crate::scene::Visual::new_test(200, 100);
+        b.transform.position = cgmath::Vector3::new(250.0, 0.0, 0.0);
+        let vb = b.id;
+        scene.add(b);
+        scene.create_group(vec![va, vb]);
+
+        // 1) Translation composes into BOTH members' world matrices.
+        scene.groups[0].transform.position = cgmath::Vector3::new(100.0, 0.0, 0.0);
+        let wa = scene.world_matrix(va);
+        let wb = scene.world_matrix(vb);
+        assert!((wa[3][0] - 100.0).abs() < 0.01, "A x {}", wa[3][0]);
+        assert!((wb[3][0] - 350.0).abs() < 0.01, "B x {}", wb[3][0]);
+
+        // 2) Rotation rotates member offsets around the group origin.
+        scene.groups[0].transform.rotation =
+            cgmath::Quaternion::from_angle_z(cgmath::Deg(90.0));
+        let wb = scene.world_matrix(vb);
+        // Local offset (250,0,0) rotated 90° about z → (0,250,0) + group translation.
+        assert!((wb[3][0] - 100.0).abs() < 0.01, "rotated B x {}", wb[3][0]);
+        assert!((wb[3][1] - 250.0).abs() < 0.01, "rotated B y {}", wb[3][1]);
+        scene.groups[0].transform.rotation =
+            cgmath::Quaternion::from_angle_z(cgmath::Deg(0.0));
+
+        // 3) Picking hits members at their group-moved locations.
+        let view = cgmath::Matrix4::from_translation(cgmath::Vector3::new(0.0, 0.0, -800.0));
+        let proj = cgmath::perspective(cgmath::Deg(45.0), 1280.0 / 720.0, 1.0, 10000.0);
+        let pv = proj * view;
+        let world_pt = pv * cgmath::Vector4::new(100.0, 0.0, 0.0, 1.0);
+        let hit = scene.pick(&pv, world_pt.x / world_pt.w, world_pt.y / world_pt.w);
+        assert_eq!(hit.map(|(id, _)| id), Some(va), "A picked at group-moved position");
+        let world_pt = pv * cgmath::Vector4::new(350.0, 0.0, 0.0, 1.0);
+        let hit = scene.pick(&pv, world_pt.x / world_pt.w, world_pt.y / world_pt.w);
+        assert_eq!(hit.map(|(id, _)| id), Some(vb), "B picked at group-moved position");
+
+        // 4) Arrangement moves the GROUP transform: both members travel
+        // together and the representative lands at the arranged spot.
+        let arrangement = crate::arrange::arrange(
+            &scene,
+            crate::arrange::ArrangeMode::Reset,
+            &crate::arrange::ArrangeConfig::default(),
+            &[va, vb],
+            &[],
+        );
+        assert!(arrangement.contains_key(&va), "representative is arranged");
+        crate::arrange::apply_arrangement(&mut scene, &arrangement);
+        let wa = scene.world_matrix(va);
+        let wb = scene.world_matrix(vb);
+        let arranged = arrangement.get(&va).unwrap();
+        assert!(
+            (wa[3][0] - arranged.position.x).abs() < 0.01
+                && (wa[3][1] - arranged.position.y).abs() < 0.01,
+            "representative landed at the arranged position ({}, {})",
+            wa[3][0], wa[3][1]
+        );
+        assert!(
+            (wb[3][0] - wa[3][0] - 250.0).abs() < 0.01,
+            "members moved together (B x {} vs A x {})",
+            wb[3][0], wa[3][0]
+        );
     }
 }

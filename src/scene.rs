@@ -423,12 +423,33 @@ impl Scene {
         self.de_emphasized_set.len() < len_before
     }
 
-    /// Compute the world-space transform matrix for a visual by composing
-    /// parent chains. Returns identity matrix if the visual doesn't exist.
-    /// Order: parent transforms on the left, child on the right:
-    ///   world = parent_local * grandparent_local * ... * child_local
-    /// where `to_matrix()` is T * R * S.
+    /// Compute the world-space transform matrix for a visual, composing
+    /// BOTH parent chains and group membership (R5: one world-transform
+    /// API — render, picking, bounds, and input all consume this).
+    ///
+    /// Order: group transform on the left, then the parent chain, then
+    /// local:
+    ///   world = group * parent * ... * child_local
+    /// The transform of the FIRST group containing the visual applies
+    /// once at the top (groups never nest; a visual in several groups
+    /// takes the first — arrangement rejects such overlaps).
     pub fn world_matrix(&self, id: VisualId) -> Matrix4<f32> {
+        let chain = self.parent_chain_matrix(id);
+        for g in &self.groups {
+            if g.contains(id) {
+                return g.world_matrix() * chain;
+            }
+        }
+        chain
+    }
+
+    /// Parent-chain-only world matrix (no group composition). Internal
+    /// basis for reparent/detach: those rewrite LOCAL transforms while
+    /// group membership stays unchanged, so they must bake exactly the
+    /// parent chain — the group keeps applying once at the top. All
+    /// public consumers (render, pick, bounds, input) use
+    /// [`Scene::world_matrix`].
+    fn parent_chain_matrix(&self, id: VisualId) -> Matrix4<f32> {
         let mut visited = 0u32;
         let mut current = id;
         let mut chain: Vec<Matrix4<f32>> = Vec::new();
@@ -446,10 +467,7 @@ impl Scene {
             }
         }
         // Compose: parent transforms on the left, iterate reversed
-        // world = start identity * child_local * parent_local * grandparent_local...
-        // Actually: position(child) is in parent space. So:
         // world(child) = world(parent) * child_local
-        // We compute by walking up, then composing down:
         let mut result = Matrix4::identity();
         for m in chain.iter().rev() {
             result = result * m;
@@ -532,7 +550,11 @@ impl Scene {
         if self.visuals[idx].parent.is_none() {
             return true; // already detached
         }
-        let world = self.world_matrix(id);
+        // R5: bake ONLY the parent chain — group membership is
+        // unchanged and the group transform must keep applying exactly
+        // once at the top (using the group-composed matrix here would
+        // double-apply it).
+        let world = self.parent_chain_matrix(id);
         self.visuals[idx].transform = Transform3D::from_matrix(&world);
         self.visuals[idx].parent = None;
         true
@@ -552,10 +574,11 @@ impl Scene {
         if !self.visuals.iter().any(|v| v.id == new_parent) {
             return Err("parent not found".into());
         }
-        // Compute child's current world transform
-        let child_world = self.world_matrix(child);
-        // Compute new parent's world transform
-        let parent_world = self.world_matrix(new_parent);
+        // R5: chain-only matrices — group membership is unchanged by
+        // reparenting and the group transform must keep applying exactly
+        // once at the top (see parent_chain_matrix).
+        let child_world = self.parent_chain_matrix(child);
+        let parent_world = self.parent_chain_matrix(new_parent);
         // Invert parent world: new_local = inverse(parent_world) * child_world
         let inv_parent = match parent_world.invert() {
             Some(m) => m,

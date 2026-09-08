@@ -112,6 +112,26 @@ pub fn arrange(
         if group.visual_ids.is_empty() {
             continue;
         }
+        // R5 membership validation: reject groups with stale (removed
+        // from scene), duplicated, or multi-group members — such
+        // membership is not supported by the arrangement model, which
+        // treats a group as one rigid unit positioned via its GROUP
+        // transform.
+        let mut seen = std::collections::HashSet::new();
+        let mut valid = true;
+        for vid in &group.visual_ids {
+            if scene.get(*vid).is_none() || !seen.insert(*vid) {
+                valid = false;
+                break;
+            }
+            if scene.groups.iter().filter(|g| g.contains(*vid)).count() > 1 {
+                valid = false;
+                break;
+            }
+        }
+        if !valid {
+            continue;
+        }
         // Check if any member is in visual_ids
         let has_member = group.visual_ids.iter().any(|vid| visual_ids.contains(vid));
         if !has_member {
@@ -191,11 +211,31 @@ pub fn arrange(
 
 /// Apply arrangement result to a scene. Converts group-relative transforms
 /// to individual visual transforms.
+///
+/// R5: a group's arranged entry is keyed by its representative (first
+/// member); applying it moves the GROUP transform — by the position
+/// delta that lands the representative at the arranged spot — so every
+/// member moves together. Previously only the representative's own
+/// transform was overwritten, leaving the rest of the group behind.
 pub fn apply_arrangement(
     scene: &mut Scene,
     arrangement: &HashMap<VisualId, Transform3D>,
 ) {
     for (vid, tf) in arrangement {
+        // Group representative? Move the group, not the member.
+        let group_idx = scene
+            .groups
+            .iter()
+            .position(|g| g.visual_ids.first() == Some(vid));
+        if let Some(gi) = group_idx {
+            // Current world position of the representative (includes the
+            // group transform already).
+            let world = scene.world_matrix(*vid);
+            let cur = cgmath::Vector3::new(world[3][0], world[3][1], world[3][2]);
+            let delta = tf.position - cur;
+            scene.groups[gi].transform.position += delta;
+            continue;
+        }
         if let Some(visual) = scene.get_mut(*vid) {
             visual.transform = tf.clone();
         }
