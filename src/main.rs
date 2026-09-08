@@ -86,6 +86,31 @@ fn main() {
     // on injected F5 keypresses, which proved unreliable across setups.
     let start_normal = std::env::args().any(|a| a == "--normal" || a == "--2d");
 
+    // G-B3 validation probe: render N frames through the full
+    // GBM → EGL dmabuf → KMS page-flip pipeline without starting the
+    // compositor (no wayland socket, no winit). Run against a virtual
+    // device with: sudo -E VEYRA_DRM_CARD=/dev/dri/card1 \
+    //               VEYRA_DRM_PROBE=90 ./veyra
+    if let Ok(mode) = std::env::var("VEYRA_DRM_PROBE") {
+        let result = if mode == "flip" {
+            crate::drm_backend::run_flip_probe(90)
+        } else {
+            let frames: u32 = mode.parse().unwrap_or(90);
+            tracing::info!(frames, "running DRM presentation probe");
+            crate::drm_backend::run_probe(frames)
+        };
+        match result {
+            Ok(()) => {
+                tracing::info!("drm probe OK");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                tracing::error!(e, "drm probe FAILED");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let mut event_loop: EventLoop<'static, LookingGlass> =
         EventLoop::try_new().expect("Failed to create event loop");
     let handle = event_loop.handle();

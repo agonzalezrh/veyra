@@ -35,13 +35,22 @@ window, source death) in `run_input_tests.sh`.
 **What's missing**: Neither trait has method implementations. DnD enters/leaves/motions/drops are not processed.
 **Fix**: Implement the DnD grab handler methods (drag enter/motion/leave/drop) + data transfer.
 
-### 3. DRM presentation
+### ~~3. DRM presentation~~ — ✅ G-B3 (Fixed, hardware-gated)
 
-**Area**: Native backend
-**File**: `src/drm_backend.rs`
-**What's done**: `DrmGraphicsBackend<GlesRenderer>` implements `PresentationBackend` trait. Device, connector, mode, EGL context, and GBM surface initialized.
-**What's missing**: `begin_frame` returns `Ok(())` without binding EGL surface to DRM framebuffer. `finish_frame` returns `Ok(())` without page flip. No visible output on native DRM.
-**Fix**: GBM framebuffer allocation + EGL surface bind + page flip + flip handler.
+`begin_frame` now allocates from a GBM swapchain (`GbmBufferedSurface`),
+imports the buffer as an EGLImage/RBO/FBO left bound for the raw-GL
+pipeline, and `finish_frame` flushes + arms a KMS page flip. Flip
+completion events are drained (poll + `frame_submitted`) so the
+swapchain retires; pacing becomes vblank-driven. EGL lives on the GBM
+platform (same device) because a surfaceless display cannot import
+foreign device buffers. gbm's dma-buf export is READ-ONLY — the backend
+re-exports through PRIME_HANDLE_TO_FD with DRM_RDWR before import.
+**Remaining hardware gate (M079, verified on VKMS + modetest)**:
+software rasterizers cannot render into imported dma-bufs (llvmpipe
+crashes in Mesa) and the read-only export blocks CPU fills — the M079
+capability gate refuses those drivers cleanly with diagnostics
+(`VEYRA_DRM_FORCE=1` overrides). Full presentation verification requires
+a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 
 ### 4. Frame scheduling (no vblank sync)
 

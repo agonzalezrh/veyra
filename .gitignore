@@ -2,3 +2,6 @@
 
 # Manual-run artifacts (harness writes to its own tmp dir)
 /*.log
+
+# Local code-review output
+/RECOMMENDATIONS.md
