@@ -117,11 +117,13 @@ impl ClientResizeCoordinator {
         before != self.entries.len()
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// Number of outstanding requests (test helper).
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn entries_len(&self) -> usize {
         self.entries.len()
     }

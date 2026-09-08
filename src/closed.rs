@@ -6,6 +6,7 @@ use crate::scene::Transform3D;
 
 /// A tombstone recorded when a window is closed/destroyed.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct ClosedWindow {
     pub app_id: String,
     pub title: String,
@@ -38,6 +39,7 @@ impl ClosedWindowHistory {
     }
 
     /// Record a closed window, trimming to the capacity (oldest dropped).
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn record(&mut self, window: ClosedWindow) {
         self.entries.push(window);
         while self.entries.len() > self.cap {
@@ -46,6 +48,7 @@ impl ClosedWindowHistory {
     }
 
     /// Most recently closed window.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn most_recent(&self) -> Option<&ClosedWindow> {
         self.entries.last()
     }
@@ -56,6 +59,7 @@ impl ClosedWindowHistory {
     }
 
     /// Most recently closed window for the given app id, if any.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn most_recent_for_app(&self, app_id: &str) -> Option<&ClosedWindow> {
         self.entries
             .iter()
@@ -63,10 +67,12 @@ impl ClosedWindowHistory {
             .find(|w| w.app_id == app_id)
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

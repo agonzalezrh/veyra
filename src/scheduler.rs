@@ -47,6 +47,7 @@ impl RenderScheduler {
     }
 
     /// Whether animation is currently active.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn is_animating(&self) -> bool {
         self.animating
     }
@@ -57,6 +58,7 @@ impl RenderScheduler {
     }
 
     /// Reset both flags.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn reset(&mut self) {
         self.dirty = false;
         self.animating = false;

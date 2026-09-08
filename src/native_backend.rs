@@ -27,12 +27,14 @@ use tracing::info;
 use crate::compositor::LookingGlass;
 
 #[derive(Debug)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum NativeError {
     Session,
 }
 
 /// Validate the native input path.
 /// Full DRM/KMS rendering loop is coming in Group D.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn run_native(
     mut event_loop: EventLoop<'static, LookingGlass>,
     _display_handle: &DisplayHandle,

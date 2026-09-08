@@ -12,25 +12,27 @@ use smithay::utils::Rectangle;
 
 /// The window's current state — independent of content state.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum WindowState {
+    #[default]
     Normal,
     Minimized,
     Maximized,
 }
 
-impl Default for WindowState {
-    fn default() -> Self { WindowState::Normal }
-}
 
 /// Actions a window operation can perform.
 /// Provider-independent — each content source decides how to handle it.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // state-space completeness; variants reserved
 pub enum WindowAction {
     Close,
 }
 
 /// Configuration for window decorations.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct DecorationConfig {
     /// Title bar height as fraction of content height (e.g. 0.05 = 5%).
     pub title_bar_height: f32,
@@ -48,6 +50,7 @@ impl Default for DecorationConfig {
 
 /// Distinguishes damage types for the rendering pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum DamageKind {
     /// No damage, visual unchanged.
     #[default]
@@ -60,8 +63,11 @@ pub enum DamageKind {
 
 /// The state of a visual's content producer.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum ContentState {
     /// No producer connected; visual shows placeholder content.
+    #[default]
     Disconnected,
     /// Producer is connecting (initial frames may still arrive).
     Connecting,
@@ -71,9 +77,6 @@ pub enum ContentState {
     Error,
 }
 
-impl Default for ContentState {
-    fn default() -> Self { ContentState::Disconnected }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VisualId(pub u64);
@@ -95,6 +98,7 @@ pub struct Transform3D {
 }
 
 impl Transform3D {
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn identity() -> Self {
         Transform3D {
             position: Vector3::new(0.0, 0.0, 0.0),
@@ -103,6 +107,7 @@ impl Transform3D {
         }
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn rotation_angle(&self) -> f32 {
         use cgmath::InnerSpace;
         let s = self.rotation.s;
@@ -122,6 +127,7 @@ impl Transform3D {
 
     /// Decompose a 4x4 matrix into a Transform3D (position, rotation, scale).
     /// The matrix is assumed to be T * R * S (no shear/perspective).
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn from_matrix(m: &Matrix4<f32>) -> Self {
         let position = Vector3::new(m[3][0], m[3][1], m[3][2]);
         // Extract scale from column magnitudes
@@ -159,23 +165,16 @@ pub enum VisualContent {
 /// Compositor-owned chrome data for a visual.
 /// This is metadata the compositor displays but never modifies client surfaces.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct SpatialChrome {
     pub title: String,
     pub app_id: String,
     pub focused: bool,
 }
 
-impl Default for SpatialChrome {
-    fn default() -> Self {
-        SpatialChrome {
-            title: String::new(),
-            app_id: String::new(),
-            focused: false,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct Visual {
     pub id: VisualId,
     pub content: VisualContent,
@@ -232,17 +231,20 @@ impl Visual {
     }
 
     /// The total height of the visual including decoration (title bar).
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn total_height(&self) -> f32 {
         let content_h = self.geometry.size.h as f32 * self.transform.scale.y;
         content_h * (1.0 + self.decoration.title_bar_height)
     }
 
     /// The total width (content width, unchanged by title bar).
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn total_width(&self) -> f32 {
         self.geometry.size.w as f32 * self.transform.scale.x
     }
 
     /// Height of the title bar in scaled world units.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn title_bar_size(&self) -> f32 {
         self.geometry.size.h as f32 * self.transform.scale.y * self.decoration.title_bar_height
     }
@@ -262,6 +264,7 @@ impl Visual {
 
     /// Returns true if a hit in local UV coords [0,1] is in the title bar.
     /// UV is the full visual UV (including decoration).
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn hit_title_bar(&self, _u: f64, v: f64) -> bool {
         v < self.title_bar_fraction() as f64
     }
@@ -496,6 +499,7 @@ impl Scene {
     /// Picking and pointer→UV mapping must use this so that parented
     /// visuals (popups, groups) are hit where they are DRAWN, not
     /// where their local coordinates happen to sit.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn world_transform(&self, id: VisualId) -> Transform3D {
         let world = self.world_matrix(id);
         let pos = Vector3::new(world[3][0], world[3][1], world[3][2]);
@@ -512,6 +516,7 @@ impl Scene {
     }
 
     /// Set a visual's parent. Returns an error if it would create a cycle.
+#[allow(dead_code)] // reserved API surface; not yet wired
     pub fn set_parent(&mut self, child: VisualId, new_parent: VisualId) -> Result<(), String> {
         if child == new_parent {
             return Err("cannot parent to self".into());
@@ -543,6 +548,7 @@ impl Scene {
     }
 
     /// Remove a visual's parent relationship. Returns true if found.
+#[allow(dead_code)] // reserved API surface; not yet wired
     pub fn clear_parent(&mut self, id: VisualId) -> bool {
         match self.visuals.iter_mut().find(|v| v.id == id) {
             Some(v) => { v.parent = None; true }
@@ -554,6 +560,7 @@ impl Scene {
     /// The visual's local transform is updated to match its current world
     /// position/rotation/scale, and parent is cleared.
     /// Returns true if the visual was found and had a parent.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn detach_from_parent(&mut self, id: VisualId) -> bool {
         let idx = match self.visuals.iter().position(|v| v.id == id) {
             Some(i) => i,
@@ -575,6 +582,7 @@ impl Scene {
     /// Reparent a visual to a new parent, preserving its world transform.
     /// The visual's local transform is recomputed relative to the new parent.
     /// Returns an error if the reparenting would create a cycle.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn reparent(&mut self, child: VisualId, new_parent: VisualId) -> Result<(), String> {
         if child == new_parent {
             return Err("cannot parent to self".into());
@@ -619,6 +627,7 @@ impl Scene {
     }
 
     /// Minimize a visual: hide it but preserve all state.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn minimize(&mut self, id: VisualId) -> bool {
         if let Some(v) = self.get_mut(id) {
             if v.window_state != WindowState::Minimized {
@@ -634,6 +643,7 @@ impl Scene {
     /// Maximize a visual: save current transform, fit to viewport.
     /// The actual viewport fitting is done by the caller (LookingGlass).
     /// This method saves the transform and sets state.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn maximize(&mut self, id: VisualId) -> bool {
         if let Some(v) = self.get_mut(id) {
             if v.window_state == WindowState::Maximized {
@@ -650,6 +660,7 @@ impl Scene {
     }
 
     /// Restore a minimized or maximized visual to its previous state.
+#[allow(dead_code)] // reserved API surface; not yet wired
     pub fn restore(&mut self, id: VisualId) -> bool {
         if let Some(v) = self.get_mut(id) {
             match &v.saved_transform {
@@ -698,6 +709,7 @@ impl Scene {
     /// Set the focused visual. Unfocuses the previous one.
     /// Focus is independent of selection — a visual can be focused
     /// for keyboard input while another is selected for manipulation.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn focus(&mut self, id: Option<VisualId>) {
         if self.focused_id == id {
             return;
@@ -719,6 +731,7 @@ impl Scene {
     /// destroyed: the topmost remaining active visual (highest draw order,
     /// i.e. most recently raised) among the given workspace members.
     /// Returns None when the workspace has no remaining active visuals.
+#[allow(dead_code)] // reserved API surface; not yet wired
     pub fn pick_focus_replacement(&self, workspace_ids: &[VisualId]) -> Option<VisualId> {
         // A minimized window must never receive keyboard focus via
         // replacement (I5): it is invisible and unpickable.
@@ -745,6 +758,7 @@ impl Scene {
 
     /// Move a visual to the top of the stacking order.
     /// Returns true if the visual was found and moved.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn bring_to_front(&mut self, id: VisualId) -> bool {
         let idx = match self.find_index(id) {
             Some(i) => i,
@@ -759,6 +773,7 @@ impl Scene {
     }
 
     /// Move a visual to the bottom of the stacking order.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn send_to_back(&mut self, id: VisualId) -> bool {
         let idx = match self.find_index(id) {
             Some(i) => i,
@@ -773,6 +788,7 @@ impl Scene {
     }
 
     /// Raise a visual by one position in the stacking order.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn raise(&mut self, id: VisualId) -> bool {
         let idx = match self.find_index(id) {
             Some(i) => i,
@@ -786,6 +802,7 @@ impl Scene {
     }
 
     /// Lower a visual by one position in the stacking order.
+#[allow(dead_code)] // reserved API surface; not yet wired
     pub fn lower(&mut self, id: VisualId) -> bool {
         let idx = match self.find_index(id) {
             Some(i) => i,
@@ -1448,15 +1465,15 @@ mod tests {
     #[test]
     fn min_max_restore_works_for_all() {
         let mut scene = Scene::default();
-        let _ = scene.focus(Some(VisualId(42)));
-        assert!(scene.minimize(VisualId(42)) == false); // no such visual
-        assert!(scene.maximize(VisualId(42)) == false);
-        assert!(scene.restore(VisualId(42)) == false);
+        scene.focus(Some(VisualId(42)));
+        assert!(!scene.minimize(VisualId(42))); // no such visual
+        assert!(!scene.maximize(VisualId(42)));
+        assert!(!scene.restore(VisualId(42)));
     }
 
     #[test]
     fn is_visible_checks_window_state_only() {
-        let mut scene = Scene::default();
+        let scene = Scene::default();
         // is_visible only checks window_state, not ContentState
         assert!(!scene.is_visible(VisualId(1))); // doesn't exist
     }
@@ -1492,7 +1509,7 @@ mod tests {
 
     #[test]
     fn world_matrix_unknown_returns_identity() {
-        let mut scene = Scene::default();
+        let scene = Scene::default();
         let m = scene.world_matrix(VisualId(999));
         assert!((m[0][0] - 1.0).abs() < 1e-4);
         assert!((m[3][0]).abs() < 1e-4);
@@ -1576,7 +1593,6 @@ mod tests {
     /// space), not where their local coordinates sit.
     #[test]
     fn pick_hits_popup_at_world_position() {
-        use cgmath::InnerSpace;
         let mut scene = Scene::default();
         let parent = crate::scene::Visual::new_test(400, 300);
         let popup = crate::scene::Visual::new_test(100, 60);
@@ -1705,7 +1721,7 @@ mod tests {
 
     #[test]
     fn damage_new_visual_starts_as_content() {
-        let mut scene = Scene::default();
+        let _scene = Scene::default();
         // Without GlesTexture we can't create a Visual, but we can test
         // the DamageKind enum values directly
         assert_eq!(DamageKind::default(), DamageKind::None);
@@ -1739,6 +1755,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(dead_code)] // reserved API surface; not yet wired
     fn detach_preserves_world_transform() {
         // detach_from_parent should preserve the world transform
         // (tested via the Transform3D decomposition math)
@@ -1767,6 +1784,7 @@ mod scenario {
     use super::*;
 
     /// Simulate a focus-follows-click sequence across 3 visuals.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn focus_click_sequence(scene: &mut Scene) {
         scene.focus(Some(VisualId(5)));
         scene.select(Some(VisualId(5)));
@@ -1782,6 +1800,7 @@ mod scenario {
 /// the topmost remaining visual in draw order (last wins) that belongs
 /// to the workspace and is active. Split from `Scene::pick_focus_replacement`
 /// so the rule is unit-testable without GPU-backed visuals.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn pick_replacement_from(
     draw_order: impl IntoIterator<Item = VisualId>,
     workspace_ids: &[VisualId],

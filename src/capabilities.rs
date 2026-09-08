@@ -15,6 +15,7 @@ use tracing::{info, warn};
 
 /// Report of hardware/software capabilities relevant to native rendering.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct CapabilityReport {
     pub drm_available: bool,
     pub kms_available: bool,
@@ -26,8 +27,10 @@ pub struct CapabilityReport {
     pub errors: Vec<String>,
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 impl CapabilityReport {
     /// Whether the system has all capabilities needed for native rendering.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn can_render_natively(&self) -> bool {
         self.drm_available
             && self.kms_available
@@ -39,6 +42,7 @@ impl CapabilityReport {
 }
 
 /// Check all rendering capabilities and return a report.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn check_capabilities() -> CapabilityReport {
     let mut report = CapabilityReport {
         drm_available: false,
@@ -99,7 +103,7 @@ pub fn check_capabilities() -> CapabilityReport {
                                     if ptr.is_null() {
                                         "unknown".to_string()
                                     } else {
-                                        let c_str = unsafe { std::ffi::CStr::from_ptr(ptr as *const i8) };
+                                        let c_str = std::ffi::CStr::from_ptr(ptr as *const i8);
                                         c_str.to_string_lossy().into_owned()
                                     }
                                 };
@@ -138,6 +142,7 @@ pub fn check_capabilities() -> CapabilityReport {
     report
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn find_drm_device() -> Option<std::path::PathBuf> {
     for n in 0..4 {
         let p = std::path::PathBuf::from(format!("/dev/dri/card{}", n));
@@ -148,12 +153,14 @@ fn find_drm_device() -> Option<std::path::PathBuf> {
     None
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn open_drm_device(path: &std::path::Path) -> Result<DeviceFd, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
     let owned: OwnedFd = file.into();
     Ok(DeviceFd::from(owned))
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn create_gbm_device(fd: &DeviceFd) -> Result<(), String> {
     // Just try to create a GBM device — if it works, GBM is available
     let _gbm = smithay::reexports::gbm::Device::new(fd)
@@ -161,6 +168,7 @@ fn create_gbm_device(fd: &DeviceFd) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn create_egl_context() -> Result<(EGLDisplay, EGLContext), String> {
     let display = unsafe {
         EGLDisplay::new(EGLSurfacelessDisplay)

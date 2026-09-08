@@ -2,6 +2,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct LauncherEntry {
     pub app_id: String,
     pub name: String,
@@ -23,6 +24,7 @@ pub enum DesktopEntryType {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct DesktopFile {
     pub entry_type: DesktopEntryType,
     pub name: String,

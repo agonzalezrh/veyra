@@ -18,7 +18,7 @@
 //! The runner asserts on these JSONL lines — never on timing.
 
 use std::collections::HashMap;
-use std::os::fd::{BorrowedFd, FromRawFd};
+use std::os::fd::BorrowedFd;
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::{
@@ -60,7 +60,6 @@ pub struct DndTester {
     role: Role,
     mime: String,
     payload: String,
-    compositor: CompositorState,
     shm: Shm,
     registry_state: RegistryState,
     output_state: OutputState,
@@ -154,7 +153,6 @@ pub fn run_dnd(role: Role, mime: String, payload: String, duration_ms: u64) -> i
         role,
         mime,
         payload,
-        compositor,
         shm,
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -208,7 +206,7 @@ pub fn run_dnd(role: Role, mime: String, payload: String, duration_ms: u64) -> i
 }
 
 impl DndTester {
-    fn draw(&mut self, qh: &QueueHandle<Self>) {
+    fn draw(&mut self, _qh: &QueueHandle<Self>) {
         if self.pool.is_none() {
             self.pool = SlotPool::new(2 * W as usize * H as usize, &self.shm).ok();
         }
@@ -222,7 +220,7 @@ impl DndTester {
             Role::Source => [0xC0, 0x10, 0x10, 0xFF],
             Role::Dest => [0x10, 0xC0, 0x10, 0xFF],
         };
-        for chunk in canvas.chunks_exact_mut(4) {
+        for chunk in canvas.as_chunks_mut::<4>().0 {
             chunk.copy_from_slice(&color);
         }
         buffer.attach_to(&self.surface).expect("dnd attach");

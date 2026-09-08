@@ -10,6 +10,7 @@ use crate::input::Camera;
 /// Which mode the interaction controller is in.
 /// This decides how pointer events are interpreted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum InteractionMode {
     /// No special mode — events go to content or camera.
     Normal,
@@ -19,6 +20,7 @@ pub enum InteractionMode {
 
 /// Modes of manipulation active on the selected visual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum ManipMode {
     None,
     Translate,
@@ -30,6 +32,7 @@ pub enum ManipMode {
 
 /// Tracks an in-progress interaction (e.g. a drag).
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 struct ActiveManip {
     mode: ManipMode,
     /// The visual being manipulated (authoritative, not derived from selection).
@@ -49,6 +52,7 @@ struct ActiveManip {
 ///
 /// Owns no rendering or Wayland state — only scene and camera references.
 #[derive(Debug)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct InteractionController {
     pub selection_enabled: bool,
     pub manipulation_enabled: bool,
@@ -155,6 +159,7 @@ impl InteractionController {
     /// event to content input or scene manipulation.
     /// `visible_ids` optionally restricts picking to a set of visual IDs
     /// (e.g., the active workspace). If None, all visuals are pickable.
+#[allow(clippy::too_many_arguments)] // wide GL/routing signatures are inherent
     pub fn handle_pointer_down(
         &mut self,
         x: f64,
@@ -237,7 +242,7 @@ impl InteractionController {
 
     /// Whether a specific visual is being dragged.
     pub fn is_dragging_visual(&self, vid: VisualId) -> bool {
-        self.active.as_ref().map_or(false, |a| a.vid == vid)
+        self.active.as_ref().is_some_and(|a| a.vid == vid)
     }
 
     /// Start a translate drag on the selected visual (without modifier).
@@ -287,6 +292,7 @@ impl InteractionController {
     }
 
     /// Handle pointer motion during drag.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn handle_pointer_move(
         &mut self,
         x: f64,
@@ -339,6 +345,7 @@ impl InteractionController {
     }
 
     /// Handle scroll for scale.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn handle_scroll(
         &mut self,
         _x: f64,
@@ -351,7 +358,7 @@ impl InteractionController {
             None => return,
         };
         let factor = 1.0 + (y as f32 * 0.05);
-        visual.transform.scale = visual.transform.scale * factor;
+        visual.transform.scale *= factor;
         // Clamp scale to [0.01, 100]
         visual.transform.scale.x = visual.transform.scale.x.clamp(0.01, 100.0);
         visual.transform.scale.y = visual.transform.scale.y.clamp(0.01, 100.0);

@@ -11,6 +11,7 @@ use crate::scene::VisualId;
 pub struct AppId(pub String);
 
 impl AppId {
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -35,12 +36,14 @@ impl ApplicationSwitcher {
         }
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn unregister_visual(&mut self, _app_id: &str, _visual_id: VisualId) {
         // Deliberately no-op: the app-id list is a registry of
         // applications seen this session, not a window set (window
         // state lives in toplevels + focus history).
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn all_app_ids(&self) -> &[AppId] {
         &self.apps
     }

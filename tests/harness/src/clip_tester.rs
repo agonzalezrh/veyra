@@ -57,7 +57,6 @@ pub struct ClipTester {
     mode: Mode,
     mimes: Vec<String>,
     payload: String,
-    compositor: CompositorState,
     shm: Shm,
     registry_state: RegistryState,
     output_state: OutputState,
@@ -137,7 +136,6 @@ pub fn run_clip(mode: Mode, mimes: Vec<String>, payload: String, duration_ms: u6
         mode,
         mimes,
         payload,
-        compositor,
         shm,
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -201,7 +199,7 @@ pub fn run_clip(mode: Mode, mimes: Vec<String>, payload: String, duration_ms: u6
 }
 
 impl ClipTester {
-    fn draw(&mut self, qh: &QueueHandle<Self>) {
+    fn draw(&mut self, _qh: &QueueHandle<Self>) {
         if self.pool.is_none() {
             self.pool = SlotPool::new(2 * W as usize * H as usize, &self.shm).ok();
         }
@@ -215,7 +213,7 @@ impl ClipTester {
             Mode::Set => [0x10, 0x90, 0xF0, 0xFF],
             Mode::Paste => [0xF0, 0x10, 0x90, 0xFF],
         };
-        for chunk in canvas.chunks_exact_mut(4) {
+        for chunk in canvas.as_chunks_mut::<4>().0 {
             chunk.copy_from_slice(&color);
         }
         buffer.attach_to(&self.surface).expect("clip attach");
@@ -330,15 +328,12 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for ClipTester {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        match event {
-            wl_data_offer::Event::Offer { mime_type } => {
-                if let Some(o) = state.offers.get_mut(offer) {
-                    o.mimes.push(mime_type.clone());
-                }
-                crate::log_kv(&[("ev", "clip_mime".into()), ("mime", mime_type.clone().into())]);
-                state.maybe_receive(offer);
+        if let wl_data_offer::Event::Offer { mime_type } = event {
+            if let Some(o) = state.offers.get_mut(offer) {
+                o.mimes.push(mime_type.clone());
             }
-            _ => {}
+            crate::log_kv(&[("ev", "clip_mime".into()), ("mime", mime_type.clone().into())]);
+            state.maybe_receive(offer);
         }
     }
 }

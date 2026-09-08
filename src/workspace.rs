@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use cgmath::Point3;
 
 use crate::focus::FocusManager;
 use crate::input::Camera;
@@ -71,6 +70,7 @@ impl Workspace {
         self.visual_ids.contains(&id)
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn focus(&mut self, id: Option<VisualId>) {
         self.focused_id = id;
     }
@@ -149,21 +149,25 @@ impl WorkspaceManager {
     }
 
     /// Returns a mutable reference to a workspace by ID.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn get_mut(&mut self, id: usize) -> Option<&mut Workspace> {
         self.workspaces.get_mut(id)
     }
 
     /// Returns an iterator over all workspaces.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn iter(&self) -> impl Iterator<Item = &Workspace> {
         self.workspaces.iter()
     }
 
     /// Returns a mutable iterator over all workspaces.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Workspace> {
         self.workspaces.iter_mut()
     }
 
     /// Add a new workspace. Returns its ID.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn add(&mut self) -> usize {
         let id = self.workspaces.len();
         self.workspaces.push(Workspace::new());
@@ -179,6 +183,7 @@ impl WorkspaceManager {
     /// workspace-local; without rehoming they would remain alive in the
     /// global scene but owned by nothing — unrendered, unpickable, and
     /// unreachable through workspace navigation.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn remove(&mut self, id: usize, scene: &mut Scene) -> Result<(), String> {
         if self.workspaces.len() <= 1 {
             return Err("cannot remove the last workspace".into());
@@ -233,6 +238,7 @@ impl WorkspaceManager {
     /// Switch to a workspace by ID. Saves transforms from the old workspace,
     /// applies transforms to the new workspace, and updates active_id.
     /// Returns true if the switch occurred.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn switch(&mut self, new_id: usize, scene: &mut Scene) -> bool {
         if new_id >= self.workspaces.len() || new_id == self.active_id {
             return false;
@@ -247,6 +253,7 @@ impl WorkspaceManager {
     }
 
     /// Remove all visual state from all workspaces (for cleanup).
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn clear_visuals(&mut self) {
         for ws in &mut self.workspaces {
             ws.visual_ids.clear();
@@ -261,6 +268,7 @@ impl WorkspaceManager {
 mod tests {
     use super::*;
     use crate::scene::Scene;
+    use cgmath::Point3;
 
     // ── WorkspaceManager tests ─────────────────────────────────────
 

@@ -9,6 +9,7 @@ use tracing::info;
 
 use crate::compositor::LookingGlass;
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct PointerConstraints {
     pub state: PointerConstraintsState,
     pub pointer_locked: bool,
@@ -112,7 +113,7 @@ impl PointerConstraintsHandler for LookingGlass {
             // enters (activate_constraints_for_focus). Previously every
             // constraint activated immediately, letting an unfocused
             // client capture or confine the global pointer.
-            let focused = pointer.current_focus().map_or(false, |f| f == *surface);
+            let focused = pointer.current_focus().is_some_and(|f| f == *surface);
             match &*c {
                 PointerConstraint::Locked(_) => {
                     if focused {

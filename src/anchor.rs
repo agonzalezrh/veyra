@@ -4,6 +4,7 @@ use crate::scene::{Scene, VisualId};
 
 /// Which edge of a visual's bounding box to anchor to.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum Edge {
     Left,
     Right,
@@ -21,6 +22,7 @@ pub enum Edge {
 /// representation. Changing the camera must never change
 /// an anchor's resolved position.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum SpatialAnchor {
     /// The workspace origin (0, 0, 0).
     WorkspaceOrigin,
@@ -36,6 +38,7 @@ pub enum SpatialAnchor {
 ///
 /// Returns `None` if the anchor references a visual that doesn't exist.
 /// This is a pure function — no side effects, no camera involvement.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn resolve_anchor(scene: &Scene, anchor: &SpatialAnchor) -> Option<Vector3<f32>> {
     match anchor {
         SpatialAnchor::WorkspaceOrigin => Some(Vector3::new(0.0, 0.0, 0.0)),
@@ -82,6 +85,7 @@ pub fn visual_aabb(scene: &Scene, vid: VisualId) -> Option<(Vector3<f32>, Vector
 
 /// Compute the axis-aligned bounding box for a set of visual IDs.
 /// Returns (min, max) corners, or None if none of the IDs exist.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn visual_set_aabb(scene: &Scene, ids: &[VisualId]) -> Option<(Vector3<f32>, Vector3<f32>)> {
     let mut initialized = false;
     let mut min = Vector3::new(f32::MAX, f32::MAX, f32::MAX);
@@ -101,11 +105,13 @@ pub fn visual_set_aabb(scene: &Scene, ids: &[VisualId]) -> Option<(Vector3<f32>,
 }
 
 /// Compute the AABB center for a set of visuals.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn visual_set_center(scene: &Scene, ids: &[VisualId]) -> Option<Vector3<f32>> {
     visual_set_aabb(scene, ids).map(|(min, max)| (min + max) * 0.5)
 }
 
 #[cfg(test)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 mod tests {
     use super::*;
     use crate::input::Camera;
@@ -114,7 +120,7 @@ mod tests {
     /// We work around the GlesTexture requirement by using the fact that
     /// Scene methods operate on VisualId — but for resolve_anchor we
     /// need actual Visual entries. We push dummy entries directly.
-    fn add_dummy(scene: &mut Scene, x: f32, y: f32, z: f32, w: f32, h: f32) -> VisualId {
+    fn add_dummy(scene: &mut Scene, _x: f32, _y: f32, _z: f32, _w: f32, h: f32) -> VisualId {
         // We can't construct Visuals without a real GlesTexture in tests,
         // but we CAN test anchor resolution by creating a Scene and
         // manually constructing the internal state. The visual ids are
@@ -161,17 +167,22 @@ mod tests {
     }
 
     #[test]
+    #[allow(unused_assignments)] // polluting camera state IS the test
     fn camera_independent_resolution_no_crash() {
         // Camera movement should not affect anchor computation.
         // This is a compile-time safety check + basic logic test.
         let scene = Scene::default();
         let anchor = SpatialAnchor::WorkspaceOrigin;
         let pos1 = resolve_anchor(&scene, &anchor);
-        let mut cam = Camera::new();
-        cam.position = cgmath::Point3::new(999.0, 999.0, 999.0);
-        cam.yaw = 1.5;
-        cam.pitch = 0.8;
-        drop(cam);
+        #[allow(unused_assignments, unused_variables)]
+        let cam = {
+            let mut c = Camera::new();
+            // Pollute camera state — anchor resolution must not read it.
+            c.position = cgmath::Point3::new(999.0, 999.0, 999.0);
+            c.yaw = 1.5;
+            c.pitch = 0.8;
+            c
+        };
         let pos2 = resolve_anchor(&scene, &anchor);
         assert_eq!(pos1, pos2, "camera must not affect anchor position");
     }

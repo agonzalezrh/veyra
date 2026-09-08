@@ -91,6 +91,7 @@ impl PerfStats {
         self.damage_frames += 1;
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn record_idle(&mut self) {
         self.idle_frames += 1;
     }
@@ -158,6 +159,7 @@ impl PerfStats {
     }
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum PipelineStage {
     ProducerUpdate,
     TexCopy,

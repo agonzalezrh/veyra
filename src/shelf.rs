@@ -4,6 +4,7 @@ use cgmath::Rotation3;
 use crate::scene::{Scene, VisualId, Transform3D};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct ShelfEntry {
     pub app_id: String,
     pub visual_id: VisualId,

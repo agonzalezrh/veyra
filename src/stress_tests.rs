@@ -59,7 +59,7 @@ fn lifecycle_multiple_disconnects() {
 
     // Others still active
     for i in [0usize, 1, 3, 4] {
-        assert!(scene.is_active(ids[i]) == false); // focus-only, no Visual
+        assert!(!scene.is_active(ids[i])); // focus-only, no Visual
     }
 
     // Disconnect again (idempotent)
@@ -88,11 +88,11 @@ fn spatial_move_rotate_scale_while_updating() {
     // Simulate a producer update cycle
     // (Stacking operations don't depend on content)
     for _ in 0..10 {
-        assert!(scene.bring_to_front(VisualId(1)) == false); // no visual, returns false
-        assert!(scene.send_to_back(VisualId(1)) == false);
-        assert!(scene.raise(VisualId(1)) == false);
-        assert!(scene.lower(VisualId(1)) == false);
-        assert!(scene.reset_transform(VisualId(1)) == false);
+        assert!(!scene.bring_to_front(VisualId(1))); // no visual, returns false
+        assert!(!scene.send_to_back(VisualId(1)));
+        assert!(!scene.raise(VisualId(1)));
+        assert!(!scene.lower(VisualId(1)));
+        assert!(!scene.reset_transform(VisualId(1)));
     }
     // Scene state unchanged after many no-op operations
     assert_eq!(scene.focused_id, Some(VisualId(1)));
@@ -462,7 +462,7 @@ fn keyboard_focus_one_authoritative_owner() {
 fn keyboard_focus_workspace_switch_preserves() {
     use crate::workspace::WorkspaceManager;
     let mut wm = WorkspaceManager::new(3);
-    let mut scene = Scene::default();
+    let _scene = Scene::default();
 
     // Set focus on workspace 0
     wm.get_mut(0).unwrap().focused_id = Some(VisualId(10));
@@ -488,7 +488,7 @@ fn keyboard_focus_inactive_workspace_noop() {
     // Focus on inactive workspace should not affect active workspace focus
     use crate::workspace::WorkspaceManager;
     let mut wm = WorkspaceManager::new(2);
-    let mut scene = Scene::default();
+    let _scene = Scene::default();
 
     wm.get_mut(0).unwrap().focused_id = Some(VisualId(10));
     wm.get_mut(1).unwrap().focused_id = Some(VisualId(20));
@@ -522,7 +522,7 @@ fn keyboard_focus_rapid_changes_no_corruption() {
 fn pointer_grab_survives_leaving_visual() {
     // Test that an active drag continues when pointer leaves the visual
     let mut ctrl = crate::interaction::InteractionController::new();
-    let mut scene = Scene::default();
+    let _scene = Scene::default();
 
     // Create visuals in the scene is not possible without GlesTexture,
     // but we can test the drag state machine
@@ -615,7 +615,7 @@ fn popup_workspace_switch_hides_both() {
     // When parent is in WS1 and we switch to WS2, both parent and popup
     // should be hidden (not visible in WS2)
     let mut wm = WorkspaceManager::new(2);
-    let mut scene = Scene::default();
+    let _scene = Scene::default();
     let parent_vid = VisualId(4000);
     let popup_vid = VisualId(4001);
 
@@ -634,10 +634,8 @@ fn popup_workspace_switch_hides_both() {
 
 #[test]
 fn popup_serial_validation() {
-    // Popups require a valid serial from a pointer or keyboard event
-    // Without a valid serial, the popup creation should be rejected
-    // (handled by Smithay internally — we just verify our handling)
-    assert!(true, "serial validation is handled by Smithay's XdgShellHandler");
+    // Serial validation is handled by Smithay's XdgShellHandler;
+    // veyra passes the serial through unchanged (no local policy).
 }
 
 // ── 11. Integration scenario tests (Group B cross-milestone) ─────
@@ -710,18 +708,19 @@ fn input_path_winit_and_native_same_methods() {
 
     // Create a mock to verify the API exists
     // (Integration tests with a real compositor would require GlesRenderer)
+    #[allow(dead_code)] // reserved API surface; not yet wired
     struct InputApiVerifier;
 
     // Verify the method signatures match what both backends call.
     // The LookingGlass methods are the authoritative input path.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     fn verify_input_signatures(_state: &mut crate::compositor::LookingGlass) {
         // These calls must compile — they prove both backends can use the same API
         // (only works with a real backend, hence just checking compilation)
     }
 
-    // Compilation check: all these methods exist on LookingGlass
-    // (verified by the fact that this file compiles with crate::compositor::LookingGlass in scope)
-    assert!(true, "input path API verified at compile time");
+    // Compilation check: all these methods exist on LookingGlass —
+    // verified by this file compiling with the crate in scope.
 }
 
 // ── 5. Performance benchmark (Scene-level) ───────────────────────────
@@ -738,7 +737,7 @@ fn bench_stacking_100_visuals() {
 
     // Bring each to front (O(n) each in worst case, but no crash)
     for id in &ids {
-        let _ = scene.bring_to_front(*id) == false;
+        let _ = scene.bring_to_front(*id);
     }
 }
 
@@ -1008,8 +1007,10 @@ fn soak_test_1000_operations() {
         }
     }
 
-    // 4. No panics, no errors
-    assert!(true, "soak test completed {} iterations without state corruption", num_iterations);
+    // 4. No panics, no errors — reaching this point means all {} iterations
+    // completed without state corruption (any invariant break would panic
+    // or fail an assert above).
+    tracing::info!("soak test completed {} iterations", num_iterations);
 }
 
 // ── 15. Config vs Persistence separation tests (M087) ─────────────
@@ -1026,7 +1027,6 @@ fn startup_config_overrides_defaults() {
 #[test]
 fn startup_state_restores_camera_and_layout() {
     use crate::input::Camera;
-    use crate::layout::LayoutMode;
     use crate::persist::{CameraState, WorkspaceEntry, WorkspaceState};
 
     // Create a saved state with specific camera and layout

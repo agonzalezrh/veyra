@@ -6,6 +6,7 @@ use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use tracing::warn;
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct DmabufManager {
     pub state: DmabufState,
     pub global: DmabufGlobal,

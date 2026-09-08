@@ -110,11 +110,12 @@ impl MaximizeCoordinator {
     /// Drop all state for a visual (surface destroyed / aborted).
     pub fn abort(&mut self, vid: VisualId) {
         self.intents.retain(|i| i.vid != vid);
-        if self.deferred.map_or(false, |(dvid, _, _)| dvid == vid) {
+        if self.deferred.is_some_and(|(dvid, _, _)| dvid == vid) {
             self.deferred = None;
         }
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn is_empty(&self) -> bool {
         self.intents.is_empty() && self.deferred.is_none()
     }

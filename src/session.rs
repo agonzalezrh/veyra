@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::workspace::WorkspaceManager;
 use tracing::{info, warn};
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct Session {
     pub started: Instant,
     pub config: Config,
@@ -14,6 +15,7 @@ pub struct Session {
 }
 
 impl Session {
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn new(config: Config) -> Self {
         let state_path = crate::persist::state_path_for_test();
         Session {
@@ -25,6 +27,7 @@ impl Session {
         }
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn request_shutdown(&mut self) {
         if !self.shutdown_requested {
             self.shutdown_requested = true;
@@ -32,6 +35,7 @@ impl Session {
         }
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn is_shutdown_requested(&self) -> bool {
         self.shutdown_requested
     }

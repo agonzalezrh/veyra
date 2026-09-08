@@ -48,13 +48,13 @@ mod workspace;
 use std::sync::Arc;
 
 use compositor::{ClientState, LookingGlass};
+use crate::backend::WinitPresentationBackend;
 use config::Config;
-use producer::{HostileCheckerboard, StaticColor};
+use producer::StaticColor;
 use smithay::backend::input::{AbsolutePositionEvent, Axis, InputEvent, KeyboardKeyEvent, MouseButton, PointerAxisEvent, PointerButtonEvent};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self, WinitEvent};
 
-use crate::backend::{PresentationBackend, WinitPresentationBackend};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::PostAction;
 use smithay::reexports::calloop::Interest;
@@ -132,7 +132,7 @@ fn main() {
         let ms = monitor.size();
         let win = backend.window().inner_size();
         if win.width > ms.width || win.height > ms.height {
-            backend
+            let _ = backend
                 .window()
                 .request_inner_size(smithay::reexports::winit::dpi::PhysicalSize::new(
                     ms.width, ms.height,
@@ -151,7 +151,7 @@ fn main() {
     tracing::info!(window_size = ?state.window_size, "render size");
     // R11: the advertised output mode follows the actual backend size
     // from the start — clients see the real monitor, not a fixed mode.
-    state.sync_output_mode(initial_size.w as i32, initial_size.h as i32, 60000);
+    state.sync_output_mode(initial_size.w, initial_size.h, 60000);
 
     // Handle --native flag: construct DrmGraphicsBackend instead
     if use_native {
@@ -164,7 +164,7 @@ fn main() {
                 // both the framebuffer size and the advertised output
                 // mode (the winit initial size no longer applies).
                 let (w, h) = state.backend.as_ref().unwrap().size();
-                state.window_size = (w as f32, h as f32);
+                state.window_size = (w, h);
                 state.sync_output_mode(w as i32, h as i32, 60000);
                 tracing::info!(window_size = ?state.window_size, "render size");
             }
@@ -280,7 +280,7 @@ fn main() {
                 // (harness) always see the CURRENT render size.
                 tracing::info!(window_size = ?state.window_size, "render size");
                 // R11: the advertised output mode follows the resize.
-                state.sync_output_mode(size.w as i32, size.h as i32, 60000);
+                state.sync_output_mode(size.w, size.h, 60000);
                 state.schedule_render();
             }
             WinitEvent::Input(event) => {

@@ -101,7 +101,7 @@ impl Camera {
     /// Pan the camera in screen space (middle-drag).
     /// Moves the camera through workspace coordinates without modifying visuals.
     pub fn handle_pan(&mut self, dx: f64, dy: f64, speed: f32) {
-        let fwd = self.forward();
+        let _fwd = self.forward();
         let right = self.right();
         let up = Vector3::new(0.0, 1.0, 0.0);
         self.position += right * (dx as f32 * speed);
@@ -147,17 +147,19 @@ impl Camera {
         }
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn handle_mouse_move(&mut self, dx: f64, dy: f64) {
         self.yaw += dx as f32 * self.sensitivity;
         self.pitch = (self.pitch - dy as f32 * self.sensitivity)
             .clamp(Rad(-1.5).0, Rad(1.5).0);
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn handle_mouse_absolute(&mut self, x: f64, y: f64) {
         use std::cell::Cell;
         thread_local! {
-            static LAST_X: Cell<Option<f64>> = Cell::new(None);
-            static LAST_Y: Cell<Option<f64>> = Cell::new(None);
+            static LAST_X: Cell<Option<f64>> = const { Cell::new(None) };
+            static LAST_Y: Cell<Option<f64>> = const { Cell::new(None) };
         }
         LAST_X.with(|lx| {
             LAST_Y.with(|ly| {
@@ -260,7 +262,6 @@ fn distance_to_focus(cam: &Camera) -> f32 {
 mod tests {
     use super::*;
     use crate::scene::Scene;
-    use cgmath::Deg;
 
     #[test]
     fn frame_all_empty() {

@@ -9,6 +9,7 @@ use crate::input_router::InputSink;
 /// The compositor uses these to determine which operations are available
 /// without knowing the concrete provider implementation.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct ProviderCapabilities {
     pub pointer_input: bool,
     pub keyboard_input: bool,
@@ -19,6 +20,7 @@ pub struct ProviderCapabilities {
 
 /// Result of a frame update.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum FrameResult {
     /// A new frame was imported and the texture changed.
     Updated,
@@ -48,11 +50,14 @@ pub trait FrameProducer {
     /// Get the current texture (valid after the first successful update).
     fn texture(&self) -> &GlesTexture;
     /// Get the current dimensions.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     fn size(&self) -> (u32, u32);
     /// Optionally create an InputSink for this producer's content.
     /// Returns None if the producer doesn't support input routing.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     fn create_input_sink(&mut self) -> Option<Box<dyn InputSink>> { None }
     /// Report provider capabilities.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     fn capabilities(&self) -> ProviderCapabilities { ProviderCapabilities::default() }
 }
 
@@ -64,6 +69,7 @@ pub trait FrameProducer {
 /// - Eventually finishes (returns Finished)
 ///
 /// This is a hostile test for the FrameProducer lifecycle.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct HostileCheckerboard {
     texture: GlesTexture,
     width: u32,
@@ -72,6 +78,7 @@ pub struct HostileCheckerboard {
     max_frames: u64,
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 impl HostileCheckerboard {
     pub fn new(renderer: &mut GlesRenderer) -> Option<Self> {
         let w = 256u32;

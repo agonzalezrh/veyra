@@ -1,5 +1,4 @@
 use cgmath::Matrix4;
-use cgmath::Vector3;
 
 use crate::scene::{Scene, Transform3D, VisualId};
 
@@ -48,6 +47,7 @@ impl SpatialGroup {
     }
 
     /// Add a visual to this group.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn add(&mut self, vid: VisualId) {
         if !self.visual_ids.contains(&vid) {
             self.visual_ids.push(vid);
@@ -65,10 +65,12 @@ impl SpatialGroup {
     }
 
     /// Number of members.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn len(&self) -> usize {
         self.visual_ids.len()
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn is_empty(&self) -> bool {
         self.visual_ids.is_empty()
     }
@@ -81,6 +83,7 @@ impl Scene {
     /// Returns the new GroupId.
     /// All provided VisualId values are accepted — groups work at the
     /// VisualId level, regardless of whether the visual has content yet.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn create_group(&mut self, visual_ids: Vec<VisualId>) -> GroupId {
         let group = SpatialGroup::new(visual_ids);
         let id = group.id;
@@ -90,6 +93,7 @@ impl Scene {
 
     /// Add a visual to an existing group.
     /// Returns true if the group exists.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn add_to_group(&mut self, group_id: GroupId, vid: VisualId) -> bool {
         match self.groups.iter_mut().find(|g| g.id == group_id) {
             Some(g) => {
@@ -102,6 +106,7 @@ impl Scene {
 
     /// Remove a visual from a group. Does NOT destroy the visual.
     /// Returns true if the group existed.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn remove_from_group(&mut self, group_id: GroupId, vid: VisualId) -> bool {
         match self.groups.iter_mut().find(|g| g.id == group_id) {
             Some(g) => {
@@ -121,6 +126,7 @@ impl Scene {
 
     /// Remove (dissolve) a group. Members survive with their local transforms.
     /// Returns true if the group existed.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn remove_group(&mut self, group_id: GroupId) -> bool {
         let len_before = self.groups.len();
         self.groups.retain(|g| g.id != group_id);
@@ -128,6 +134,7 @@ impl Scene {
     }
 
     /// Get a group's world transform.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn group_transform(&self, group_id: GroupId) -> Option<Matrix4<f32>> {
         self.groups
             .iter()
@@ -135,6 +142,7 @@ impl Scene {
             .map(|g| g.world_matrix())
     }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
     /// Set a group's transform.
     pub fn set_group_transform(&mut self, group_id: GroupId, transform: Transform3D) -> bool {
         match self.groups.iter_mut().find(|g| g.id == group_id) {
@@ -147,6 +155,7 @@ impl Scene {
     }
 
     /// Get the visual IDs in a group.
+#[allow(dead_code)] // reserved API surface; not yet wired
     pub fn group_visuals(&self, group_id: GroupId) -> Option<&[VisualId]> {
         self.groups
             .iter()
@@ -163,6 +172,7 @@ impl Scene {
     }
 
     /// Find which group(s) a visual belongs to.
+#[allow(dead_code)] // reserved API surface; not yet wired
     pub fn groups_for_visual(&self, vid: VisualId) -> Vec<GroupId> {
         self.groups
             .iter()
@@ -177,11 +187,13 @@ impl Scene {
     ///
     /// R5: [`Scene::world_matrix`] composes groups directly; this
     /// remains as the explicit spelling for existing call sites.
+#[allow(dead_code)] // reserved API surface; not yet wired
     pub fn world_matrix_with_groups(&self, id: VisualId) -> Matrix4<f32> {
         self.world_matrix(id)
     }
 
     /// Get all groups.
+#[allow(dead_code)] // reserved API surface; not yet wired
     pub fn all_groups(&self) -> &[SpatialGroup] {
         &self.groups
     }

@@ -59,7 +59,7 @@ pub fn snap_position(
     for &(apos, aw, ah) in anchors {
         let left = pos_after_snap(moving_pos, moving_w, moving_h, apos, aw, ah, config);
         if let Some(candidate) = left {
-            if best.as_ref().map_or(true, |b| candidate.strength < b.strength) {
+            if best.as_ref().is_none_or(|b| candidate.strength < b.strength) {
                 best = Some(candidate);
             }
         }
@@ -67,7 +67,7 @@ pub fn snap_position(
 
     // Check workspace origin
     if let Some(candidate) = snap_to_origin(moving_pos, moving_w, moving_h, config) {
-        if best.as_ref().map_or(true, |b| candidate.strength < b.strength) {
+        if best.as_ref().is_none_or(|b| candidate.strength < b.strength) {
             best = Some(candidate);
         }
     }
@@ -102,7 +102,7 @@ fn pos_after_snap(
     // Test each alignment
     // Left edge snap: moving's left aligns with anchor's right
     let d_left = (ml - ar).abs();
-    let y_overlap = (mt < ab && mb > at);
+    let y_overlap = mt < ab && mb > at;
     if d_left < t && y_overlap {
         let new_x = ar + mw / 2.0;
         return Some(SnapCandidate {
@@ -125,7 +125,7 @@ fn pos_after_snap(
 
     // Top edge snap: moving's top aligns with anchor's bottom
     let d_top = (mt - ab).abs();
-    let x_overlap = (ml < ar && mr > al);
+    let x_overlap = ml < ar && mr > al;
     if d_top < t && x_overlap {
         let new_y = ab + mh / 2.0;
         return Some(SnapCandidate {
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn snap_left_edge_within_threshold() {
-        let cfg = SnapConfig { threshold: 60.0 };
+        let _cfg = SnapConfig { threshold: 60.0 };
         // Moving at (120, 0) size 100x50
         // Left edge = 120 - 50 = 70
         // Anchor at (0,0) size 100x50, right edge = 50
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn snap_top_edge() {
-        let cfg = SnapConfig { threshold: 30.0 };
+        let _cfg = SnapConfig { threshold: 30.0 };
         // Moving below anchor: moving top = 100 - 25 = 75
         // Anchor bottom = 0 + 25 = 25
         // Distance = 50 > 30 -> no snap
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn snap_bottom_edge() {
-        let cfg = SnapConfig { threshold: 30.0 };
+        let _cfg = SnapConfig { threshold: 30.0 };
         // Moving above anchor: moving bottom = -100 + 25 = -75
         // Anchor top = 0 - 25 = -25
         // Distance = 50 > 30

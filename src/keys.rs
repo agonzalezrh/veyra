@@ -1,12 +1,12 @@
+#![allow(dead_code)] // full keysym lookup table; only bindings in use are consumed
+
 /// XKB keycodes (Linux evdev + 8) for compositor shortcuts.
 ///
 /// The winit backend delivers keycodes in XKB format (evdev + 8).
 /// All compositor shortcut bindings MUST use these XKB constants.
 ///
 /// Physical key → evdev → XKB (= evdev + 8)
-#[allow(dead_code)]
-
-// Modifiers
+// Modifiers — the enum of bindings consumes these
 pub const CTRL_L: u32 = 37;   // evdev 29
 pub const CTRL_R: u32 = 105;  // evdev 97
 pub const SHIFT_L: u32 = 50;  // evdev 42

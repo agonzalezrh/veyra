@@ -38,7 +38,7 @@ pub fn enabled() -> bool {
 
 /// Append one event: `{"ev": "<kind>", ...fields}`.
 pub fn event(kind: &str, fields: &[(&str, String)]) {
-    let Ok(mut guard) = JOURNAL.lock() else { return };
+    let Ok(guard) = JOURNAL.lock() else { return };
     let Some(path) = guard.as_ref() else { return };
     let mut line = format!("{{\"ev\":\"{}\"", kind);
     for (k, v) in fields {

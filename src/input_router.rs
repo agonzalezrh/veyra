@@ -8,6 +8,7 @@ use crate::scene::{Scene, VisualId};
 
 /// Classification of a pointer event's destination.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum InteractionTarget {
     Scene,
     Content(VisualId),
@@ -15,6 +16,7 @@ pub enum InteractionTarget {
 
 /// The kind of pointer event being delivered.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum PointerEventKind {
     Down,
     Up,
@@ -32,11 +34,13 @@ pub struct KeyboardEvent {
 /// Abstraction for delivering input events to application content.
 pub trait InputSink: std::fmt::Debug {
     fn handle_pointer(&mut self, kind: PointerEventKind, u: f64, v: f64);
+    #[allow(dead_code)] // reserved API surface; not yet wired
     fn handle_keyboard(&mut self, event: KeyboardEvent);
 }
 
 /// Classification of a keyboard event's routing destination.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum KeyRouting {
     /// Compositor global shortcut (Tab, etc.)
     Global,
@@ -47,15 +51,18 @@ pub enum KeyRouting {
 /// A recording input sink for testing multi-visual input routing.
 /// Records all events it receives for later assertion.
 #[derive(Debug, Default, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct RecordingInputSink {
     pub pointers: Vec<(PointerEventKind, f64, f64)>,
     pub keys: Vec<KeyboardEvent>,
 }
 
 impl RecordingInputSink {
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn new() -> Self {
         RecordingInputSink { pointers: Vec::new(), keys: Vec::new() }
     }
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn clear(&mut self) {
         self.pointers.clear();
         self.keys.clear();
@@ -73,6 +80,7 @@ impl InputSink for RecordingInputSink {
 
 /// Convert a Linux evdev key code (as used by winit) to USB HID usage ID.
 /// Returns 0 for unmapped keys.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn linux_to_hid(code: u32) -> u16 {
     match code {
         1 => 0x29, 2 => 0x1e, 3 => 0x1f, 4 => 0x20, 5 => 0x21, 6 => 0x22,
@@ -106,6 +114,7 @@ pub fn linux_to_hid(code: u32) -> u16 {
 }
 
 /// Determines whether a pointer event targets the compositor scene or a visual's content.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn classify_pointer_target(
     scene: &Scene,
     _proj_view: &Matrix4<f32>,
@@ -165,6 +174,7 @@ pub fn screen_to_visual_local_point(
 }
 
 /// Convert screen coordinates to visual-local normalized UV coordinates.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn screen_to_visual_uv(
     proj_view: &Matrix4<f32>,
     ndc_x: f32,
@@ -185,6 +195,7 @@ pub fn screen_to_visual_uv(
 }
 
 /// Convert normalized UV to pixel coordinates.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn uv_to_pixels(u: f64, v: f64, width: u32, height: u32) -> (u32, u32) {
     let px = (u * width as f64) as u32;
     let py = (v * height as f64) as u32;
@@ -470,7 +481,7 @@ mod tests {
     fn resize_both_ends() {
         // Verify that going 1920→2560 and 2560→1920 both work
         let (px1, py1) = uv_to_pixels(0.5, 0.5, 1920, 1080);
-        let (px2, py2) = uv_to_pixels(0.5, 0.5, 2560, 1440);
+        let (_px2, _py2) = uv_to_pixels(0.5, 0.5, 2560, 1440);
         let (px3, py3) = uv_to_pixels(0.5, 0.5, 1920, 1080);
         assert_eq!(px1, px3);
         assert_eq!(py1, py3);
@@ -503,18 +514,18 @@ mod tests {
     #[test]
     fn title_bar_hit_detection() {
         // Create a DecorationConfig with title_bar_height = 0.06
-        let deco = crate::scene::DecorationConfig { title_bar_height: 0.06, title: "test".into() };
+        let _deco = crate::scene::DecorationConfig { title_bar_height: 0.06, title: "test".into() };
         let content_w = 200.0;
         let content_h = 100.0;
-        let total_w = content_w;
+        let _total_w = content_w;
         let total_h = content_h * (1.0 + 0.06);
-        let title_h_frac = (0.06 / (1.0 + 0.06)) as f64;
+        let title_h_frac = 0.06 / (1.0 + 0.06);
 
         // A hit at the top of the visual should be in the title bar
-        let pv = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0) *
+        let _pv = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0) *
             Matrix4::look_at_rh(cgmath::Point3::new(0.0, 0.0, 500.0), cgmath::Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
         // Hit the very top of the visual
-        let ndc_y = (total_h / 2.0 - content_h * 0.06 / 2.0) / 240.0; // NDC for top of total quad
+        let _ndc_y = (total_h / 2.0 - content_h * 0.06 / 2.0) / 240.0; // NDC for top of total quad
         // Actually just test that UV.y < title_h_frac means title bar
         assert!(title_h_frac > 0.0 && title_h_frac < 1.0);
     }

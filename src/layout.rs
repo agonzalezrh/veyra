@@ -291,7 +291,7 @@ fn apply_grid(
 
 fn cols_for(
     scene: &Scene,
-    config: &LayoutConfig,
+    _config: &LayoutConfig,
     detached_set: &[VisualId],
     eligible: &[VisualId],
 ) -> usize {
@@ -312,7 +312,6 @@ fn cols_for(
 mod tests {
     use super::*;
     use crate::scene::Transform3D;
-    use cgmath::Quaternion;
 
     // Test layout math without Visual objects.
     // These tests verify the positioning calculus directly.
@@ -338,7 +337,7 @@ mod tests {
         let p2_x = start_x + w1 + spacing + w2 / 2.0;
         // Assert the relative positions
         assert!(p2_x > p1_x);
-        let diff = (p2_x - p1_x - w1 / 2.0 - w2 / 2.0 - spacing) as f64;
+        let diff: f64 = p2_x - p1_x - w1 / 2.0 - w2 / 2.0 - spacing;
         assert!(diff.abs() < 1e-4);
     }
 
@@ -350,9 +349,9 @@ mod tests {
         // For 5 visuals: sqrt(5) ≈ 2.2, ceil = 3 columns, but max(2, 3) = 3
         // The cols_for function uses these rules.
         let cfg = LayoutConfig::default();
-        let mut scene = Scene::default();
+        let _scene = Scene::default();
         // cols_for is unhittable from outside; we test the grid layout
-        let mut v = vec![
+        let v = [
             (VisualId(1), Transform3D::identity(), (100.0, 80.0)),
             (VisualId(2), Transform3D::identity(), (100.0, 80.0)),
             (VisualId(3), Transform3D::identity(), (100.0, 80.0)),
@@ -360,12 +359,10 @@ mod tests {
         ];
         // Grid with 4 items at 2 columns
         let col = 2usize;
-        let spacing = cfg.spacing;
-        let mut idx = 0usize;
-        for (_id, _tf, (_gw, _gh)) in &v {
+        let _spacing = cfg.spacing;
+        for (idx, (_id, _tf, (_gw, _gh))) in v.iter().enumerate() {
             let _col_idx = idx % col;
             let _row = idx / col;
-            idx += 1;
         }
         // No assertions needed - we just verify the math doesn't blow up
     }

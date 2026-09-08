@@ -74,10 +74,6 @@ pub struct PopupTester {
     exit: bool,
 }
 
-pub fn run_popups(cycles: u32, duration_ms: u64) -> i32 {
-    run_popups_opts(cycles, duration_ms, false)
-}
-
 pub fn run_popups_opts(cycles: u32, duration_ms: u64, hold_last: bool) -> i32 {
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
@@ -241,7 +237,7 @@ impl PopupTester {
             Ok(b) => b,
             Err(_) => return,
         };
-        for chunk in canvas.chunks_exact_mut(4) {
+        for chunk in canvas.as_chunks_mut::<4>().0 {
             chunk[0] = 0x30;
             chunk[1] = 0xC0;
             chunk[2] = 0x60;
@@ -258,7 +254,7 @@ impl PopupTester {
     fn kill_and_continue(&mut self, qh: &QueueHandle<Self>) {
         if let Some(cyc) = self.current.take() {
             if let Some(p) = cyc.popup {
-                let _ = p.destroy();
+                p.destroy();
             }
             crate::log_kv(&[
                 ("ev", "popup_destroyed".into()),
@@ -292,7 +288,7 @@ impl PopupTester {
             Ok(b) => b,
             Err(_) => return,
         };
-        for chunk in canvas.chunks_exact_mut(4) {
+        for chunk in canvas.as_chunks_mut::<4>().0 {
             chunk[0] = 0xF0;
             chunk[1] = 0x20;
             chunk[2] = 0x40;

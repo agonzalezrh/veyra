@@ -1,5 +1,6 @@
 /// Key binding identifiers for compositor actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum Binding {
     WorkspaceNext,
     WorkspacePrev,
@@ -154,7 +155,7 @@ pub fn bookmark_slot(key: u32, meta: bool) -> Option<usize> {
         return None;
     }
     use crate::keys;
-    if key >= keys::K1 && key <= keys::K9 {
+    if (keys::K1..=keys::K9).contains(&key) {
         Some((key - keys::K1) as usize)
     } else if key == keys::K0 {
         Some(9)

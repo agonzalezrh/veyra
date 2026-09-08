@@ -14,6 +14,7 @@ use crate::input_router::{InputSink, KeyboardEvent, PointerEventKind};
 use crate::producer::{FrameProducer, FrameResult};
 
 /// A simulated external frame producer that generates animated checkerboard frames.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct SimulatedFrameProducer {
     texture: GlesTexture,
     width: u32,
@@ -21,6 +22,7 @@ pub struct SimulatedFrameProducer {
     frame_count: u64,
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 impl SimulatedFrameProducer {
     pub fn new(renderer: &mut GlesRenderer) -> Option<Self> {
         let w = 256u32;

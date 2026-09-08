@@ -10,6 +10,7 @@ use crate::scheduler::RenderScheduler;
 
 /// Benchmark results for a single scenario.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct BenchmarkResult {
     pub name: String,
     pub iterations: u64,
@@ -20,11 +21,13 @@ pub struct BenchmarkResult {
     pub total_frames: u64,
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 impl BenchmarkResult {
     pub fn avg_frame_time_ms(&self) -> f64 {
         self.avg_frame_time_ns as f64 / 1_000_000.0
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn avg_fps(&self) -> f64 {
         if self.avg_frame_time_ns == 0 {
             0.0
@@ -35,20 +38,19 @@ impl BenchmarkResult {
 }
 
 /// Run all benchmarks and return results.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn run_benchmarks() -> Vec<BenchmarkResult> {
-    let mut results = Vec::new();
-
-    results.push(bench_scene_traversal());
-    results.push(bench_scheduler_overhead());
+    let mut results = vec![bench_scene_traversal(), bench_scheduler_overhead()];
     results.push(bench_idle());
 
     results
 }
 
 /// Measure scene traversal time for different visual counts.
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn bench_scene_traversal() -> BenchmarkResult {
     let n = 1000;
-    let mut scene = Scene::default();
+    let _scene = Scene::default();
     let mut ids = Vec::new();
 
     // Create the scene entries (no GlesTexture, but we can test traversal)
@@ -73,6 +75,7 @@ fn bench_scene_traversal() -> BenchmarkResult {
 }
 
 /// Measure scheduler overhead.
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn bench_scheduler_overhead() -> BenchmarkResult {
     let mut scheduler = RenderScheduler::new();
     let iterations = 10000u64;
@@ -93,6 +96,7 @@ fn bench_scheduler_overhead() -> BenchmarkResult {
 }
 
 /// Measure idle state (no visuals, no damage).
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn bench_idle() -> BenchmarkResult {
     let iterations = 10000u64;
     let mut times = Vec::with_capacity(iterations as usize);
@@ -109,6 +113,7 @@ fn bench_idle() -> BenchmarkResult {
 }
 
 /// Compute statistics from timing data.
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn compute_stats(name: &str, iterations: u64, times: &[u64]) -> BenchmarkResult {
     let total: u64 = times.iter().sum();
     let avg = total / iterations.max(1);
@@ -137,6 +142,7 @@ fn compute_stats(name: &str, iterations: u64, times: &[u64]) -> BenchmarkResult 
 }
 
 /// Log benchmark results to tracing.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn log_results(results: &[BenchmarkResult]) {
     tracing::info!("=== Benchmark Results ===");
     for r in results {
@@ -177,8 +183,7 @@ mod tests {
         let results = run_benchmarks();
         assert!(!results.is_empty());
         for r in &results {
-            assert!(r.iterations > 0);
-            assert!(r.avg_frame_time_ns > 0 || r.avg_frame_time_ns == 0);
+            assert!(r.iterations > 0); // avg_frame_time_ns is unsigned — cannot be negative
         }
     }
 

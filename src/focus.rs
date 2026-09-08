@@ -7,9 +7,8 @@
 
 use cgmath::InnerSpace;
 use cgmath::Point3;
-use cgmath::Vector3;
 
-use crate::anchor::{visual_set_aabb, visual_aabb};
+use crate::anchor::visual_set_aabb;
 use crate::input::Camera;
 use crate::scene::{Scene, VisualId};
 
@@ -19,8 +18,10 @@ use crate::scene::{Scene, VisualId};
 /// Wayland surface lifecycle operation. Changing focus changes the camera
 /// trajectory, not Wayland keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 pub enum CameraMode {
     /// Standard camera — user-orbitable, workspace-aware.
+    #[default]
     Normal,
     /// Camera is smoothly moving toward a focused visual.
     Focus(VisualId),
@@ -30,14 +31,10 @@ pub enum CameraMode {
     WorkspaceOverview,
 }
 
-impl Default for CameraMode {
-    fn default() -> Self {
-        CameraMode::Normal
-    }
-}
 
 /// Describes a camera transition from one state to another.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct FocusTransition {
     /// The camera state at the start of the transition.
     pub source_camera: Camera,
@@ -50,6 +47,7 @@ pub struct FocusTransition {
 }
 
 impl FocusTransition {
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn new(source: Camera, target: Camera) -> Self {
         FocusTransition {
             source_camera: source,
@@ -60,6 +58,7 @@ impl FocusTransition {
     }
 
     /// Advance the transition by `dt`. Returns true if still in progress.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn advance(&mut self, dt: f32) -> bool {
         self.progress = (self.progress + dt).min(1.0);
         self.progress < 1.0
@@ -79,7 +78,7 @@ impl FocusTransition {
             speed: self.source_camera.speed,
             sensitivity: self.source_camera.sensitivity,
             zoom_speed: self.source_camera.zoom_speed,
-            bookmarks: self.source_camera.bookmarks.clone(),
+            bookmarks: self.source_camera.bookmarks,
         }
     }
 }
@@ -160,6 +159,7 @@ impl FocusManager {
     }
 
     /// Exit overview mode: restore saved camera exactly.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn exit_overview(&mut self, camera: &mut Camera) {
         if let Some(ref saved) = self.saved_camera {
             camera.position = saved.position;
@@ -174,6 +174,7 @@ impl FocusManager {
 
     /// Update the focus transition by `dt` (0..1).
     /// Returns `true` if the transition is still in progress.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn update_transition(&mut self, dt: f32) -> bool {
         match &mut self.transition {
             Some(t) => t.advance(dt),
@@ -208,6 +209,7 @@ impl FocusManager {
     }
 
     /// Check if focus/overview is active (non-normal mode).
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn is_active(&self) -> bool {
         !matches!(self.camera_mode, CameraMode::Normal)
     }

@@ -24,6 +24,7 @@ pub struct ResizeEdges {
     pub bottom: bool,
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 impl ResizeEdges {
     pub const NORTH: ResizeEdges = ResizeEdges { left: false, right: false, top: true, bottom: false };
     pub const SOUTH: ResizeEdges = ResizeEdges { left: false, right: false, top: false, bottom: true };

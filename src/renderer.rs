@@ -15,6 +15,7 @@ use crate::scene::Scene;
 /// Update sub-region of a GL texture with pixel data.
 /// This is the narrow renderer-owned API for in-place texture updates.
 /// Producers call this instead of raw GL operations.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn upload_texture_sub_region(
     renderer: &mut GlesRenderer,
     tex_id: u32,
@@ -58,6 +59,7 @@ struct FontAtlas {
 /// Uses the text_prog shader which applies a uniform color modulated by the font's alpha.
 /// # Safety
 /// Requires a current GL context with the text_prog program available.
+#[allow(clippy::too_many_arguments)] // wide GL/routing signatures are inherent
 unsafe fn draw_text(
     gl: &ffi::Gles2,
     draw: &DrawGl,
@@ -647,6 +649,7 @@ void main() {
 }
 ";
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 struct DrawGl {
     program: u32,
     a_pos: u32,
@@ -718,13 +721,13 @@ impl DrawGl {
             gl.DeleteShader(vs);
             gl.DeleteShader(fs);
         }
-        let a_pos = unsafe { gl.GetAttribLocation(program, b"a_pos\0".as_ptr() as *const i8) as u32 };
-        let a_uv = unsafe { gl.GetAttribLocation(program, b"a_uv\0".as_ptr() as *const i8) as u32 };
-        let u_mvp = unsafe { gl.GetUniformLocation(program, b"u_mvp\0".as_ptr() as *const i8) };
-        let u_tex = unsafe { gl.GetUniformLocation(program, b"u_tex\0".as_ptr() as *const i8) };
-        let u_selected = unsafe { gl.GetUniformLocation(program, b"u_selected\0".as_ptr() as *const i8) };
-        let u_focused = unsafe { gl.GetUniformLocation(program, b"u_focused\0".as_ptr() as *const i8) };
-        let u_title_h = unsafe { gl.GetUniformLocation(program, b"u_title_h\0".as_ptr() as *const i8) };
+        let a_pos = unsafe { gl.GetAttribLocation(program, c"a_pos".as_ptr()) as u32 };
+        let a_uv = unsafe { gl.GetAttribLocation(program, c"a_uv".as_ptr()) as u32 };
+        let u_mvp = unsafe { gl.GetUniformLocation(program, c"u_mvp".as_ptr()) };
+        let u_tex = unsafe { gl.GetUniformLocation(program, c"u_tex".as_ptr()) };
+        let u_selected = unsafe { gl.GetUniformLocation(program, c"u_selected".as_ptr()) };
+        let u_focused = unsafe { gl.GetUniformLocation(program, c"u_focused".as_ptr()) };
+        let u_title_h = unsafe { gl.GetUniformLocation(program, c"u_title_h".as_ptr()) };
         let u_edge = unsafe { gl.GetUniformLocation(program, c"u_edge".as_ptr()) };
         let u_tint = unsafe { gl.GetUniformLocation(program, c"u_tint".as_ptr()) };
         let u_border = unsafe { gl.GetUniformLocation(program, c"u_border".as_ptr()) };
@@ -753,11 +756,11 @@ impl DrawGl {
             gl.DeleteShader(tvs);
             gl.DeleteShader(tfs);
         }
-        let text_a_pos = unsafe { gl.GetAttribLocation(text_prog, b"a_pos\0".as_ptr() as *const i8) as u32 };
-        let text_a_uv = unsafe { gl.GetAttribLocation(text_prog, b"a_uv\0".as_ptr() as *const i8) as u32 };
-        let text_u_mvp = unsafe { gl.GetUniformLocation(text_prog, b"u_mvp\0".as_ptr() as *const i8) };
-        let text_u_tex = unsafe { gl.GetUniformLocation(text_prog, b"u_tex\0".as_ptr() as *const i8) };
-        let text_u_color = unsafe { gl.GetUniformLocation(text_prog, b"u_color\0".as_ptr() as *const i8) };
+        let text_a_pos = unsafe { gl.GetAttribLocation(text_prog, c"a_pos".as_ptr()) as u32 };
+        let text_a_uv = unsafe { gl.GetAttribLocation(text_prog, c"a_uv".as_ptr()) as u32 };
+        let text_u_mvp = unsafe { gl.GetUniformLocation(text_prog, c"u_mvp".as_ptr()) };
+        let text_u_tex = unsafe { gl.GetUniformLocation(text_prog, c"u_tex".as_ptr()) };
+        let text_u_color = unsafe { gl.GetUniformLocation(text_prog, c"u_color".as_ptr()) };
         let mut text_vbo = 0;
         unsafe { gl.GenBuffers(1, &mut text_vbo) };
         let text_verts: [f32; 16] = [
@@ -822,7 +825,7 @@ fn get_draw_gl(gl: &ffi::Gles2) -> Option<std::sync::MutexGuard<'static, Option<
     }
     Some(guard)
 }
-
+#[allow(clippy::too_many_arguments)] // wide GL/routing signatures are inherent
 fn draw_textured_quad(
     gl: &ffi::Gles2,
     draw: &DrawGl,
@@ -1115,13 +1118,13 @@ pub fn render_scene(
 
                 let (mx, my) = menu.position;
                 // DPI-proportional metrics shared with the click hit-test
-                let metrics = crate::context_menu::MenuMetrics::for_framebuffer(w as f32, h as f32);
+                let metrics = crate::context_menu::MenuMetrics::for_framebuffer(w, h);
                 let menu_width = metrics.menu_width;
                 let item_height = metrics.item_height;
                 let menu_height = menu.items.len() as f32 * item_height;
 
                 // Convert screen pixel coords to NDC [-1, 1]
-                let ndc_w = menu_width / w as f32 * 2.0;
+                let ndc_w = menu_width / w * 2.0;
 
                 // Ensure font atlas is initialized for the labels below
                 ensure_font_atlas(gl);
@@ -1131,12 +1134,12 @@ pub fn render_scene(
                 let stride = 4 * std::mem::size_of::<f32>() as i32;
                 let solid_rect = |px: f32, py: f32, pw: f32, ph: f32,
                                   r: f32, g: f32, b: f32, a: f32| {
-                    let cx = ((px + pw / 2.0) / w as f32) * 2.0 - 1.0;
-                    let cy = -(((py + ph / 2.0) / h as f32) * 2.0 - 1.0);
+                    let cx = ((px + pw / 2.0) / w) * 2.0 - 1.0;
+                    let cy = -(((py + ph / 2.0) / h) * 2.0 - 1.0);
                     let mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(cx, cy, 0.0))
                         * cgmath::Matrix4::from_nonuniform_scale(
-                            pw / w as f32 * 2.0,
-                            ph / h as f32 * 2.0,
+                            pw / w * 2.0,
+                            ph / h * 2.0,
                             1.0,
                         );
                     gl.UseProgram(draw.solid_prog);
@@ -1166,13 +1169,13 @@ pub fn render_scene(
                            0.30, 0.30, 0.32, 0.98);
                 solid_rect(mx32, my32, menu_width, menu_height, 0.13, 0.13, 0.15, 0.97);
 
-                let ndc_ih = item_height / h as f32 * 2.0;
+                let ndc_ih = item_height / h * 2.0;
                 // Draw each menu item
                 for (i, _item) in menu.items.iter().enumerate() {
                     let item_iy =
-                        -((my as f32 + (i as f32 * item_height)) / h as f32) * 2.0 + 1.0;
+                        -((my as f32 + (i as f32 * item_height)) / h) * 2.0 + 1.0;
                     let item_ix =
-                        (mx as f32 / w as f32) * 2.0 - 1.0 + ndc_w / 2.0;
+                        (mx as f32 / w) * 2.0 - 1.0 + ndc_w / 2.0;
                     let item_iy_c = item_iy - ndc_ih / 2.0;
 
                     let is_selected = menu.selected == Some(i);
@@ -1190,9 +1193,9 @@ pub fn render_scene(
                     // a modern panel are unreadably small (crisp with
                     // NEAREST sampling at any scale).
                     let scale = metrics.glyph_scale;
-                    let text_x = item_ix - ndc_w / 2.0 + (4.0 / w as f32) * 2.0; // 4px left padding
-                    let ch = (7.0f32 * scale / h as f32) * 2.0; // 7*scale px char height in NDC
-                    let cw = (5.0f32 * scale / w as f32) * 2.0; // 5*scale px char width in NDC
+                    let text_x = item_ix - ndc_w / 2.0 + (4.0 / w) * 2.0; // 4px left padding
+                    let ch = (7.0f32 * scale / h) * 2.0; // 7*scale px char height in NDC
+                    let cw = (5.0f32 * scale / w) * 2.0; // 5*scale px char width in NDC
                     let text_y = item_iy_c - ch / 2.0; // draw_text y = glyph bottom → vertically centered
                     draw_text(gl, draw, &_item.label, text_x, text_y, cw, ch, tr, tg, tb);
                 }

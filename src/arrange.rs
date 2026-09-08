@@ -17,6 +17,7 @@ use crate::scene::{Scene, Transform3D, VisualId};
 
 /// Modes for arranging visuals.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum ArrangeMode {
     /// Arrange in a grid with the given number of columns.
     Grid { columns: usize },
@@ -39,6 +40,7 @@ pub struct ArrangeConfig {
 }
 
 impl Default for ArrangeConfig {
+    #[allow(dead_code)] // reserved API surface; not yet wired
     fn default() -> Self {
         ArrangeConfig {
             spacing: 40.0,
@@ -51,6 +53,7 @@ impl Default for ArrangeConfig {
 /// The position and size of an item to arrange.
 /// For groups, this is the group's composite bounds.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 struct ArrangeItem {
     id: VisualId,
     width: f32,
@@ -66,6 +69,7 @@ struct ArrangeItem {
 ///
 /// CRITICAL: This function does NOT modify the scene. It computes and returns
 /// the desired transforms. The caller applies them.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn arrange(
     scene: &Scene,
     mode: ArrangeMode,
@@ -217,6 +221,7 @@ pub fn arrange(
 /// delta that lands the representative at the arranged spot — so every
 /// member moves together. Previously only the representative's own
 /// transform was overwritten, leaving the rest of the group behind.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn apply_arrangement(
     scene: &mut Scene,
     arrangement: &HashMap<VisualId, Transform3D>,
@@ -244,6 +249,7 @@ pub fn apply_arrangement(
 
 // ── Position generation functions ──────────────────────────────────────
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn grid_positions(
     items: &[&ArrangeItem],
     columns: usize,
@@ -264,6 +270,7 @@ fn grid_positions(
     positions
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn row_positions(
     items: &[&ArrangeItem],
     config: &ArrangeConfig,
@@ -285,6 +292,7 @@ fn row_positions(
     positions
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn column_positions(
     items: &[&ArrangeItem],
     config: &ArrangeConfig,
@@ -306,6 +314,7 @@ fn column_positions(
     positions
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn radial_positions(
     items: &[&ArrangeItem],
     config: &ArrangeConfig,
@@ -382,7 +391,7 @@ mod tests {
 
     #[test]
     fn row_positions_math() {
-        let items = vec![
+        let items = [
             ArrangeItem {
                 id: VisualId(1),
                 width: 200.0,
@@ -407,7 +416,7 @@ mod tests {
 
     #[test]
     fn column_positions_math() {
-        let items = vec![
+        let items = [
             ArrangeItem {
                 id: VisualId(1),
                 width: 100.0,
@@ -495,7 +504,7 @@ mod tests {
                 height: 80.0,
             })
             .collect();
-        let items_refs: Vec<&ArrangeItem> = items.iter().collect();
+        let _items_refs: Vec<&ArrangeItem> = items.iter().collect();
         let config = ArrangeConfig::default();
         // Reset doesn't use the position functions — we test via arrange directly
         let scene = Scene::default();

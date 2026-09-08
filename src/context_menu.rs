@@ -25,6 +25,7 @@ impl MenuMetrics {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub enum MenuAction {
     Focus,
     Arrange,

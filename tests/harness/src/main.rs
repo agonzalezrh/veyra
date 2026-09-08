@@ -10,7 +10,6 @@
 //! --maximize-after / --unmaximize-after (I4),
 //! --minimize-after (I5), --fullscreen-after / --unfullscreen-after (I7).
 
-use std::convert::TryInto;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
@@ -55,7 +54,7 @@ fn log(ev: serde_json::Value) {
 mod clip_tester;
 mod dnd_tester;
 mod popup_tester;
-use popup_tester::{run_popups, run_popups_opts};
+use popup_tester::run_popups_opts;
 use dnd_tester::{run_dnd, Role};
 use clip_tester::{run_clip, Mode as ClipMode};
 
@@ -145,7 +144,7 @@ fn parse_args() -> Opts {
     };
     let mut i = 1;
     while i < args.len() {
-        let mut next = |i: &mut usize| {
+        let next = |i: &mut usize| {
             *i += 1;
             args.get(*i).cloned().unwrap_or_default()
         };
@@ -263,7 +262,7 @@ impl TestClient {
 
         // Solid color with a per-commit count encoded in green for debuggability.
         let green = canvas.len() as u8;
-        for chunk in canvas.chunks_exact_mut(4) {
+        for chunk in canvas.as_chunks_mut::<4>().0 {
             chunk[0] = 0x30;
             chunk[1] = green;
             chunk[2] = 0x80;
@@ -644,7 +643,6 @@ impl PointerHandler for TestClient {
                         ("h", horizontal.absolute.into()),
                     ]);
                 }
-                _ => {}
             }
         }
     }

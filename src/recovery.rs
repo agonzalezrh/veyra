@@ -2,21 +2,25 @@ use tracing::info;
 
 /// Handles recovery from corrupted state, destroyed focus, invalid camera, etc.
 #[derive(Debug)]
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct Recovery {
     pub recovery_available: bool,
 }
 
 impl Recovery {
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn new() -> Self {
         Recovery {
             recovery_available: false,
         }
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn save_safe_state(&mut self) {
         self.recovery_available = true;
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn recover(&mut self, _compositor: &mut crate::compositor::LookingGlass) {
         if self.recovery_available {
             info!("attempting recovery from last safe state");
@@ -24,6 +28,7 @@ impl Recovery {
         self.recovery_available = false;
     }
 
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn is_available(&self) -> bool {
         self.recovery_available
     }

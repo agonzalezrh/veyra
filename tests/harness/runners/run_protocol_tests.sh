@@ -301,6 +301,19 @@ if [ "$POPU_EXIT" -eq 0 ] && [ "$CREATED" -eq 3 ]; then
 else
     bad "t16: popup cycles did not complete cleanly (exit=$POPU_EXIT created=$CREATED)"
 fi
+# The compositor logs to a block-buffered stdout when redirected to a
+# file, and its event loop processes the final destroy asynchronously
+# after the client exits — poll the log briefly instead of racing the
+# flush. The BEHAVIOR under test (3 destroys → 3 visual drops) is only
+# real if it stays stable after the wait.
+MAPPED=0
+DROPPED=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    MAPPED=$(strip_ansi "$TMP_DIR/veyra.log" | grep -c "popup mapped" || true)
+    DROPPED=$(strip_ansi "$TMP_DIR/veyra.log" | grep -c "popup destroyed, visual dropped" || true)
+    [ "$MAPPED" -ge 3 ] && [ "$DROPPED" -ge 3 ] && break
+    sleep 0.3
+done
 if [ "$MAPPED" -eq 3 ]; then
     ok "t16: compositor mapped all 3 popups"
 else

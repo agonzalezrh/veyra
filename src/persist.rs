@@ -16,11 +16,10 @@ use std::path::PathBuf;
 
 use crate::input::Camera;
 use crate::layout::LayoutMode;
-use crate::scene::{Scene, Visual, VisualId};
+use crate::scene::{Scene, VisualId};
 
 use serde::{Deserialize, Serialize};
 use tracing::info;
-use tracing::warn;
 
 pub const CURRENT_VERSION: u32 = 2;
 pub const VERSION_1: u32 = 1;
@@ -76,12 +75,13 @@ pub struct WorkspaceState {
 
 impl WorkspaceState {
     /// Capture all workspace states from the workspace manager, scene, and camera.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn capture(
         scene: &Scene,
         camera: &Camera,
         layout_mode: LayoutMode,
         detached_set: &[VisualId],
-        workspace_visuals: &[VisualId],
+        _workspace_visuals: &[VisualId],
     ) -> Self {
         let visuals: Vec<VisualState> = scene
             .visuals
@@ -135,6 +135,7 @@ impl WorkspaceState {
     }
 
     /// Capture multi-workspace state from the full scene and workspace manager.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn capture_multi(
         scene: &Scene,
         workspace_visuals: &[Vec<VisualId>],
@@ -203,6 +204,7 @@ impl WorkspaceState {
     }
 
     /// Get the first workspace (for backward compat with single-workspace usage).
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn first_workspace(&self) -> Option<&WorkspaceEntry> {
         self.workspaces.first()
     }
@@ -219,6 +221,7 @@ impl WorkspaceState {
 
     /// Try to restore a visual's state by matching `app_id` in all workspaces.
     /// Returns `Some((workspace_index, &VisualState))` if a match was found.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn find_visual(&self, app_id: &str) -> Option<(usize, &VisualState)> {
         for (i, ws) in self.workspaces.iter().enumerate() {
             if let Some(vs) = ws.visuals.iter().find(|vs| vs.app_id == app_id) {
@@ -244,6 +247,7 @@ impl WorkspaceState {
     }
 
     /// Apply saved camera state from the first workspace to a camera.
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn apply_camera(&self, camera: &mut Camera) {
         if let Some(ws) = self.workspaces.first() {
             camera.position.x = ws.camera.x;
@@ -255,6 +259,7 @@ impl WorkspaceState {
     }
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn layout_mode_to_string(mode: LayoutMode) -> String {
     match mode {
         LayoutMode::Freeform => "freeform".into(),
@@ -263,6 +268,7 @@ fn layout_mode_to_string(mode: LayoutMode) -> String {
     }
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
 fn string_to_layout_mode(s: &str) -> LayoutMode {
     match s {
         "flat" => LayoutMode::Flat,
@@ -342,11 +348,13 @@ pub fn load() -> Result<WorkspaceState, String> {
 }
 
 /// Check if a saved state exists on disk.
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn exists() -> bool {
     state_path().exists()
 }
 
 /// Remove saved state file (for testing).
+#[allow(dead_code)] // reserved API surface; not yet wired
 pub fn remove() {
     let path = state_path();
     let _ = fs::remove_file(&path);
@@ -374,7 +382,6 @@ pub fn backup() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::Transform3D;
 
     fn make_v2_state() -> WorkspaceState {
         WorkspaceState {
