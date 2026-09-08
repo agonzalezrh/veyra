@@ -60,7 +60,10 @@ pub struct RecordingInputSink {
 impl RecordingInputSink {
     #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn new() -> Self {
-        RecordingInputSink { pointers: Vec::new(), keys: Vec::new() }
+        RecordingInputSink {
+            pointers: Vec::new(),
+            keys: Vec::new(),
+        }
     }
     #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn clear(&mut self) {
@@ -83,30 +86,108 @@ impl InputSink for RecordingInputSink {
 #[allow(dead_code)] // reserved API surface; not yet wired
 pub fn linux_to_hid(code: u32) -> u16 {
     match code {
-        1 => 0x29, 2 => 0x1e, 3 => 0x1f, 4 => 0x20, 5 => 0x21, 6 => 0x22,
-        7 => 0x23, 8 => 0x24, 9 => 0x25, 10 => 0x26, 11 => 0x27,
-        12 => 0x2d, 13 => 0x2e, 14 => 0x2a, 15 => 0x2b,
-        16 => 0x14, 17 => 0x1a, 18 => 0x08, 19 => 0x15, 20 => 0x17,
-        21 => 0x1c, 22 => 0x18, 23 => 0x0c, 24 => 0x16, 25 => 0x1b,
-        26 => 0x2f, 27 => 0x30, 28 => 0x28, 29 => 0xe1,
-        30 => 0x04, 31 => 0x16, 32 => 0x07, 33 => 0x09, 34 => 0x0a,
-        35 => 0x0b, 36 => 0x0d, 37 => 0x0e, 38 => 0x0f,
-        39 => 0x33, 40 => 0x34, 41 => 0x35, 42 => 0xe1, 43 => 0x31,
-        44 => 0x1d, 45 => 0x1b, 46 => 0x06, 47 => 0x19, 48 => 0x05,
-        49 => 0x11, 50 => 0x10, 51 => 0x36, 52 => 0x37, 53 => 0x38,
-        54 => 0xe5, 55 => 0x55, 56 => 0xe2, 57 => 0x2c, 58 => 0x39,
-        59 => 0x3a, 60 => 0x3b, 61 => 0x3c, 62 => 0x3d, 63 => 0x3e,
-        64 => 0x3f, 65 => 0x40, 66 => 0x41, 67 => 0x42,
-        68 => 0x43, 69 => 0x44, 70 => 0x45,
-        71 => 0x46, 72 => 0x47, 73 => 0x48,
-        74 => 0x49, 75 => 0x4a, 76 => 0x4b, 77 => 0x4c,
-        78 => 0x4d, 79 => 0x4e,
-        80 => 0x4f, 81 => 0x50, 82 => 0x51, 83 => 0x52,
-        84 => 0x53, 85 => 0x54, 86 => 0x56, 87 => 0x57,
-        88 => 0x58, 89 => 0x59, 90 => 0x5a, 91 => 0x5b,
-        92 => 0x5c, 93 => 0x5d, 94 => 0x5e, 95 => 0x5f,
-        96 => 0x60, 97 => 0x61, 98 => 0x62, 99 => 0x63,
-        100 => 0x64, 101 => 0x87, 102 => 0x66,
+        1 => 0x29,
+        2 => 0x1e,
+        3 => 0x1f,
+        4 => 0x20,
+        5 => 0x21,
+        6 => 0x22,
+        7 => 0x23,
+        8 => 0x24,
+        9 => 0x25,
+        10 => 0x26,
+        11 => 0x27,
+        12 => 0x2d,
+        13 => 0x2e,
+        14 => 0x2a,
+        15 => 0x2b,
+        16 => 0x14,
+        17 => 0x1a,
+        18 => 0x08,
+        19 => 0x15,
+        20 => 0x17,
+        21 => 0x1c,
+        22 => 0x18,
+        23 => 0x0c,
+        24 => 0x16,
+        25 => 0x1b,
+        26 => 0x2f,
+        27 => 0x30,
+        28 => 0x28,
+        29 => 0xe1,
+        30 => 0x04,
+        31 => 0x16,
+        32 => 0x07,
+        33 => 0x09,
+        34 => 0x0a,
+        35 => 0x0b,
+        36 => 0x0d,
+        37 => 0x0e,
+        38 => 0x0f,
+        39 => 0x33,
+        40 => 0x34,
+        41 => 0x35,
+        42 => 0xe1,
+        43 => 0x31,
+        44 => 0x1d,
+        45 => 0x1b,
+        46 => 0x06,
+        47 => 0x19,
+        48 => 0x05,
+        49 => 0x11,
+        50 => 0x10,
+        51 => 0x36,
+        52 => 0x37,
+        53 => 0x38,
+        54 => 0xe5,
+        55 => 0x55,
+        56 => 0xe2,
+        57 => 0x2c,
+        58 => 0x39,
+        59 => 0x3a,
+        60 => 0x3b,
+        61 => 0x3c,
+        62 => 0x3d,
+        63 => 0x3e,
+        64 => 0x3f,
+        65 => 0x40,
+        66 => 0x41,
+        67 => 0x42,
+        68 => 0x43,
+        69 => 0x44,
+        70 => 0x45,
+        71 => 0x46,
+        72 => 0x47,
+        73 => 0x48,
+        74 => 0x49,
+        75 => 0x4a,
+        76 => 0x4b,
+        77 => 0x4c,
+        78 => 0x4d,
+        79 => 0x4e,
+        80 => 0x4f,
+        81 => 0x50,
+        82 => 0x51,
+        83 => 0x52,
+        84 => 0x53,
+        85 => 0x54,
+        86 => 0x56,
+        87 => 0x57,
+        88 => 0x58,
+        89 => 0x59,
+        90 => 0x5a,
+        91 => 0x5b,
+        92 => 0x5c,
+        93 => 0x5d,
+        94 => 0x5e,
+        95 => 0x5f,
+        96 => 0x60,
+        97 => 0x61,
+        98 => 0x62,
+        99 => 0x63,
+        100 => 0x64,
+        101 => 0x87,
+        102 => 0x66,
         103 => 0x66,
         104..=115 => (0x67 + (code - 104)) as u16,
         _ => 0,
@@ -183,9 +264,8 @@ pub fn screen_to_visual_uv(
     geom_w: f32,
     geom_h: f32,
 ) -> Option<(f64, f64)> {
-    let hit = screen_to_visual_local_point(
-        proj_view, ndc_x, ndc_y, visual_transform, geom_w, geom_h,
-    )?;
+    let hit =
+        screen_to_visual_local_point(proj_view, ndc_x, ndc_y, visual_transform, geom_w, geom_h)?;
     if hit.0.abs() > 0.5 || hit.1.abs() > 0.5 {
         return None;
     }
@@ -199,7 +279,10 @@ pub fn screen_to_visual_uv(
 pub fn uv_to_pixels(u: f64, v: f64, width: u32, height: u32) -> (u32, u32) {
     let px = (u * width as f64) as u32;
     let py = (v * height as f64) as u32;
-    (px.min(width.saturating_sub(1)), py.min(height.saturating_sub(1)))
+    (
+        px.min(width.saturating_sub(1)),
+        py.min(height.saturating_sub(1)),
+    )
 }
 
 #[cfg(test)]
@@ -217,7 +300,7 @@ mod tests {
 
     #[test]
     fn linux_to_hid_known() {
-        assert_eq!(linux_to_hid(1), 0x29);  // ESC
+        assert_eq!(linux_to_hid(1), 0x29); // ESC
         assert_eq!(linux_to_hid(30), 0x04); // A
         assert_eq!(linux_to_hid(57), 0x2c); // space
         assert_eq!(linux_to_hid(42), 0xe1); // left shift
@@ -232,23 +315,39 @@ mod tests {
     fn classify_modifier_returns_scene() {
         let scene = Scene::default();
         let pv = Matrix4::identity();
-        assert_eq!(classify_pointer_target(&scene, &pv, true, false, false), InteractionTarget::Scene);
-        assert_eq!(classify_pointer_target(&scene, &pv, false, true, false), InteractionTarget::Scene);
-        assert_eq!(classify_pointer_target(&scene, &pv, false, false, true), InteractionTarget::Scene);
+        assert_eq!(
+            classify_pointer_target(&scene, &pv, true, false, false),
+            InteractionTarget::Scene
+        );
+        assert_eq!(
+            classify_pointer_target(&scene, &pv, false, true, false),
+            InteractionTarget::Scene
+        );
+        assert_eq!(
+            classify_pointer_target(&scene, &pv, false, false, true),
+            InteractionTarget::Scene
+        );
     }
 
     #[test]
     fn classify_no_selection_returns_scene() {
         let scene = Scene::default();
         let pv = Matrix4::identity();
-        assert_eq!(classify_pointer_target(&scene, &pv, false, false, false), InteractionTarget::Scene);
+        assert_eq!(
+            classify_pointer_target(&scene, &pv, false, false, false),
+            InteractionTarget::Scene
+        );
     }
 
     #[test]
     fn screen_to_uv_center() {
         let transform = Transform3D::identity();
         let proj = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0);
-        let view = Matrix4::look_at_rh(cgmath::Point3::new(0.0, 0.0, 500.0), cgmath::Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
+        let view = Matrix4::look_at_rh(
+            cgmath::Point3::new(0.0, 0.0, 500.0),
+            cgmath::Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        );
         let pv = proj * view;
         let uv = screen_to_visual_uv(&pv, 0.0, 0.0, &transform, 200.0, 100.0);
         assert!(uv.is_some());
@@ -260,7 +359,11 @@ mod tests {
     fn screen_to_uv_corner() {
         let transform = Transform3D::identity();
         let proj = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0);
-        let view = Matrix4::look_at_rh(cgmath::Point3::new(0.0, 0.0, 500.0), cgmath::Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
+        let view = Matrix4::look_at_rh(
+            cgmath::Point3::new(0.0, 0.0, 500.0),
+            cgmath::Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        );
         let pv = proj * view;
         let uv = screen_to_visual_uv(&pv, -100.0 / 320.0, 50.0 / 240.0, &transform, 200.0, 100.0);
         assert!(uv.is_some());
@@ -273,7 +376,11 @@ mod tests {
         let mut transform = Transform3D::identity();
         transform.rotation = Quaternion::from_angle_y(Deg(45.0));
         let proj = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0);
-        let view = Matrix4::look_at_rh(cgmath::Point3::new(0.0, 0.0, 500.0), cgmath::Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
+        let view = Matrix4::look_at_rh(
+            cgmath::Point3::new(0.0, 0.0, 500.0),
+            cgmath::Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        );
         let pv = proj * view;
         let uv = screen_to_visual_uv(&pv, 0.0, 0.0, &transform, 200.0, 100.0);
         assert!(uv.is_some());
@@ -286,7 +393,11 @@ mod tests {
         let mut transform = Transform3D::identity();
         transform.scale = Vector3::new(2.0, 2.0, 1.0);
         let proj = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0);
-        let view = Matrix4::look_at_rh(cgmath::Point3::new(0.0, 0.0, 500.0), cgmath::Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
+        let view = Matrix4::look_at_rh(
+            cgmath::Point3::new(0.0, 0.0, 500.0),
+            cgmath::Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        );
         let pv = proj * view;
         let uv = screen_to_visual_uv(&pv, 0.0, 0.0, &transform, 200.0, 100.0);
         assert!(uv.is_some());
@@ -298,7 +409,11 @@ mod tests {
     fn screen_to_uv_miss_outside() {
         let transform = Transform3D::identity();
         let proj = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0);
-        let view = Matrix4::look_at_rh(cgmath::Point3::new(0.0, 0.0, 500.0), cgmath::Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
+        let view = Matrix4::look_at_rh(
+            cgmath::Point3::new(0.0, 0.0, 500.0),
+            cgmath::Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        );
         let pv = proj * view;
         assert!(screen_to_visual_uv(&pv, -0.9, 0.9, &transform, 200.0, 100.0).is_none());
     }
@@ -385,19 +500,49 @@ mod tests {
     #[test]
     fn recording_input_sink_records_keyboard() {
         let mut sink = RecordingInputSink::new();
-        sink.handle_keyboard(KeyboardEvent { key: 0x04, pressed: true });  // a down
-        sink.handle_keyboard(KeyboardEvent { key: 0x04, pressed: false }); // a up
-        sink.handle_keyboard(KeyboardEvent { key: 0x05, pressed: true });  // b down
+        sink.handle_keyboard(KeyboardEvent {
+            key: 0x04,
+            pressed: true,
+        }); // a down
+        sink.handle_keyboard(KeyboardEvent {
+            key: 0x04,
+            pressed: false,
+        }); // a up
+        sink.handle_keyboard(KeyboardEvent {
+            key: 0x05,
+            pressed: true,
+        }); // b down
         assert_eq!(sink.keys.len(), 3);
-        assert_eq!(sink.keys[0], KeyboardEvent { key: 0x04, pressed: true });
-        assert_eq!(sink.keys[1], KeyboardEvent { key: 0x04, pressed: false });
-        assert_eq!(sink.keys[2], KeyboardEvent { key: 0x05, pressed: true });
+        assert_eq!(
+            sink.keys[0],
+            KeyboardEvent {
+                key: 0x04,
+                pressed: true
+            }
+        );
+        assert_eq!(
+            sink.keys[1],
+            KeyboardEvent {
+                key: 0x04,
+                pressed: false
+            }
+        );
+        assert_eq!(
+            sink.keys[2],
+            KeyboardEvent {
+                key: 0x05,
+                pressed: true
+            }
+        );
     }
 
     #[test]
     fn recording_input_sink_clear() {
         let mut sink = RecordingInputSink::new();
-        sink.handle_keyboard(KeyboardEvent { key: 0x04, pressed: true });
+        sink.handle_keyboard(KeyboardEvent {
+            key: 0x04,
+            pressed: true,
+        });
         sink.clear();
         assert!(sink.keys.is_empty());
         assert!(sink.pointers.is_empty());
@@ -417,12 +562,18 @@ mod tests {
         assert_eq!(sink2.pointers.len(), 1);
 
         // Keyboard to #1 → only sink1 sees keyboard
-        sink1.handle_keyboard(KeyboardEvent { key: 0x04, pressed: true });
+        sink1.handle_keyboard(KeyboardEvent {
+            key: 0x04,
+            pressed: true,
+        });
         assert_eq!(sink1.keys.len(), 1);
         assert_eq!(sink2.keys.len(), 0);
 
         // Keyboard to #2 → only sink2 sees keyboard
-        sink2.handle_keyboard(KeyboardEvent { key: 0x05, pressed: true });
+        sink2.handle_keyboard(KeyboardEvent {
+            key: 0x05,
+            pressed: true,
+        });
         assert_eq!(sink1.keys.len(), 1);
         assert_eq!(sink2.keys.len(), 1);
 
@@ -436,7 +587,11 @@ mod tests {
     fn uv_same_after_resize() {
         let transform = Transform3D::identity();
         let proj = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0);
-        let view = Matrix4::look_at_rh(cgmath::Point3::new(0.0, 0.0, 500.0), cgmath::Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
+        let view = Matrix4::look_at_rh(
+            cgmath::Point3::new(0.0, 0.0, 500.0),
+            cgmath::Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        );
         let pv = proj * view;
         // Same click in space, same UV regardless of framebuffer resolution
         let uv_small = screen_to_visual_uv(&pv, 0.0, 0.0, &transform, 200.0, 100.0);
@@ -489,7 +644,11 @@ mod tests {
         // Transform preserved — UV at center always (0.5, 0.5)
         let transform = Transform3D::identity();
         let proj = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0);
-        let view = Matrix4::look_at_rh(cgmath::Point3::new(0.0, 0.0, 500.0), cgmath::Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
+        let view = Matrix4::look_at_rh(
+            cgmath::Point3::new(0.0, 0.0, 500.0),
+            cgmath::Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        );
         let pv = proj * view;
         let uv1 = screen_to_visual_uv(&pv, 0.0, 0.0, &transform, 200.0, 100.0);
         let uv2 = screen_to_visual_uv(&pv, 0.0, 0.0, &transform, 400.0, 200.0);
@@ -499,12 +658,18 @@ mod tests {
     #[test]
     fn aspect_change_uv() {
         // 16:9 → 16:10 aspect ratio change
-        let pv = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0) *
-            Matrix4::look_at_rh(cgmath::Point3::new(0.0, 0.0, 500.0), cgmath::Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
-        let (u, v) = screen_to_visual_uv(&pv, 0.0, 0.0, &Transform3D::identity(), 1920.0, 1080.0).unwrap();
+        let pv = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0)
+            * Matrix4::look_at_rh(
+                cgmath::Point3::new(0.0, 0.0, 500.0),
+                cgmath::Point3::new(0.0, 0.0, 0.0),
+                Vector3::new(0.0, 1.0, 0.0),
+            );
+        let (u, v) =
+            screen_to_visual_uv(&pv, 0.0, 0.0, &Transform3D::identity(), 1920.0, 1080.0).unwrap();
         assert!((u - 0.5).abs() < 1e-4);
         assert!((v - 0.5).abs() < 1e-4);
-        let (u2, v2) = screen_to_visual_uv(&pv, 0.0, 0.0, &Transform3D::identity(), 1920.0, 1200.0).unwrap();
+        let (u2, v2) =
+            screen_to_visual_uv(&pv, 0.0, 0.0, &Transform3D::identity(), 1920.0, 1200.0).unwrap();
         assert!((u2 - 0.5).abs() < 1e-4);
         assert!((v2 - 0.5).abs() < 1e-4);
     }
@@ -514,7 +679,10 @@ mod tests {
     #[test]
     fn title_bar_hit_detection() {
         // Create a DecorationConfig with title_bar_height = 0.06
-        let _deco = crate::scene::DecorationConfig { title_bar_height: 0.06, title: "test".into() };
+        let _deco = crate::scene::DecorationConfig {
+            title_bar_height: 0.06,
+            title: "test".into(),
+        };
         let content_w = 200.0;
         let content_h = 100.0;
         let _total_w = content_w;
@@ -522,11 +690,15 @@ mod tests {
         let title_h_frac = 0.06 / (1.0 + 0.06);
 
         // A hit at the top of the visual should be in the title bar
-        let _pv = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0) *
-            Matrix4::look_at_rh(cgmath::Point3::new(0.0, 0.0, 500.0), cgmath::Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
+        let _pv = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0)
+            * Matrix4::look_at_rh(
+                cgmath::Point3::new(0.0, 0.0, 500.0),
+                cgmath::Point3::new(0.0, 0.0, 0.0),
+                Vector3::new(0.0, 1.0, 0.0),
+            );
         // Hit the very top of the visual
         let _ndc_y = (total_h / 2.0 - content_h * 0.06 / 2.0) / 240.0; // NDC for top of total quad
-        // Actually just test that UV.y < title_h_frac means title bar
+                                                                       // Actually just test that UV.y < title_h_frac means title bar
         assert!(title_h_frac > 0.0 && title_h_frac < 1.0);
     }
 
@@ -535,7 +707,10 @@ mod tests {
         let title_h = 0.06f64;
         let title_frac = title_h / (1.0 + title_h);
         let content_v = (0.5f64 - title_frac) / (1.0 - title_frac);
-        assert!((content_v - 0.5).abs() < 0.05, "center of total is center of content");
+        assert!(
+            (content_v - 0.5).abs() < 0.05,
+            "center of total is center of content"
+        );
         assert!(0.01f64 < title_frac, "v=0.01 should be in title bar");
         assert!(0.1f64 > title_frac, "v=0.1 should be in content area");
     }

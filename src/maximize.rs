@@ -148,7 +148,10 @@ mod tests {
         let mut c = MaximizeCoordinator::default();
         c.begin(intent(vid(1), 10, (1280, 720)));
         c.begin(intent(vid(1), 11, (1920, 1080)));
-        assert_eq!(c.intent(vid(1)).map(|i| i.serial), Some(Serial::from(11u32)));
+        assert_eq!(
+            c.intent(vid(1)).map(|i| i.serial),
+            Some(Serial::from(11u32))
+        );
         assert_eq!(c.take_intent(vid(1)).map(|i| i.target), Some((1920, 1080)));
         assert!(c.intent(vid(1)).is_none());
     }
@@ -197,7 +200,10 @@ mod tests {
         c.defer(vid(1), MaximizeKind::Maximize, MaximizeSource::Client);
         c.abort(vid(1));
         assert!(c.intent(vid(1)).is_none());
-        assert!(c.take_deferred().is_none(), "deferred request for vid dropped");
+        assert!(
+            c.take_deferred().is_none(),
+            "deferred request for vid dropped"
+        );
         assert!(c.intent(vid(2)).is_some(), "other visual unaffected");
         assert!(!c.is_empty());
         c.abort(vid(2));

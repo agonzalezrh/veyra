@@ -41,25 +41,67 @@ pub struct KeyBinding {
 
 impl KeyBinding {
     pub const fn new(key: u32) -> Self {
-        KeyBinding { key, ctrl: false, shift: false, alt: false, meta: false }
+        KeyBinding {
+            key,
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+        }
     }
     pub const fn ctrl(key: u32) -> Self {
-        KeyBinding { key, ctrl: true, shift: false, alt: false, meta: false }
+        KeyBinding {
+            key,
+            ctrl: true,
+            shift: false,
+            alt: false,
+            meta: false,
+        }
     }
     pub const fn ctrl_shift(key: u32) -> Self {
-        KeyBinding { key, ctrl: true, shift: true, alt: false, meta: false }
+        KeyBinding {
+            key,
+            ctrl: true,
+            shift: true,
+            alt: false,
+            meta: false,
+        }
     }
     pub const fn alt(key: u32) -> Self {
-        KeyBinding { key, ctrl: false, shift: false, alt: true, meta: false }
+        KeyBinding {
+            key,
+            ctrl: false,
+            shift: false,
+            alt: true,
+            meta: false,
+        }
     }
     pub const fn alt_shift(key: u32) -> Self {
-        KeyBinding { key, ctrl: false, shift: true, alt: true, meta: false }
+        KeyBinding {
+            key,
+            ctrl: false,
+            shift: true,
+            alt: true,
+            meta: false,
+        }
     }
     pub const fn meta(key: u32) -> Self {
-        KeyBinding { key, ctrl: false, shift: false, alt: false, meta: true }
+        KeyBinding {
+            key,
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: true,
+        }
     }
     pub const fn meta_shift(key: u32) -> Self {
-        KeyBinding { key, ctrl: false, shift: true, alt: false, meta: true }
+        KeyBinding {
+            key,
+            ctrl: false,
+            shift: true,
+            alt: false,
+            meta: true,
+        }
     }
 }
 
@@ -77,58 +119,70 @@ impl NavigationModel {
         // These interfere minimal with normal typing: Tab, F-keys, Escape,
         // Home, Menu. All letter/number shortcuts require a modifier.
         let bindings = vec![
-            (ToggleSpatial,          KeyBinding::new(keys::F5)),
-            (ToggleFocus,            KeyBinding::new(keys::F6)),
-            (WorkspaceNext,          KeyBinding::ctrl(keys::TAB)),
-            (WorkspacePrev,          KeyBinding::ctrl_shift(keys::TAB)),
-            (AppNext,                KeyBinding::alt(keys::TAB)),
-            (AppPrev,                KeyBinding::alt_shift(keys::TAB)),
+            (ToggleSpatial, KeyBinding::new(keys::F5)),
+            (ToggleFocus, KeyBinding::new(keys::F6)),
+            (WorkspaceNext, KeyBinding::ctrl(keys::TAB)),
+            (WorkspacePrev, KeyBinding::ctrl_shift(keys::TAB)),
+            (AppNext, KeyBinding::alt(keys::TAB)),
+            (AppPrev, KeyBinding::alt_shift(keys::TAB)),
             // Plain F7/F8 for deterministic laptop testing: GNOME owns
             // Alt+Tab when nested, so the MRU switcher needs keys the
             // mother compositor will not intercept.
-            (AppNext,                KeyBinding::new(keys::F7)),
-            (AppPrev,                KeyBinding::new(keys::F8)),
-            (Escape,                 KeyBinding::new(keys::ESCAPE)),
-            (FrameAll,               KeyBinding::new(keys::HOME)),
-            (OpenContextMenu,        KeyBinding::new(keys::MENU)),
+            (AppNext, KeyBinding::new(keys::F7)),
+            (AppPrev, KeyBinding::new(keys::F8)),
+            (Escape, KeyBinding::new(keys::ESCAPE)),
+            (FrameAll, KeyBinding::new(keys::HOME)),
+            (OpenContextMenu, KeyBinding::new(keys::MENU)),
             // Modifier-required bindings — these use modifier keys to avoid
             // intercepting ordinary typing. Meta is the primary compositor
             // modifier, with Alt for window management.
-            (ToggleOverview,         KeyBinding::meta(keys::O)),
-            (ToggleWorkspaceOverview,KeyBinding::meta(keys::P)),
-            (ToggleSpatial,          KeyBinding::meta(keys::TAB)),
-            (DeEmphasize,            KeyBinding::meta(keys::M)),
-            (FrameSelected,          KeyBinding::meta(keys::F)),
-            (ToggleShelf,            KeyBinding::meta(keys::D)),
-            (SendToShelf,            KeyBinding::meta(keys::DOWN)),
-            (Launcher,               KeyBinding::meta(keys::SPACE)),
-            (CloseApp,               KeyBinding::meta(keys::W)),
+            (ToggleOverview, KeyBinding::meta(keys::O)),
+            (ToggleWorkspaceOverview, KeyBinding::meta(keys::P)),
+            (ToggleSpatial, KeyBinding::meta(keys::TAB)),
+            (DeEmphasize, KeyBinding::meta(keys::M)),
+            (FrameSelected, KeyBinding::meta(keys::F)),
+            (ToggleShelf, KeyBinding::meta(keys::D)),
+            (SendToShelf, KeyBinding::meta(keys::DOWN)),
+            (Launcher, KeyBinding::meta(keys::SPACE)),
+            (CloseApp, KeyBinding::meta(keys::W)),
             // Meta+Q is the canonical close binding (I6); Meta+W predates it
             // and stays for muscle memory.
-            (CloseApp,               KeyBinding::meta(keys::Q)),
-            (ToggleMaximize,         KeyBinding::meta(keys::UP)),
+            (CloseApp, KeyBinding::meta(keys::Q)),
+            (ToggleMaximize, KeyBinding::meta(keys::UP)),
             // Meta+Down is taken by SendToShelf; minimize/restore answer to
             // Meta+N / Meta+U, plus plain F9/F10/F11 for deterministic
             // laptop testing (GNOME owns the Meta chords when nested).
-            (MinimizeSelected,       KeyBinding::meta(keys::N)),
-            (MinimizeSelected,       KeyBinding::new(keys::F9)),
-            (RestoreSelected,        KeyBinding::meta(keys::U)),
-            (RestoreSelected,        KeyBinding::new(keys::F10)),
-            (ToggleMaximize,         KeyBinding::new(keys::F11)),
+            (MinimizeSelected, KeyBinding::meta(keys::N)),
+            (MinimizeSelected, KeyBinding::new(keys::F9)),
+            (RestoreSelected, KeyBinding::meta(keys::U)),
+            (RestoreSelected, KeyBinding::new(keys::F10)),
+            (ToggleMaximize, KeyBinding::new(keys::F11)),
             // Fullscreen (I7): Meta+G permanent (Meta+F is FrameSelected),
             // F12 for deterministic laptop testing nested inside GNOME.
-            (ToggleFullscreen,       KeyBinding::meta(keys::G)),
-            (ToggleFullscreen,       KeyBinding::new(keys::F12)),
-            (ReopenClosed,           KeyBinding::meta_shift(keys::T)),
-            (HelpOverlay,            KeyBinding::meta(keys::SLASH)),
+            (ToggleFullscreen, KeyBinding::meta(keys::G)),
+            (ToggleFullscreen, KeyBinding::new(keys::F12)),
+            (ReopenClosed, KeyBinding::meta_shift(keys::T)),
+            (HelpOverlay, KeyBinding::meta(keys::SLASH)),
         ];
         NavigationModel { bindings }
     }
 
     /// Find which binding (if any) matches the given key/modifier state.
-    pub fn match_binding(&self, key: u32, ctrl: bool, shift: bool, alt: bool, meta: bool) -> Option<Binding> {
+    pub fn match_binding(
+        &self,
+        key: u32,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+        meta: bool,
+    ) -> Option<Binding> {
         for (binding, kb) in &self.bindings {
-            if kb.key == key && kb.ctrl == ctrl && kb.shift == shift && kb.alt == alt && kb.meta == meta {
+            if kb.key == key
+                && kb.ctrl == ctrl
+                && kb.shift == shift
+                && kb.alt == alt
+                && kb.meta == meta
+            {
                 return Some(*binding);
             }
         }
@@ -206,73 +260,124 @@ mod tests {
     #[test]
     fn match_binding_workspace_next() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(23, true, false, false, false), Some(Binding::WorkspaceNext));
+        assert_eq!(
+            nav.match_binding(23, true, false, false, false),
+            Some(Binding::WorkspaceNext)
+        );
     }
 
     #[test]
     fn match_binding_workspace_prev() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(23, true, true, false, false), Some(Binding::WorkspacePrev));
+        assert_eq!(
+            nav.match_binding(23, true, true, false, false),
+            Some(Binding::WorkspacePrev)
+        );
     }
 
     #[test]
     fn match_binding_app_next() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(23, false, false, true, false), Some(Binding::AppNext));
+        assert_eq!(
+            nav.match_binding(23, false, false, true, false),
+            Some(Binding::AppNext)
+        );
     }
 
     #[test]
     fn match_binding_app_prev() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(23, false, true, true, false), Some(Binding::AppPrev));
+        assert_eq!(
+            nav.match_binding(23, false, true, true, false),
+            Some(Binding::AppPrev)
+        );
     }
 
     #[test]
     fn match_binding_toggle_spatial() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(23, false, false, false, true), Some(Binding::ToggleSpatial));
+        assert_eq!(
+            nav.match_binding(23, false, false, false, true),
+            Some(Binding::ToggleSpatial)
+        );
     }
 
     #[test]
     fn match_binding_toggle_focus() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(72, false, false, false, false), Some(Binding::ToggleFocus));
+        assert_eq!(
+            nav.match_binding(72, false, false, false, false),
+            Some(Binding::ToggleFocus)
+        );
     }
 
     #[test]
     fn match_binding_maximize() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(111, false, false, false, true), Some(Binding::ToggleMaximize));
+        assert_eq!(
+            nav.match_binding(111, false, false, false, true),
+            Some(Binding::ToggleMaximize)
+        );
         // Laptop-test binding: plain F11 (77) also toggles maximize.
-        assert_eq!(nav.match_binding(77, false, false, false, false), Some(Binding::ToggleMaximize));
+        assert_eq!(
+            nav.match_binding(77, false, false, false, false),
+            Some(Binding::ToggleMaximize)
+        );
     }
 
     #[test]
     fn match_binding_close() {
         let nav = NavigationModel::new();
         // Meta+W and Meta+Q both close the focused app (I6)
-        assert_eq!(nav.match_binding(25, false, false, false, true), Some(Binding::CloseApp));
-        assert_eq!(nav.match_binding(24, false, false, false, true), Some(Binding::CloseApp));
+        assert_eq!(
+            nav.match_binding(25, false, false, false, true),
+            Some(Binding::CloseApp)
+        );
+        assert_eq!(
+            nav.match_binding(24, false, false, false, true),
+            Some(Binding::CloseApp)
+        );
     }
 
     #[test]
     fn match_binding_fullscreen() {
         let nav = NavigationModel::new();
         // Meta+G (G=42): fullscreen (Meta+F is FrameSelected)
-        assert_eq!(nav.match_binding(42, false, false, false, true), Some(Binding::ToggleFullscreen));
+        assert_eq!(
+            nav.match_binding(42, false, false, false, true),
+            Some(Binding::ToggleFullscreen)
+        );
         // Laptop-test binding: plain F12 (96) also toggles fullscreen.
-        assert_eq!(nav.match_binding(96, false, false, false, false), Some(Binding::ToggleFullscreen));
+        assert_eq!(
+            nav.match_binding(96, false, false, false, false),
+            Some(Binding::ToggleFullscreen)
+        );
     }
 
     #[test]
     fn match_binding_minimize_restore() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(57, false, false, false, true), Some(Binding::MinimizeSelected));
-        assert_eq!(nav.match_binding(75, false, false, false, false), Some(Binding::MinimizeSelected));
-        assert_eq!(nav.match_binding(76, false, false, false, false), Some(Binding::RestoreSelected));
-        assert_eq!(nav.match_binding(30, false, false, false, true), Some(Binding::RestoreSelected));
+        assert_eq!(
+            nav.match_binding(57, false, false, false, true),
+            Some(Binding::MinimizeSelected)
+        );
+        assert_eq!(
+            nav.match_binding(75, false, false, false, false),
+            Some(Binding::MinimizeSelected)
+        );
+        assert_eq!(
+            nav.match_binding(76, false, false, false, false),
+            Some(Binding::RestoreSelected)
+        );
+        assert_eq!(
+            nav.match_binding(30, false, false, false, true),
+            Some(Binding::RestoreSelected)
+        );
         // Meta+Down stays SendToShelf (existing E-series feature)
-        assert_eq!(nav.match_binding(116, false, false, false, true), Some(Binding::SendToShelf));
+        assert_eq!(
+            nav.match_binding(116, false, false, false, true),
+            Some(Binding::SendToShelf)
+        );
     }
 
     #[test]
@@ -289,7 +394,10 @@ mod tests {
     #[test]
     fn match_binding_escape() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(9, false, false, false, false), Some(Binding::Escape));
+        assert_eq!(
+            nav.match_binding(9, false, false, false, false),
+            Some(Binding::Escape)
+        );
     }
 
     #[test]
@@ -300,85 +408,130 @@ mod tests {
 
     #[test]
     fn escape_chain_drag_first() {
-        assert_eq!(escape_chain(true, true, true, true), EscapeAction::CancelDrag);
+        assert_eq!(
+            escape_chain(true, true, true, true),
+            EscapeAction::CancelDrag
+        );
     }
 
     #[test]
     fn escape_chain_workspace_overview() {
-        assert_eq!(escape_chain(false, true, false, false), EscapeAction::ExitWorkspaceOverview);
+        assert_eq!(
+            escape_chain(false, true, false, false),
+            EscapeAction::ExitWorkspaceOverview
+        );
     }
 
     #[test]
     fn escape_chain_overview() {
-        assert_eq!(escape_chain(false, false, true, false), EscapeAction::ExitOverview);
+        assert_eq!(
+            escape_chain(false, false, true, false),
+            EscapeAction::ExitOverview
+        );
     }
 
     #[test]
     fn escape_chain_focus() {
-        assert_eq!(escape_chain(false, false, false, true), EscapeAction::ExitFocus);
+        assert_eq!(
+            escape_chain(false, false, false, true),
+            EscapeAction::ExitFocus
+        );
     }
 
     #[test]
     fn escape_chain_reset() {
-        assert_eq!(escape_chain(false, false, false, false), EscapeAction::ResetCamera);
+        assert_eq!(
+            escape_chain(false, false, false, false),
+            EscapeAction::ResetCamera
+        );
     }
 
     #[test]
     fn match_binding_shelf_toggle() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(40, false, false, false, true), Some(Binding::ToggleShelf));
+        assert_eq!(
+            nav.match_binding(40, false, false, false, true),
+            Some(Binding::ToggleShelf)
+        );
     }
 
     #[test]
     fn match_binding_send_to_shelf() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(116, false, false, false, true), Some(Binding::SendToShelf));
+        assert_eq!(
+            nav.match_binding(116, false, false, false, true),
+            Some(Binding::SendToShelf)
+        );
     }
 
     #[test]
     fn match_binding_launcher() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(65, false, false, false, true), Some(Binding::Launcher));
+        assert_eq!(
+            nav.match_binding(65, false, false, false, true),
+            Some(Binding::Launcher)
+        );
     }
 
     #[test]
     fn match_binding_close_app() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(25, false, false, false, true), Some(Binding::CloseApp));
+        assert_eq!(
+            nav.match_binding(25, false, false, false, true),
+            Some(Binding::CloseApp)
+        );
     }
 
     #[test]
     fn match_binding_cycle_visuals() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(23, false, false, false, true), Some(Binding::ToggleSpatial));
+        assert_eq!(
+            nav.match_binding(23, false, false, false, true),
+            Some(Binding::ToggleSpatial)
+        );
     }
 
     #[test]
     fn match_binding_open_context_menu() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(135, false, false, false, false), Some(Binding::OpenContextMenu));
+        assert_eq!(
+            nav.match_binding(135, false, false, false, false),
+            Some(Binding::OpenContextMenu)
+        );
     }
 
     #[test]
     fn match_binding_help_overlay() {
         let nav = NavigationModel::new();
-        assert_eq!(nav.match_binding(61, false, false, false, true), Some(Binding::HelpOverlay));
+        assert_eq!(
+            nav.match_binding(61, false, false, false, true),
+            Some(Binding::HelpOverlay)
+        );
     }
 
     #[test]
     fn match_binding_toggle_maximize() {
         let nav = NavigationModel::new();
         // Meta+Up toggles maximize; plain Up and Meta+Down must not.
-        assert_eq!(nav.match_binding(111, false, false, false, true), Some(Binding::ToggleMaximize));
+        assert_eq!(
+            nav.match_binding(111, false, false, false, true),
+            Some(Binding::ToggleMaximize)
+        );
         assert_eq!(nav.match_binding(111, false, false, false, false), None);
-        assert_eq!(nav.match_binding(116, false, false, false, true), Some(Binding::SendToShelf));
+        assert_eq!(
+            nav.match_binding(116, false, false, false, true),
+            Some(Binding::SendToShelf)
+        );
     }
 
     #[test]
     fn match_binding_reopen_closed() {
         let nav = NavigationModel::new();
         // Meta+Shift+T reopens; plain T and Meta+T must not.
-        assert_eq!(nav.match_binding(28, false, true, false, true), Some(Binding::ReopenClosed));
+        assert_eq!(
+            nav.match_binding(28, false, true, false, true),
+            Some(Binding::ReopenClosed)
+        );
         assert_eq!(nav.match_binding(28, false, false, false, false), None);
         assert_eq!(nav.match_binding(28, false, false, false, true), None);
     }

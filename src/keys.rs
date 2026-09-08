@@ -7,14 +7,14 @@
 ///
 /// Physical key → evdev → XKB (= evdev + 8)
 // Modifiers — the enum of bindings consumes these
-pub const CTRL_L: u32 = 37;   // evdev 29
-pub const CTRL_R: u32 = 105;  // evdev 97
-pub const SHIFT_L: u32 = 50;  // evdev 42
-pub const SHIFT_R: u32 = 62;  // evdev 54
-pub const ALT_L: u32 = 64;    // evdev 56
-pub const ALT_R: u32 = 108;   // evdev 100
-pub const META_L: u32 = 133;  // evdev 125
-pub const META_R: u32 = 134;  // evdev 126
+pub const CTRL_L: u32 = 37; // evdev 29
+pub const CTRL_R: u32 = 105; // evdev 97
+pub const SHIFT_L: u32 = 50; // evdev 42
+pub const SHIFT_R: u32 = 62; // evdev 54
+pub const ALT_L: u32 = 64; // evdev 56
+pub const ALT_R: u32 = 108; // evdev 100
+pub const META_L: u32 = 133; // evdev 125
+pub const META_R: u32 = 134; // evdev 126
 
 // Function keys
 pub const F1: u32 = 67;

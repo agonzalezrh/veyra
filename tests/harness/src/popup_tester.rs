@@ -14,6 +14,10 @@
 
 use std::time::{Duration, Instant};
 
+use smithay_client_toolkit::reexports::client::protocol::wl_shm::Format;
+use smithay_client_toolkit::reexports::protocols::xdg::shell::client::{
+    xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
+};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_output, delegate_registry, delegate_shm,
@@ -24,12 +28,8 @@ use smithay_client_toolkit::{
 };
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{wl_output, wl_surface, wl_registry},
+    protocol::{wl_output, wl_registry, wl_surface},
     Connection, Dispatch, QueueHandle,
-};
-use smithay_client_toolkit::reexports::client::protocol::wl_shm::Format;
-use smithay_client_toolkit::reexports::protocols::xdg::shell::client::{
-    xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
 
 const POPUP_W: i32 = 240;
@@ -158,7 +158,11 @@ pub fn run_popups_opts(cycles: u32, duration_ms: u64, hold_last: bool) -> i32 {
         let _ = conn.flush();
         use std::os::fd::AsRawFd as _;
         let fd = conn.backend().poll_fd().as_raw_fd();
-        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
         let ret = unsafe { libc::poll(&mut pfd, 1, 50) };
         if ret > 0 {
             if let Some(guard) = conn.prepare_read() {
@@ -176,7 +180,11 @@ pub fn run_popups_opts(cycles: u32, duration_ms: u64, hold_last: bool) -> i32 {
     }
     let _ = conn.flush();
     crate::log_kv(&[("ev", "exit".into()), ("cycles_done", tester.cycle.into())]);
-    if tester.exit { 0 } else { 3 }
+    if tester.exit {
+        0
+    } else {
+        3
+    }
 }
 
 impl PopupTester {
@@ -224,19 +232,14 @@ impl PopupTester {
     fn ack_and_draw_popup(&mut self, _qh: &QueueHandle<Self>) {
         let Some(cyc) = &mut self.current else { return };
         if cyc.pool.is_none() {
-            cyc.pool = SlotPool::new(
-                POPUP_W as usize * POPUP_H as usize * 4,
-                &self.shm,
-            )
-            .ok();
+            cyc.pool = SlotPool::new(POPUP_W as usize * POPUP_H as usize * 4, &self.shm).ok();
         }
         let Some(pool) = &mut cyc.pool else { return };
-        let (buffer, canvas) = match pool.create_buffer(
-            POPUP_W, POPUP_H, POPUP_W * 4, Format::Argb8888,
-        ) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
+        let (buffer, canvas) =
+            match pool.create_buffer(POPUP_W, POPUP_H, POPUP_W * 4, Format::Argb8888) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
         for chunk in canvas.as_chunks_mut::<4>().0 {
             chunk[0] = 0x30;
             chunk[1] = 0xC0;
@@ -246,7 +249,10 @@ impl PopupTester {
         buffer.attach_to(&cyc.surface).expect("popup attach");
         cyc.buffer = Some(buffer);
         cyc.surface.commit();
-        crate::log_kv(&[("ev", "popup_committed".into()), ("cycle", self.cycle.into())]);
+        crate::log_kv(&[
+            ("ev", "popup_committed".into()),
+            ("cycle", self.cycle.into()),
+        ]);
         self.committed_cycle = Some(self.cycle);
         self.committed_at = Some(Instant::now());
     }
@@ -281,26 +287,33 @@ impl PopupTester {
         if self.parent_pool.is_none() {
             self.parent_pool = SlotPool::new(2 * w as usize * h as usize, &self.shm).ok();
         }
-        let Some(pool) = &mut self.parent_pool else { return };
-        let (buffer, canvas) = match pool.create_buffer(
-            w as i32, h as i32, w as i32 * 4, Format::Argb8888,
-        ) {
-            Ok(b) => b,
-            Err(_) => return,
+        let Some(pool) = &mut self.parent_pool else {
+            return;
         };
+        let (buffer, canvas) =
+            match pool.create_buffer(w as i32, h as i32, w as i32 * 4, Format::Argb8888) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
         for chunk in canvas.as_chunks_mut::<4>().0 {
             chunk[0] = 0xF0;
             chunk[1] = 0x20;
             chunk[2] = 0x40;
             chunk[3] = 0xFF;
         }
-        buffer.attach_to(&self.parent_surface).expect("parent attach");
+        buffer
+            .attach_to(&self.parent_surface)
+            .expect("parent attach");
         self.parent_buffer = Some(buffer);
         // Frame callbacks drive the popup cycles (destroy after a couple
         // of presented frames).
         self.parent_surface.frame(qh, self.parent_surface.clone());
         self.parent_surface.commit();
-        crate::log_kv(&[("ev", "parent_commit".into()), ("w", w.into()), ("h", h.into())]);
+        crate::log_kv(&[
+            ("ev", "parent_commit".into()),
+            ("w", w.into()),
+            ("h", h.into()),
+        ]);
     }
 }
 
@@ -371,7 +384,10 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for PopupTester {
                     }
                     cyc.configured = true;
                 }
-                crate::log_kv(&[("ev", "popup_configured".into()), ("cycle", state.cycle.into())]);
+                crate::log_kv(&[
+                    ("ev", "popup_configured".into()),
+                    ("cycle", state.cycle.into()),
+                ]);
                 state.ack_and_draw_popup(qh);
             }
         }
@@ -403,7 +419,12 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for PopupTester {
         _qh: &QueueHandle<Self>,
     ) {
         match event {
-            xdg_popup::Event::Configure { x, y, width, height } => {
+            xdg_popup::Event::Configure {
+                x,
+                y,
+                width,
+                height,
+            } => {
                 crate::log_kv(&[
                     ("ev", "popup_popup_configure".into()),
                     ("x", x.into()),
@@ -447,8 +468,22 @@ impl CompositorHandler for PopupTester {
     ) {
     }
 
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
 
     fn transform_changed(
         &mut self,

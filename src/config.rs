@@ -23,10 +23,18 @@ pub struct InputConfig {
     pub scroll_speed: f32,
 }
 
-fn default_focus_key() -> String { "F6".into() }
-fn default_overview_key() -> String { "F9".into() }
-fn default_sensitivity() -> f32 { 1.0 }
-fn default_scroll_speed() -> f32 { 1.0 }
+fn default_focus_key() -> String {
+    "F6".into()
+}
+fn default_overview_key() -> String {
+    "F9".into()
+}
+fn default_sensitivity() -> f32 {
+    1.0
+}
+fn default_scroll_speed() -> f32 {
+    1.0
+}
 
 impl Default for InputConfig {
     fn default() -> Self {
@@ -53,11 +61,21 @@ pub struct CameraConfig {
     pub default_distance: f32,
 }
 
-fn default_focus_distance() -> f32 { 500.0 }
-fn default_transition_ms() -> u64 { 300 }
-fn default_yaw() -> f32 { 0.0 }
-fn default_pitch() -> f32 { 0.0 }
-fn default_distance() -> f32 { 800.0 }
+fn default_focus_distance() -> f32 {
+    500.0
+}
+fn default_transition_ms() -> u64 {
+    300
+}
+fn default_yaw() -> f32 {
+    0.0
+}
+fn default_pitch() -> f32 {
+    0.0
+}
+fn default_distance() -> f32 {
+    800.0
+}
 
 impl Default for CameraConfig {
     fn default() -> Self {
@@ -79,8 +97,12 @@ pub struct WorkspaceConfig {
     pub default_layout: String,
 }
 
-fn default_workspace_count() -> usize { 3 }
-fn default_layout() -> String { "freeform".into() }
+fn default_workspace_count() -> usize {
+    3
+}
+fn default_layout() -> String {
+    "freeform".into()
+}
 
 impl Default for WorkspaceConfig {
     fn default() -> Self {
@@ -99,8 +121,12 @@ pub struct LayoutConfig {
     pub margin: f32,
 }
 
-fn default_spacing() -> f32 { 40.0 }
-fn default_margin() -> f32 { 100.0 }
+fn default_spacing() -> f32 {
+    40.0
+}
+fn default_margin() -> f32 {
+    100.0
+}
 
 impl Default for LayoutConfig {
     fn default() -> Self {
@@ -117,7 +143,9 @@ pub struct AppearanceConfig {
     pub background_color: [f32; 3],
 }
 
-fn default_bg_color() -> [f32; 3] { [0.15, 0.15, 0.15] }
+fn default_bg_color() -> [f32; 3] {
+    [0.15, 0.15, 0.15]
+}
 
 impl Default for AppearanceConfig {
     fn default() -> Self {
@@ -141,11 +169,21 @@ pub struct ShortcutConfig {
     pub reset_camera: String,
 }
 
-fn default_alt_tab() -> String { "Alt+Tab".into() }
-fn default_launcher() -> String { "Meta+Space".into() }
-fn default_toggle_shelf() -> String { "Meta+D".into() }
-fn default_send_to_shelf() -> String { "Meta+Down".into() }
-fn default_reset_camera() -> String { "Escape".into() }
+fn default_alt_tab() -> String {
+    "Alt+Tab".into()
+}
+fn default_launcher() -> String {
+    "Meta+Space".into()
+}
+fn default_toggle_shelf() -> String {
+    "Meta+D".into()
+}
+fn default_send_to_shelf() -> String {
+    "Meta+Down".into()
+}
+fn default_reset_camera() -> String {
+    "Escape".into()
+}
 
 impl Default for ShortcutConfig {
     fn default() -> Self {
@@ -179,7 +217,9 @@ pub struct Config {
     pub version: u32,
 }
 
-fn default_version() -> u32 { CONFIG_VERSION }
+fn default_version() -> u32 {
+    CONFIG_VERSION
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -286,11 +326,17 @@ impl Config {
             self.layout.margin = 0.0;
         }
         if self.input.sensitivity <= 0.0 {
-            warn!("input.sensitivity {} clamped to 0.1", self.input.sensitivity);
+            warn!(
+                "input.sensitivity {} clamped to 0.1",
+                self.input.sensitivity
+            );
             self.input.sensitivity = 0.1;
         }
         if self.camera.transition_ms > 5000 {
-            warn!("camera.transition_ms {} clamped to 5000", self.camera.transition_ms);
+            warn!(
+                "camera.transition_ms {} clamped to 5000",
+                self.camera.transition_ms
+            );
             self.camera.transition_ms = 5000;
         }
     }
@@ -335,8 +381,8 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
 
     /// Serializes all config tests that touch VEYRA_CONFIG_PATH (process-global env var).
     static CONFIG_TEST_LOCK: Mutex<()> = Mutex::new(());

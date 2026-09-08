@@ -21,6 +21,10 @@ use std::collections::HashMap;
 use std::os::fd::BorrowedFd;
 use std::time::{Duration, Instant};
 
+use smithay_client_toolkit::reexports::client::protocol::wl_shm::Format;
+use smithay_client_toolkit::reexports::protocols::xdg::shell::client::{
+    xdg_surface, xdg_toplevel, xdg_wm_base,
+};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_output, delegate_registry, delegate_shm,
@@ -37,16 +41,15 @@ use wayland_client::{
     },
     Connection, Dispatch, Proxy, QueueHandle,
 };
-use smithay_client_toolkit::reexports::client::protocol::wl_shm::Format;
-use smithay_client_toolkit::reexports::protocols::xdg::shell::client::{
-    xdg_surface, xdg_toplevel, xdg_wm_base,
-};
 
 const W: i32 = 320;
 const H: i32 = 220;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Role { Source, Dest }
+pub enum Role {
+    Source,
+    Dest,
+}
 
 #[derive(Default)]
 struct OfferState {
@@ -119,14 +122,13 @@ pub fn run_dnd(role: Role, mime: String, payload: String, duration_ms: u64) -> i
             return 2;
         }
     };
-    let ddm: wl_data_device_manager::WlDataDeviceManager =
-        match globals.bind(&qh, 1..=3, ()) {
-            Ok(d) => d,
-            Err(_) => {
-                eprintln!("wl_data_device_manager not available");
-                return 2;
-            }
-        };
+    let ddm: wl_data_device_manager::WlDataDeviceManager = match globals.bind(&qh, 1..=3, ()) {
+        Ok(d) => d,
+        Err(_) => {
+            eprintln!("wl_data_device_manager not available");
+            return 2;
+        }
+    };
     let seat: wl_seat::WlSeat = match globals.bind(&qh, 1..=7, ()) {
         Ok(s) => s,
         Err(_) => {
@@ -184,7 +186,11 @@ pub fn run_dnd(role: Role, mime: String, payload: String, duration_ms: u64) -> i
         let _ = conn.flush();
         use std::os::fd::AsRawFd as _;
         let fd = conn.backend().poll_fd().as_raw_fd();
-        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
         let ret = unsafe { libc::poll(&mut pfd, 1, 50) };
         if ret > 0 {
             if let Some(guard) = conn.prepare_read() {
@@ -240,7 +246,9 @@ impl DndTester {
         if self.active_offer.as_ref() != Some(offer) {
             return;
         }
-        let Some(os) = self.offers.get(offer) else { return };
+        let Some(os) = self.offers.get(offer) else {
+            return;
+        };
         if !os.mimes.iter().any(|m| m == &self.mime) {
             return;
         }
@@ -258,8 +266,12 @@ impl DndTester {
         if self.role != Role::Source {
             return;
         }
-        let Some(serial) = self.press_serial else { return };
-        let Some(device) = self.device.clone() else { return };
+        let Some(serial) = self.press_serial else {
+            return;
+        };
+        let Some(device) = self.device.clone() else {
+            return;
+        };
         let source = self.ddm.create_data_source(qh, ());
         source.offer(self.mime.clone());
         if source.version() >= 3 {
@@ -305,7 +317,13 @@ impl Dispatch<wl_pointer::WlPointer, ()> for DndTester {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_pointer::Event::Button { serial, button, state: btn_state, .. } = event {
+        if let wl_pointer::Event::Button {
+            serial,
+            button,
+            state: btn_state,
+            ..
+        } = event
+        {
             if btn_state == wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed)
                 && button == 0x110
             {
@@ -349,7 +367,14 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for DndTester {
         match event {
             wl_data_device::Event::DataOffer { id } => {
                 state.offers.insert(id, OfferState::default());
-            }            wl_data_device::Event::Enter { serial, surface: _, x, y, id } => {
+            }
+            wl_data_device::Event::Enter {
+                serial,
+                surface: _,
+                x,
+                y,
+                id,
+            } => {
                 let Some(offer) = id else { return };
                 crate::log_kv(&[
                     ("ev", "dnd_enter".into()),
@@ -491,10 +516,7 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for DndTester {
     ) {
         match event {
             wl_data_source::Event::Target { mime_type } => {
-                crate::log_kv(&[
-                    ("ev", "dnd_target".into()),
-                    ("mime", mime_type.into()),
-                ]);
+                crate::log_kv(&[("ev", "dnd_target".into()), ("mime", mime_type.into())]);
             }
             wl_data_source::Event::Send { mime_type, fd } => {
                 let payload = state.payload.clone();
@@ -611,8 +633,22 @@ impl CompositorHandler for DndTester {
     ) {
     }
 
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
 
     fn transform_changed(
         &mut self,
@@ -623,14 +659,7 @@ impl CompositorHandler for DndTester {
     ) {
     }
 
-    fn frame(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: u32,
-    ) {
-    }
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
 }
 
 impl OutputHandler for DndTester {

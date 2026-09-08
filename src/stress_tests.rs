@@ -8,9 +8,9 @@
 //! The goal is to prove that the compositor's core abstractions hold
 //! under realistic multi-provider stress without crashing or losing state.
 
+use crate::layout::LayoutMode;
 use crate::scene::Scene;
 use crate::scene::VisualId;
-use crate::layout::LayoutMode;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -18,12 +18,14 @@ use crate::layout::LayoutMode;
 /// Returns the VisualIds for the lifecycled visuals.
 fn build_scene(n: usize) -> (Scene, Vec<VisualId>) {
     let mut scene = Scene::default();
-    let ids: Vec<VisualId> = (0..n).map(|i| {
-        let id = VisualId(1000 + i as u64);
-        scene.focus(Some(id));
-        scene.select(Some(id));
-        id
-    }).collect();
+    let ids: Vec<VisualId> = (0..n)
+        .map(|i| {
+            let id = VisualId(1000 + i as u64);
+            scene.focus(Some(id));
+            scene.select(Some(id));
+            id
+        })
+        .collect();
     (scene, ids)
 }
 
@@ -273,8 +275,11 @@ fn lifecycle_create_map_unmap_remap() {
 
     // Remap via focus (simulating re-creation)
     scene.focus(Some(VisualId(100)));
-    assert_eq!(scene.focused_id, Some(VisualId(100)),
-        "focus restored on remap");
+    assert_eq!(
+        scene.focused_id,
+        Some(VisualId(100)),
+        "focus restored on remap"
+    );
 }
 
 #[test]
@@ -379,7 +384,10 @@ fn lifecycle_destroy_while_snapped() {
     scene.focus(Some(vid));
 
     scene.remove(vid);
-    assert!(!scene.detached_set.contains(&vid), "cleaned from detached_set");
+    assert!(
+        !scene.detached_set.contains(&vid),
+        "cleaned from detached_set"
+    );
     assert_eq!(scene.focused_id, None);
 }
 
@@ -448,14 +456,19 @@ fn keyboard_focus_one_authoritative_owner() {
     assert!(scene.focused_id.is_none(), "no initial focus");
 
     scene.focus(Some(VisualId(1)));
-    assert_eq!(scene.focused_id, Some(VisualId(1)),
-        "focused_id is authoritative");
+    assert_eq!(
+        scene.focused_id,
+        Some(VisualId(1)),
+        "focused_id is authoritative"
+    );
 
     scene.focus(Some(VisualId(2)));
-    assert_eq!(scene.focused_id, Some(VisualId(2)),
-        "focus switches cleanly");
-    assert!(scene.focused_id != Some(VisualId(1)),
-        "old focus cleared");
+    assert_eq!(
+        scene.focused_id,
+        Some(VisualId(2)),
+        "focus switches cleanly"
+    );
+    assert!(scene.focused_id != Some(VisualId(1)), "old focus cleared");
 }
 
 #[test]
@@ -605,7 +618,10 @@ fn popup_workspace_inheritance() {
     ws.remove(parent_vid);
     // Popup is also removed when parent is — done via cleanup_popups_by_vid
     ws.remove(popup_vid);
-    assert!(!ws.contains(popup_vid), "popup removed after parent cleanup");
+    assert!(
+        !ws.contains(popup_vid),
+        "popup removed after parent cleanup"
+    );
 }
 
 #[test]
@@ -729,11 +745,13 @@ fn input_path_winit_and_native_same_methods() {
 fn bench_stacking_100_visuals() {
     let mut scene = Scene::default();
     let n = 100;
-    let ids: Vec<VisualId> = (0..n).map(|i| {
-        let vid = VisualId(2000 + i as u64);
-        scene.focus(Some(vid));
-        vid
-    }).collect();
+    let ids: Vec<VisualId> = (0..n)
+        .map(|i| {
+            let vid = VisualId(2000 + i as u64);
+            scene.focus(Some(vid));
+            vid
+        })
+        .collect();
 
     // Bring each to front (O(n) each in worst case, but no crash)
     for id in &ids {
@@ -883,9 +901,7 @@ fn soak_test_1000_operations() {
     let mut scene = Scene::default();
 
     // Create tracked visual IDs
-    let mut visual_ids: Vec<VisualId> = (0..50)
-        .map(|i| VisualId(10000 + i as u64))
-        .collect();
+    let mut visual_ids: Vec<VisualId> = (0..50).map(|i| VisualId(10000 + i as u64)).collect();
 
     // Add visuals to workspace 0
     for vid in &visual_ids {
@@ -997,13 +1013,15 @@ fn soak_test_1000_operations() {
     }
 
     // 2. Focus state is valid (focused_id always refers to a tracked visual or is None)
-    assert!(scene.focused_id.is_none() ||
-        visual_ids.contains(&scene.focused_id.unwrap()));
+    assert!(scene.focused_id.is_none() || visual_ids.contains(&scene.focused_id.unwrap()));
 
     // 3. Workspace state is consistent
     for w in 0..wm.len() {
         if let Some(ws) = wm.get(w) {
-            assert!(!ws.visual_ids.iter().any(|vid| ws.detached_set.contains(vid) && !ws.visual_ids.contains(vid)));
+            assert!(!ws
+                .visual_ids
+                .iter()
+                .any(|vid| ws.detached_set.contains(vid) && !ws.visual_ids.contains(vid)));
         }
     }
 
@@ -1032,17 +1050,18 @@ fn startup_state_restores_camera_and_layout() {
     // Create a saved state with specific camera and layout
     let saved = WorkspaceState {
         version: crate::persist::CURRENT_VERSION,
-        workspaces: vec![
-            WorkspaceEntry {
-                visuals: vec![],
-                camera: CameraState {
-                    x: 100.0, y: 200.0, z: 600.0,
-                    yaw: 0.5, pitch: 0.2,
-                },
-                layout_mode: "grid:3".into(),
-                detached: vec![],
+        workspaces: vec![WorkspaceEntry {
+            visuals: vec![],
+            camera: CameraState {
+                x: 100.0,
+                y: 200.0,
+                z: 600.0,
+                yaw: 0.5,
+                pitch: 0.2,
             },
-        ],
+            layout_mode: "grid:3".into(),
+            detached: vec![],
+        }],
     };
 
     // Apply camera from saved state
@@ -1069,17 +1088,18 @@ fn state_overrides_config_for_runtime_values() {
     let config = Config::default();
     let saved = WorkspaceState {
         version: crate::persist::CURRENT_VERSION,
-        workspaces: vec![
-            WorkspaceEntry {
-                visuals: vec![],
-                camera: CameraState {
-                    x: 50.0, y: -30.0, z: 900.0,
-                    yaw: 0.1, pitch: 0.05,
-                },
-                layout_mode: "flat".into(),
-                detached: vec![],
+        workspaces: vec![WorkspaceEntry {
+            visuals: vec![],
+            camera: CameraState {
+                x: 50.0,
+                y: -30.0,
+                z: 900.0,
+                yaw: 0.1,
+                pitch: 0.05,
             },
-        ],
+            layout_mode: "flat".into(),
+            detached: vec![],
+        }],
     };
 
     // Config determines workspace count
@@ -1102,8 +1122,8 @@ fn missing_state_clean_start() {
 
 #[test]
 fn corrupt_state_backup_and_recovery() {
-    use std::fs;
     use crate::persist;
+    use std::fs;
 
     // Write corrupt state
     let path = persist::state_path_for_test();
@@ -1141,17 +1161,18 @@ fn version_mismatch_warning() {
     // Higher version in saved state than code understands
     let saved = WorkspaceState {
         version: 99,
-        workspaces: vec![
-            WorkspaceEntry {
-                visuals: vec![],
-                camera: CameraState {
-                    x: 0.0, y: 0.0, z: 800.0,
-                    yaw: 0.0, pitch: 0.0,
-                },
-                layout_mode: "freeform".into(),
-                detached: vec![],
+        workspaces: vec![WorkspaceEntry {
+            visuals: vec![],
+            camera: CameraState {
+                x: 0.0,
+                y: 0.0,
+                z: 800.0,
+                yaw: 0.0,
+                pitch: 0.0,
             },
-        ],
+            layout_mode: "freeform".into(),
+            detached: vec![],
+        }],
     };
 
     // Should still be loadable (tolerant loading)
@@ -1168,7 +1189,10 @@ fn destroy_focused_visual_clears_focus() {
     let vid = VisualId(7000);
     scene.focus(Some(vid));
     scene.remove(vid);
-    assert_eq!(scene.focused_id, None, "focused visual destroyed should clear focus");
+    assert_eq!(
+        scene.focused_id, None,
+        "focused visual destroyed should clear focus"
+    );
 }
 
 #[test]
@@ -1181,8 +1205,8 @@ fn recovery_resets_camera_and_modes() {
 
 #[test]
 fn corrupt_state_backup_and_clean_start() {
-    use std::fs;
     use crate::persist;
+    use std::fs;
 
     // Write corrupt data
     let path = persist::state_path_for_test();
@@ -1204,7 +1228,10 @@ fn empty_workspace_has_valid_camera() {
     use crate::workspace::WorkspaceManager;
     let wm = WorkspaceManager::new(1);
     if let Some(ws) = wm.get(0) {
-        assert!(ws.camera.position.z > 0.0, "workspace should have valid camera z");
+        assert!(
+            ws.camera.position.z > 0.0,
+            "workspace should have valid camera z"
+        );
     }
 }
 
@@ -1427,8 +1454,10 @@ fn render_not_called_from_wayland_dispatch() {
     // If Wayland dispatch called render(), it would clear dirty too.
     // We verify that after schedule_render, dirty is still true
     // (render was NOT called).
-    assert!(s.needs_render(),
-        "Wayland dispatch should only schedule, not render");
+    assert!(
+        s.needs_render(),
+        "Wayland dispatch should only schedule, not render"
+    );
 }
 
 // ── H6: Input & interaction completion regression tests ─────────────

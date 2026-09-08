@@ -93,7 +93,9 @@ impl WorkspaceState {
                 // Wayland toplevels carry an app_id and are restorable;
                 // producer visuals are re-created by their producers.
                 let app_id = v.chrome.app_id.clone();
-                if app_id.is_empty() { return None; }
+                if app_id.is_empty() {
+                    return None;
+                }
                 Some(VisualState {
                     app_id,
                     x: v.transform.position.x,
@@ -143,7 +145,11 @@ impl WorkspaceState {
         workspace_layouts: &[LayoutMode],
         workspace_detached: &[Vec<VisualId>],
     ) -> Self {
-        let count = workspace_visuals.len().min(workspace_cameras.len()).min(workspace_layouts.len()).min(workspace_detached.len());
+        let count = workspace_visuals
+            .len()
+            .min(workspace_cameras.len())
+            .min(workspace_layouts.len())
+            .min(workspace_detached.len());
         let mut workspaces = Vec::with_capacity(count);
 
         for i in 0..count {
@@ -159,7 +165,9 @@ impl WorkspaceState {
                 .filter_map(|v| {
                     // R3: identity is chrome.app_id (see capture above).
                     let app_id = v.chrome.app_id.clone();
-                    if app_id.is_empty() { return None; }
+                    if app_id.is_empty() {
+                        return None;
+                    }
                     Some(VisualState {
                         app_id,
                         x: v.transform.position.x,
@@ -282,10 +290,8 @@ fn string_to_layout_mode(s: &str) -> LayoutMode {
 
 /// Default path for workspace state file.
 fn state_path() -> PathBuf {
-    let mut path = PathBuf::from(
-        std::env::var("XDG_RUNTIME_DIR")
-            .unwrap_or_else(|_| "/tmp".to_string()),
-    );
+    let mut path =
+        PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string()));
     path.push("veyra-state.json");
     path
 }
@@ -377,8 +383,6 @@ pub fn backup() {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,39 +392,41 @@ mod tests {
             version: CURRENT_VERSION,
             workspaces: vec![
                 WorkspaceEntry {
-                    visuals: vec![
-                        VisualState {
-                            app_id: "foot".into(),
-                            x: 100.0,
-                            y: 200.0,
-                            z: 0.0,
-                            rotation: [1.0, 0.0, 0.0, 0.0],
-                            scale: [1.0, 1.0, 1.0],
-                            detached: true,
-                        },
-                    ],
+                    visuals: vec![VisualState {
+                        app_id: "foot".into(),
+                        x: 100.0,
+                        y: 200.0,
+                        z: 0.0,
+                        rotation: [1.0, 0.0, 0.0, 0.0],
+                        scale: [1.0, 1.0, 1.0],
+                        detached: true,
+                    }],
                     camera: CameraState {
-                        x: 0.0, y: 0.0, z: 500.0,
-                        yaw: 0.0, pitch: 0.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 500.0,
+                        yaw: 0.0,
+                        pitch: 0.0,
                     },
                     layout_mode: "freeform".into(),
                     detached: vec![1],
                 },
                 WorkspaceEntry {
-                    visuals: vec![
-                        VisualState {
-                            app_id: "firefox".into(),
-                            x: -200.0,
-                            y: 50.0,
-                            z: 100.0,
-                            rotation: [1.0, 0.0, 0.0, 0.0],
-                            scale: [1.0, 1.0, 1.0],
-                            detached: false,
-                        },
-                    ],
+                    visuals: vec![VisualState {
+                        app_id: "firefox".into(),
+                        x: -200.0,
+                        y: 50.0,
+                        z: 100.0,
+                        rotation: [1.0, 0.0, 0.0, 0.0],
+                        scale: [1.0, 1.0, 1.0],
+                        detached: false,
+                    }],
                     camera: CameraState {
-                        x: 100.0, y: 0.0, z: 600.0,
-                        yaw: 0.5, pitch: 0.2,
+                        x: 100.0,
+                        y: 0.0,
+                        z: 600.0,
+                        yaw: 0.5,
+                        pitch: 0.2,
                     },
                     layout_mode: "flat".into(),
                     detached: vec![],
@@ -542,7 +548,10 @@ mod tests {
         // Test string conversion
         assert_eq!(string_to_layout_mode("freeform"), LayoutMode::Freeform);
         assert_eq!(string_to_layout_mode("flat"), LayoutMode::Flat);
-        assert_eq!(string_to_layout_mode("grid:3"), LayoutMode::Grid { columns: 3 });
+        assert_eq!(
+            string_to_layout_mode("grid:3"),
+            LayoutMode::Grid { columns: 3 }
+        );
         assert_eq!(string_to_layout_mode("unknown"), LayoutMode::Freeform);
     }
 
@@ -570,7 +579,11 @@ mod tests {
             &[crate::layout::LayoutMode::Freeform],
             &[Vec::new()],
         );
-        assert_eq!(state.workspaces[0].visuals.len(), 1, "visual must be captured");
+        assert_eq!(
+            state.workspaces[0].visuals.len(),
+            1,
+            "visual must be captured"
+        );
         assert_eq!(state.workspaces[0].visuals[0].app_id, "foot");
     }
 
@@ -615,6 +628,9 @@ mod tests {
         assert_eq!(second.0, 1, "second take comes from workspace 1");
         assert_eq!(second.1.x, 20.0);
         assert!(third.is_none(), "entries are consumed exactly once");
-        assert!(state.find_visual("foot").is_none(), "find no longer matches consumed entries");
+        assert!(
+            state.find_visual("foot").is_none(),
+            "find no longer matches consumed entries"
+        );
     }
 }

@@ -1,30 +1,29 @@
 mod anchor;
 mod app_switcher;
 mod arrange;
-mod bench;
 mod backend;
-mod keys;
+mod bench;
 mod capabilities;
+mod chrome;
+mod client_resize;
+mod closed;
 mod compositor;
 mod config;
 mod context_menu;
-mod client_resize;
-mod closed;
 mod debug_journal;
 mod dmabuf;
 mod drm_backend;
 mod focus;
+mod focus_history;
+mod fullscreen;
 mod group;
 mod input;
 mod input_router;
 mod interaction;
+mod keys;
 mod launcher;
 mod layout;
 mod maximize;
-mod fullscreen;
-mod focus_history;
-mod chrome;
-mod shell;
 mod native_backend;
 mod navigation;
 mod perf;
@@ -38,6 +37,7 @@ mod scene;
 mod scheduler;
 mod session;
 mod shelf;
+mod shell;
 mod simulated;
 mod snap;
 #[cfg(test)]
@@ -47,19 +47,22 @@ mod workspace;
 
 use std::sync::Arc;
 
-use compositor::{ClientState, LookingGlass};
 use crate::backend::WinitPresentationBackend;
+use compositor::{ClientState, LookingGlass};
 use config::Config;
 use producer::StaticColor;
-use smithay::backend::input::{AbsolutePositionEvent, Axis, InputEvent, KeyboardKeyEvent, MouseButton, PointerAxisEvent, PointerButtonEvent};
+use smithay::backend::input::{
+    AbsolutePositionEvent, Axis, InputEvent, KeyboardKeyEvent, MouseButton, PointerAxisEvent,
+    PointerButtonEvent,
+};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self, WinitEvent};
 
 use smithay::reexports::calloop::generic::Generic;
-use smithay::reexports::calloop::PostAction;
+use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::calloop::Interest;
 use smithay::reexports::calloop::Mode;
-use smithay::reexports::calloop::EventLoop;
+use smithay::reexports::calloop::PostAction;
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 use tracing_subscriber::EnvFilter;
@@ -68,8 +71,7 @@ fn main() {
     crate::debug_journal::init_from_env();
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "veyra=info,warn".into()),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| "veyra=info,warn".into()),
         )
         .init();
 
@@ -132,17 +134,23 @@ fn main() {
         let ms = monitor.size();
         let win = backend.window().inner_size();
         if win.width > ms.width || win.height > ms.height {
-            let _ = backend
-                .window()
-                .request_inner_size(smithay::reexports::winit::dpi::PhysicalSize::new(
-                    ms.width, ms.height,
-                ));
-            tracing::info!(monitor_w = ms.width, monitor_h = ms.height, "clamped nested window to output size");
+            let _ = backend.window().request_inner_size(
+                smithay::reexports::winit::dpi::PhysicalSize::new(ms.width, ms.height),
+            );
+            tracing::info!(
+                monitor_w = ms.width,
+                monitor_h = ms.height,
+                "clamped nested window to output size"
+            );
         }
     }
     let initial_size = backend.window_size();
 
-    let mut state = LookingGlass::new(&display_handle, Box::new(WinitPresentationBackend(backend)), config.clone());
+    let mut state = LookingGlass::new(
+        &display_handle,
+        Box::new(WinitPresentationBackend(backend)),
+        config.clone(),
+    );
     // Trust the actual winit window over the struct default: without a
     // WM (raw Xvfb) no Resized event may arrive, leaving window_size
     // stale and desynchronizing projection, input mapping, and the
@@ -169,7 +177,10 @@ fn main() {
                 tracing::info!(window_size = ?state.window_size, "render size");
             }
             Err(e) => {
-                tracing::error!(?e, "Failed to initialize native backend, falling back to winit");
+                tracing::error!(
+                    ?e,
+                    "Failed to initialize native backend, falling back to winit"
+                );
                 // Keep the winit backend already set up in `state`
             }
         }
@@ -298,7 +309,8 @@ fn main() {
                         state.schedule_render();
                     }
                     InputEvent::PointerButton { event } => {
-                        let pressed = event.state() == smithay::backend::input::ButtonState::Pressed;
+                        let pressed =
+                            event.state() == smithay::backend::input::ButtonState::Pressed;
                         let (mx, my) = state.last_mouse;
                         let btn_code = match event.button() {
                             Some(MouseButton::Left) => 1u32,
@@ -319,7 +331,7 @@ fn main() {
                                         if !state.handle_menu_click(mx, my) {
                                             state.context_menu.dismiss();
                                         }
-    state.schedule_render();
+                                        state.schedule_render();
                                         return;
                                     }
                                     state.handle_pointer_down(mx, my, false, false, false);

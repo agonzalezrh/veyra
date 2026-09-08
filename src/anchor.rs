@@ -101,7 +101,11 @@ pub fn visual_set_aabb(scene: &Scene, ids: &[VisualId]) -> Option<(Vector3<f32>,
             initialized = true;
         }
     }
-    if initialized { Some((min, max)) } else { None }
+    if initialized {
+        Some((min, max))
+    } else {
+        None
+    }
 }
 
 /// Compute the AABB center for a set of visuals.
@@ -149,13 +153,20 @@ mod tests {
     fn invalid_visual_id_returns_none() {
         let scene = Scene::default();
         assert!(resolve_anchor(&scene, &SpatialAnchor::VisualCenter(VisualId(999))).is_none());
-        assert!(resolve_anchor(&scene, &SpatialAnchor::VisualEdge(VisualId(999), Edge::Left)).is_none());
+        assert!(resolve_anchor(
+            &scene,
+            &SpatialAnchor::VisualEdge(VisualId(999), Edge::Left)
+        )
+        .is_none());
     }
 
     #[test]
     fn custom_anchor_returns_given_position() {
         let scene = Scene::default();
-        let pos = resolve_anchor(&scene, &SpatialAnchor::Custom(Vector3::new(42.0, 99.0, -10.0)));
+        let pos = resolve_anchor(
+            &scene,
+            &SpatialAnchor::Custom(Vector3::new(42.0, 99.0, -10.0)),
+        );
         assert_eq!(pos, Some(Vector3::new(42.0, 99.0, -10.0)));
     }
 

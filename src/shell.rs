@@ -231,16 +231,34 @@ mod tests {
         // Above the bar: no hit.
         assert!(l.hit(720.0, 640.0, (top - 5.0) as f64).is_none());
         // Workspace button 0.
-        let ws0 = l.items.iter().find(|it| matches!(it.hit, TaskbarHit::Workspace(0))).unwrap();
-        let h = l.hit(720.0, (ws0.x + 5.0) as f64, (top + 10.0) as f64).unwrap();
+        let ws0 = l
+            .items
+            .iter()
+            .find(|it| matches!(it.hit, TaskbarHit::Workspace(0)))
+            .unwrap();
+        let h = l
+            .hit(720.0, (ws0.x + 5.0) as f64, (top + 10.0) as f64)
+            .unwrap();
         assert_eq!(h.hit, TaskbarHit::Workspace(0));
         // Window button.
-        let win = l.items.iter().find(|it| matches!(it.hit, TaskbarHit::Window(_))).unwrap();
-        let h = l.hit(720.0, (win.x + win.w / 2.0) as f64, (top + 10.0) as f64).unwrap();
+        let win = l
+            .items
+            .iter()
+            .find(|it| matches!(it.hit, TaskbarHit::Window(_)))
+            .unwrap();
+        let h = l
+            .hit(720.0, (win.x + win.w / 2.0) as f64, (top + 10.0) as f64)
+            .unwrap();
         assert_eq!(h.hit, TaskbarHit::Window(vid(1)));
         // Launcher pin.
-        let ln = l.items.iter().find(|it| matches!(it.hit, TaskbarHit::Launch(_))).unwrap();
-        let h = l.hit(720.0, (ln.x + 10.0) as f64, (top + 10.0) as f64).unwrap();
+        let ln = l
+            .items
+            .iter()
+            .find(|it| matches!(it.hit, TaskbarHit::Launch(_)))
+            .unwrap();
+        let h = l
+            .hit(720.0, (ln.x + 10.0) as f64, (top + 10.0) as f64)
+            .unwrap();
         assert_eq!(h.hit, TaskbarHit::Launch(3));
     }
 
@@ -248,7 +266,11 @@ mod tests {
     fn minimized_window_is_dimmed() {
         let wins = [(vid(1), "A".to_string(), false, true)];
         let l = TaskbarLayout::build(1280.0, 720.0, &wins, 1, 0, &[]);
-        let win = l.items.iter().find(|it| matches!(it.hit, TaskbarHit::Window(_))).unwrap();
+        let win = l
+            .items
+            .iter()
+            .find(|it| matches!(it.hit, TaskbarHit::Window(_)))
+            .unwrap();
         assert!(win.dim);
         assert!(!win.active);
     }
@@ -275,7 +297,11 @@ mod tests {
             .fold(f32::MAX, f32::min);
         for w in &wins_items {
             assert!(w.x + w.w <= launch_left, "window button overlaps launcher");
-            assert!(w.w >= WIN_BTN_MIN_W - 0.5, "window button too narrow: {}", w.w);
+            assert!(
+                w.w >= WIN_BTN_MIN_W - 0.5,
+                "window button too narrow: {}",
+                w.w
+            );
         }
     }
 }

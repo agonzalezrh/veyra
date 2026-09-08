@@ -11,8 +11,7 @@ use smithay::backend::renderer::gles::GlesTexture;
 use smithay::utils::Rectangle;
 
 /// The window's current state — independent of content state.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[allow(dead_code)] // reserved API surface; not yet wired
 pub enum WindowState {
     #[default]
@@ -20,7 +19,6 @@ pub enum WindowState {
     Minimized,
     Maximized,
 }
-
 
 /// Actions a window operation can perform.
 /// Provider-independent — each content source decides how to handle it.
@@ -62,8 +60,7 @@ pub enum DamageKind {
 }
 
 /// The state of a visual's content producer.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[allow(dead_code)] // reserved API surface; not yet wired
 pub enum ContentState {
     /// No producer connected; visual shows placeholder content.
@@ -76,7 +73,6 @@ pub enum ContentState {
     /// Producer encountered an error but may recover.
     Error,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VisualId(pub u64);
@@ -139,9 +135,7 @@ impl Transform3D {
         let col1 = Vector3::new(m[1][0] / sy, m[1][1] / sy, m[1][2] / sy);
         let col2 = Vector3::new(m[2][0] / sz, m[2][1] / sz, m[2][2] / sz);
         let m3 = Matrix3::new(
-            col0.x, col0.y, col0.z,
-            col1.x, col1.y, col1.z,
-            col2.x, col2.y, col2.z,
+            col0.x, col0.y, col0.z, col1.x, col1.y, col1.z, col2.x, col2.y, col2.z,
         );
         let rotation = Quaternion::from(m3);
         Transform3D {
@@ -164,14 +158,12 @@ pub enum VisualContent {
 
 /// Compositor-owned chrome data for a visual.
 /// This is metadata the compositor displays but never modifies client surfaces.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SpatialChrome {
     pub title: String,
     pub app_id: String,
     pub focused: bool,
 }
-
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // reserved API surface; not yet wired
@@ -227,7 +219,10 @@ impl Visual {
 
     /// Returns true if the visual has active content (not disconnected/error).
     pub fn has_active_content(&self) -> bool {
-        matches!(self.content_state, ContentState::Ready | ContentState::Connecting)
+        matches!(
+            self.content_state,
+            ContentState::Ready | ContentState::Connecting
+        )
     }
 
     /// The total height of the visual including decoration (title bar).
@@ -316,7 +311,9 @@ impl Scene {
     pub fn remove(&mut self, id: VisualId) {
         // Remove parent-child relationships for this visual
         // Children of this visual must also be cleaned up
-        let children: Vec<VisualId> = self.visuals.iter()
+        let children: Vec<VisualId> = self
+            .visuals
+            .iter()
             .filter(|v| v.parent == Some(id))
             .map(|v| v.id)
             .collect();
@@ -359,17 +356,23 @@ impl Scene {
 
     /// Check if a visual has active content.
     pub fn is_active(&self, id: VisualId) -> bool {
-        self.visuals.iter().any(|v| v.id == id && v.has_active_content())
+        self.visuals
+            .iter()
+            .any(|v| v.id == id && v.has_active_content())
     }
 
     /// Check if a visual is visible (not minimized).
     pub fn is_visible(&self, id: VisualId) -> bool {
-        self.visuals.iter().any(|v| v.id == id && v.window_state != WindowState::Minimized)
+        self.visuals
+            .iter()
+            .any(|v| v.id == id && v.window_state != WindowState::Minimized)
     }
 
     /// Check if a visual is currently minimized (I5).
     pub fn is_minimized(&self, id: VisualId) -> bool {
-        self.visuals.iter().any(|v| v.id == id && v.window_state == WindowState::Minimized)
+        self.visuals
+            .iter()
+            .any(|v| v.id == id && v.window_state == WindowState::Minimized)
     }
 
     /// Set the minimized state without touching transforms or the
@@ -470,7 +473,9 @@ impl Scene {
         let mut chain: Vec<Matrix4<f32>> = Vec::new();
         loop {
             visited += 1;
-            if visited > 32 { break; }
+            if visited > 32 {
+                break;
+            }
             let visual = match self.visuals.iter().find(|v| v.id == current) {
                 Some(v) => v,
                 None => break,
@@ -504,19 +509,32 @@ impl Scene {
         let world = self.world_matrix(id);
         let pos = Vector3::new(world[3][0], world[3][1], world[3][2]);
         let m3 = cgmath::Matrix3::new(
-            world[0][0], world[0][1], world[0][2],
-            world[1][0], world[1][1], world[1][2],
-            world[2][0], world[2][1], world[2][2],
+            world[0][0],
+            world[0][1],
+            world[0][2],
+            world[1][0],
+            world[1][1],
+            world[1][2],
+            world[2][0],
+            world[2][1],
+            world[2][2],
         );
         let rot = cgmath::Quaternion::from(m3);
-        let own_scale = self.visuals.iter().find(|v| v.id == id)
+        let own_scale = self
+            .visuals
+            .iter()
+            .find(|v| v.id == id)
             .map(|v| v.transform.scale)
             .unwrap_or_else(|| Vector3::new(1.0, 1.0, 1.0));
-        Transform3D { position: pos, rotation: rot, scale: own_scale }
+        Transform3D {
+            position: pos,
+            rotation: rot,
+            scale: own_scale,
+        }
     }
 
     /// Set a visual's parent. Returns an error if it would create a cycle.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn set_parent(&mut self, child: VisualId, new_parent: VisualId) -> Result<(), String> {
         if child == new_parent {
             return Err("cannot parent to self".into());
@@ -548,10 +566,13 @@ impl Scene {
     }
 
     /// Remove a visual's parent relationship. Returns true if found.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn clear_parent(&mut self, id: VisualId) -> bool {
         match self.visuals.iter_mut().find(|v| v.id == id) {
-            Some(v) => { v.parent = None; true }
+            Some(v) => {
+                v.parent = None;
+                true
+            }
             None => false,
         }
     }
@@ -660,7 +681,7 @@ impl Scene {
     }
 
     /// Restore a minimized or maximized visual to its previous state.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn restore(&mut self, id: VisualId) -> bool {
         if let Some(v) = self.get_mut(id) {
             match &v.saved_transform {
@@ -731,15 +752,13 @@ impl Scene {
     /// destroyed: the topmost remaining active visual (highest draw order,
     /// i.e. most recently raised) among the given workspace members.
     /// Returns None when the workspace has no remaining active visuals.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn pick_focus_replacement(&self, workspace_ids: &[VisualId]) -> Option<VisualId> {
         // A minimized window must never receive keyboard focus via
         // replacement (I5): it is invisible and unpickable.
-        pick_replacement_from(
-            self.visuals.iter().map(|v| v.id),
-            workspace_ids,
-            |id| self.is_active(id) && !self.is_minimized(id),
-        )
+        pick_replacement_from(self.visuals.iter().map(|v| v.id), workspace_ids, |id| {
+            self.is_active(id) && !self.is_minimized(id)
+        })
     }
 
     // ── Stacking order ────────────────────────────────────────────────
@@ -802,7 +821,7 @@ impl Scene {
     }
 
     /// Lower a visual by one position in the stacking order.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn lower(&mut self, id: VisualId) -> bool {
         let idx = match self.find_index(id) {
             Some(i) => i,
@@ -844,7 +863,8 @@ impl Scene {
     ) -> Option<(VisualId, f32)> {
         // World-space picking: parented visuals (popups, groups) are
         // hit where they are drawn, not at their local coordinates.
-        let items: Vec<_> = self.visuals
+        let items: Vec<_> = self
+            .visuals
             .iter()
             .map(|v| {
                 (
@@ -866,7 +886,8 @@ impl Scene {
         ndc_y: f32,
         visible: &[VisualId],
     ) -> Option<(VisualId, f32)> {
-        let items: Vec<_> = self.visuals
+        let items: Vec<_> = self
+            .visuals
             .iter()
             .filter(|v| visible.contains(&v.id))
             .map(|v| {
@@ -1017,7 +1038,11 @@ mod tests {
         let proj = cgmath::ortho(-320.0, 320.0, -240.0, 240.0, 1.0, 1000.0);
         let r = pick_visual_items(&(proj * view), 0.0, 0.0, &items);
         assert!(r.is_some(), "should hit something");
-        assert_eq!(r.unwrap().0, VisualId(1), "should pick closer visual (z=0 vs z=-200)");
+        assert_eq!(
+            r.unwrap().0,
+            VisualId(1),
+            "should pick closer visual (z=0 vs z=-200)"
+        );
     }
 
     #[test]
@@ -1122,7 +1147,11 @@ mod tests {
         let mut scene = Scene::default();
         scene.focus(Some(VisualId(1)));
         scene.select(Some(VisualId(2)));
-        assert_eq!(scene.focused_id, Some(VisualId(1)), "focus unchanged after select");
+        assert_eq!(
+            scene.focused_id,
+            Some(VisualId(1)),
+            "focus unchanged after select"
+        );
         assert_eq!(scene.selected_id, Some(VisualId(2)), "selected changed");
     }
 
@@ -1131,7 +1160,11 @@ mod tests {
         let mut scene = Scene::default();
         scene.select(Some(VisualId(1)));
         scene.focus(Some(VisualId(2)));
-        assert_eq!(scene.selected_id, Some(VisualId(1)), "selected unchanged after focus");
+        assert_eq!(
+            scene.selected_id,
+            Some(VisualId(1)),
+            "selected unchanged after focus"
+        );
         assert_eq!(scene.focused_id, Some(VisualId(2)), "focused changed");
     }
 
@@ -1170,7 +1203,11 @@ mod tests {
         // Both at same depth — later (id=2) should win
         let r = pick_visual_items(&(proj * view), 0.0, 0.0, &items);
         assert!(r.is_some());
-        assert_eq!(r.unwrap().0, VisualId(2), "topmost (id=2) should win at equal depth");
+        assert_eq!(
+            r.unwrap().0,
+            VisualId(2),
+            "topmost (id=2) should win at equal depth"
+        );
     }
 
     #[test]
@@ -1205,7 +1242,11 @@ mod tests {
         // Now id=1 is later in list — should win
         let r = pick_visual_items(&(proj * view), 0.0, 0.0, &items);
         assert!(r.is_some());
-        assert_eq!(r.unwrap().0, VisualId(1), "topmost (later in list) should win");
+        assert_eq!(
+            r.unwrap().0,
+            VisualId(1),
+            "topmost (later in list) should win"
+        );
     }
 
     #[test]
@@ -1227,7 +1268,11 @@ mod tests {
         scene.select(Some(VisualId(1)));
         scene.disconnect(VisualId(1));
         assert_eq!(scene.focused_id, None, "focus cleared on disconnect");
-        assert_eq!(scene.selected_id, Some(VisualId(1)), "selection preserved on disconnect");
+        assert_eq!(
+            scene.selected_id,
+            Some(VisualId(1)),
+            "selection preserved on disconnect"
+        );
     }
 
     #[test]
@@ -1235,7 +1280,11 @@ mod tests {
         let mut scene = Scene::default();
         scene.focus(Some(VisualId(1)));
         scene.disconnect(VisualId(2));
-        assert_eq!(scene.focused_id, Some(VisualId(1)), "focus unchanged when other visual disconnects");
+        assert_eq!(
+            scene.focused_id,
+            Some(VisualId(1)),
+            "focus unchanged when other visual disconnects"
+        );
     }
 
     #[test]
@@ -1243,13 +1292,19 @@ mod tests {
         let mut scene = Scene::default();
         scene.focus(Some(VisualId(1)));
         scene.disconnect(VisualId(1));
-        assert!(!scene.is_active(VisualId(1)), "disconnected visual is not active");
+        assert!(
+            !scene.is_active(VisualId(1)),
+            "disconnected visual is not active"
+        );
     }
 
     #[test]
     fn is_active_unknown_visual() {
         let scene = Scene::default();
-        assert!(!scene.is_active(VisualId(999)), "unknown visual is not active");
+        assert!(
+            !scene.is_active(VisualId(999)),
+            "unknown visual is not active"
+        );
     }
 
     #[test]
@@ -1268,7 +1323,11 @@ mod tests {
         scene.focus(Some(VisualId(1)));
         scene.focus(Some(VisualId(2)));
         scene.disconnect(VisualId(1));
-        assert_eq!(scene.focused_id, Some(VisualId(2)), "second visual retains focus");
+        assert_eq!(
+            scene.focused_id,
+            Some(VisualId(2)),
+            "second visual retains focus"
+        );
     }
 
     #[test]
@@ -1312,7 +1371,11 @@ mod tests {
         let a = items_after.remove(0);
         items_after.push(a);
         let r = pick_visual_items(&(proj * view), 0.0, 0.0, &items_after);
-        assert_eq!(r.unwrap().0, VisualId(1), "A brought to front should now win");
+        assert_eq!(
+            r.unwrap().0,
+            VisualId(1),
+            "A brought to front should now win"
+        );
     }
 
     // ── Window state tests ────────────────────────────────────────────
@@ -1324,7 +1387,10 @@ mod tests {
         let _pos = Vector3::new(100.0, 200.0, 300.0);
         // We can't create a visual here, but we can test Scene methods
         // for VisualId that don't exist — they should return false
-        assert!(!scene.minimize(VisualId(999)), "unknown visual cant minimize");
+        assert!(
+            !scene.minimize(VisualId(999)),
+            "unknown visual cant minimize"
+        );
         assert!(!scene.restore(VisualId(999)));
         assert!(!scene.maximize(VisualId(999)));
     }
@@ -1390,7 +1456,10 @@ mod tests {
         let before = scene.get(id).unwrap().transform.clone();
         scene.set_minimized(id, true);
         let after = scene.get(id).unwrap().transform.clone();
-        assert_eq!(before.position, after.position, "minimize must not move the visual");
+        assert_eq!(
+            before.position, after.position,
+            "minimize must not move the visual"
+        );
         assert_eq!(before.rotation, after.rotation);
         assert_eq!(after.scale, after.scale);
         // saved_transform slot untouched: caller owns presentation.
@@ -1492,7 +1561,10 @@ mod tests {
     #[test]
     fn set_parent_self_rejected() {
         let mut scene = Scene::default();
-        assert_eq!(scene.set_parent(VisualId(1), VisualId(1)).unwrap_err(), "cannot parent to self");
+        assert_eq!(
+            scene.set_parent(VisualId(1), VisualId(1)).unwrap_err(),
+            "cannot parent to self"
+        );
     }
 
     #[test]
@@ -1560,7 +1632,10 @@ mod tests {
         assert!((dy + 160.0).abs() < 1e-4, "popup y delta {}", dy);
         assert!(dz.abs() < 1e-4);
         // Popup local transform unchanged (scene state ownership).
-        assert_eq!(scene.visuals[1].transform.position, Vector3::new(50.0, 0.0, 10.0));
+        assert_eq!(
+            scene.visuals[1].transform.position,
+            Vector3::new(50.0, 0.0, 10.0)
+        );
     }
 
     /// THE NASTY CASE: parent rotated 90° about Y — a popup offset to
@@ -1612,7 +1687,11 @@ mod tests {
         let ndc_x = world_pt.x / world_pt.w;
         let ndc_y = world_pt.y / world_pt.w;
         let hit = scene.pick(&pv, ndc_x, ndc_y);
-        assert_eq!(hit.map(|(id, _)| id), Some(cid), "popup must be picked at its world position");
+        assert_eq!(
+            hit.map(|(id, _)| id),
+            Some(cid),
+            "popup must be picked at its world position"
+        );
     }
 
     #[test]
@@ -1639,19 +1718,28 @@ mod tests {
     #[test]
     fn reparent_self_rejected() {
         let mut scene = Scene::default();
-        assert_eq!(scene.reparent(VisualId(1), VisualId(1)).unwrap_err(), "cannot parent to self");
+        assert_eq!(
+            scene.reparent(VisualId(1), VisualId(1)).unwrap_err(),
+            "cannot parent to self"
+        );
     }
 
     #[test]
     fn reparent_unknown_child() {
         let mut scene = Scene::default();
-        assert_eq!(scene.reparent(VisualId(1), VisualId(2)).unwrap_err(), "child not found");
+        assert_eq!(
+            scene.reparent(VisualId(1), VisualId(2)).unwrap_err(),
+            "child not found"
+        );
     }
 
     #[test]
     fn reparent_unknown_parent() {
         let mut scene = Scene::default();
-        assert_eq!(scene.reparent(VisualId(1), VisualId(2)).unwrap_err(), "child not found");
+        assert_eq!(
+            scene.reparent(VisualId(1), VisualId(2)).unwrap_err(),
+            "child not found"
+        );
     }
 
     // ── De-emphasis tests ───────────────────────────────────────────
@@ -1740,10 +1828,15 @@ mod tests {
     #[test]
     fn damage_is_correct_type() {
         // DamageKind is a simple enum with 3 variants
-        fn takes_damage(d: DamageKind) -> DamageKind { d }
+        fn takes_damage(d: DamageKind) -> DamageKind {
+            d
+        }
         assert_eq!(takes_damage(DamageKind::None), DamageKind::None);
         assert_eq!(takes_damage(DamageKind::Content), DamageKind::Content);
-        assert_eq!(takes_damage(DamageKind::SpatialOnly), DamageKind::SpatialOnly);
+        assert_eq!(
+            takes_damage(DamageKind::SpatialOnly),
+            DamageKind::SpatialOnly
+        );
     }
 
     #[test]
@@ -1771,9 +1864,15 @@ mod tests {
             for row in 0..4 {
                 let diff = (m1[col][row] - m2[col][row]).abs();
                 // f32 precision: allow up to 0.01 difference
-                assert!(diff < 0.01,
+                assert!(
+                    diff < 0.01,
                     "decompose mismatch at [{}][{}]: expected {}, got {}, diff {}",
-                    col, row, m1[col][row], m2[col][row], diff);
+                    col,
+                    row,
+                    m1[col][row],
+                    m2[col][row],
+                    diff
+                );
             }
         }
     }
@@ -1795,7 +1894,6 @@ mod scenario {
     }
 }
 
-
 /// Pure selection rule for focus replacement after a window closes:
 /// the topmost remaining visual in draw order (last wins) that belongs
 /// to the workspace and is active. Split from `Scene::pick_focus_replacement`
@@ -1814,51 +1912,54 @@ pub fn pick_replacement_from(
         .find(|id| workspace_ids.contains(id) && is_active(*id))
 }
 
-    // ── R12: decoration conversion consistency ─────────────────────
+// ── R12: decoration conversion consistency ─────────────────────
 
-    /// The single conversion API: default and custom chrome heights at
-    /// the boundaries — hit testing and content UV must agree with the
-    /// same fraction everywhere.
-    #[test]
-    fn title_bar_fraction_boundaries() {
-        for h in [0.06f32, 0.5, 0.0, 0.25] {
-            let mut v = Visual::new_test(300, 200);
-            v.decoration.title_bar_height = h;
-            let t = v.title_bar_fraction();
-            assert!((t - h / (1.0 + h)).abs() < 1e-6);
+/// The single conversion API: default and custom chrome heights at
+/// the boundaries — hit testing and content UV must agree with the
+/// same fraction everywhere.
+#[test]
+fn title_bar_fraction_boundaries() {
+    for h in [0.06f32, 0.5, 0.0, 0.25] {
+        let mut v = Visual::new_test(300, 200);
+        v.decoration.title_bar_height = h;
+        let t = v.title_bar_fraction();
+        assert!((t - h / (1.0 + h)).abs() < 1e-6);
 
-            // Hit boundary: just inside the bar vs just below it.
-            // A zero-height bar (h = 0) has no inside — skip.
-            if t > 0.0 {
-                assert!(v.hit_title_bar(0.5, (t as f64) * 0.5));
-                assert!(!v.hit_title_bar(0.5, (t as f64) * 1.5));
-            }
+        // Hit boundary: just inside the bar vs just below it.
+        // A zero-height bar (h = 0) has no inside — skip.
+        if t > 0.0 {
+            assert!(v.hit_title_bar(0.5, (t as f64) * 0.5));
+            assert!(!v.hit_title_bar(0.5, (t as f64) * 1.5));
+        }
 
-            // Content UV boundary: bar bottom maps to 0, quad bottom to 1.
-            let (_, top) = v.content_uv(0.5, t as f64);
-            assert!(top.abs() < 1e-6, "h={h} top={top}");
-            let (_, bottom) = v.content_uv(0.5, 1.0);
-            assert!((bottom - 1.0).abs() < 1e-6, "h={h} bottom={bottom}");
+        // Content UV boundary: bar bottom maps to 0, quad bottom to 1.
+        let (_, top) = v.content_uv(0.5, t as f64);
+        assert!(top.abs() < 1e-6, "h={h} top={top}");
+        let (_, bottom) = v.content_uv(0.5, 1.0);
+        assert!((bottom - 1.0).abs() < 1e-6, "h={h} bottom={bottom}");
+    }
+}
+
+/// Hit testing and content conversion use the SAME fraction: any
+/// v below the bar boundary is a bar hit and maps to content v <= 0;
+/// any v above maps to positive content v.
+#[test]
+fn hit_test_and_content_uv_agree() {
+    let mut v = Visual::new_test(300, 200);
+    v.decoration.title_bar_height = 0.4; // non-default, fraction 2/7
+    let t = v.title_bar_fraction() as f64;
+    for i in 0..20 {
+        let probe = (i as f64) / 19.0;
+        let is_bar = v.hit_title_bar(0.5, probe);
+        let (_, cv) = v.content_uv(0.5, probe);
+        if probe < t {
+            assert!(is_bar && cv <= f64::EPSILON, "probe {probe}");
+        } else {
+            assert!(!is_bar, "probe {probe}");
+            assert!(
+                cv > 0.0 || (probe - t).abs() < 1e-9,
+                "probe {probe} cv {cv}"
+            );
         }
     }
-
-    /// Hit testing and content conversion use the SAME fraction: any
-    /// v below the bar boundary is a bar hit and maps to content v <= 0;
-    /// any v above maps to positive content v.
-    #[test]
-    fn hit_test_and_content_uv_agree() {
-        let mut v = Visual::new_test(300, 200);
-        v.decoration.title_bar_height = 0.4; // non-default, fraction 2/7
-        let t = v.title_bar_fraction() as f64;
-        for i in 0..20 {
-            let probe = (i as f64) / 19.0;
-            let is_bar = v.hit_title_bar(0.5, probe);
-            let (_, cv) = v.content_uv(0.5, probe);
-            if probe < t {
-                assert!(is_bar && cv <= f64::EPSILON, "probe {probe}");
-            } else {
-                assert!(!is_bar, "probe {probe}");
-                assert!(cv > 0.0 || (probe - t).abs() < 1e-9, "probe {probe} cv {cv}");
-            }
-        }
-       }
+}

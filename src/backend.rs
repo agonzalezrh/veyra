@@ -1,8 +1,8 @@
 use smithay::backend::egl::EGLSurface;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::SwapBuffersError;
-use smithay::utils::Size;
 use smithay::utils::Physical;
+use smithay::utils::Size;
 
 /// A presentation backend that owns a GlesRenderer.
 /// WinitGraphicsBackend and DrmGraphicsBackend both implement this.
@@ -20,7 +20,9 @@ pub trait PresentationBackend {
 }
 
 /// Wrapper implementing PresentationBackend for Smithay's WinitGraphicsBackend.
-pub struct WinitPresentationBackend(pub smithay::backend::winit::WinitGraphicsBackend<GlesRenderer>);
+pub struct WinitPresentationBackend(
+    pub smithay::backend::winit::WinitGraphicsBackend<GlesRenderer>,
+);
 
 impl PresentationBackend for WinitPresentationBackend {
     fn renderer(&mut self) -> &mut GlesRenderer {
@@ -37,7 +39,9 @@ impl PresentationBackend for WinitPresentationBackend {
         // Without this, with_context() calls later use EGL_NO_SURFACE, causing
         // GL_INVALID_FRAMEBUFFER_OPERATION.
         let window_size: Size<i32, Physical> = self.0.window_size();
-        self.0.egl_surface().resize(window_size.w, window_size.h, 0, 0);
+        self.0
+            .egl_surface()
+            .resize(window_size.w, window_size.h, 0, 0);
         let surface_ptr: *const EGLSurface = self.0.egl_surface() as *const EGLSurface;
         let ctx_ptr: *const smithay::backend::egl::EGLContext =
             self.0.renderer().egl_context() as *const _;

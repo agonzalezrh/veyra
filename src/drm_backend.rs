@@ -24,15 +24,15 @@ use smithay::backend::allocator::dmabuf::DmabufFlags;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 type AllocDmabuf = smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::gles::ffi;
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::egl::ffi::egl::types::EGLImage;
 use smithay::backend::egl::EGLSurface;
+use smithay::backend::renderer::gles::ffi;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::SwapBuffersError;
-use smithay::reexports::drm::control::{connector, Device as ControlDevice};
 use smithay::reexports::drm::control::Mode;
+use smithay::reexports::drm::control::{connector, Device as ControlDevice};
 use smithay::utils::DeviceFd;
 use tracing::{info, warn};
 
@@ -82,10 +82,7 @@ struct CachedFramebuffer {
 }
 
 /// GBM swapchain surface type (allocator bound to our device fd).
-type GbmSurface = smithay::backend::drm::GbmBufferedSurface<
-    GbmAllocator<DrmDeviceFd>,
-    (),
->;
+type GbmSurface = smithay::backend::drm::GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, ()>;
 
 /// DRM/KMS presentation backend.
 ///
@@ -129,7 +126,9 @@ pub fn run_probe(frames: u32) -> Result<(), String> {
     let mut backend = DrmGraphicsBackend::try_new().map_err(|e| e.to_string())?;
     info!(frames, size = ?backend.size(), "probe start");
     for i in 0..frames {
-        backend.begin_frame().map_err(|e| format!("frame {i} begin: {e}"))?;
+        backend
+            .begin_frame()
+            .map_err(|e| format!("frame {i} begin: {e}"))?;
         // Varying clear color: consecutive frames are distinguishable
         // on a real capture and invisible-buffer bugs show as uniform
         // output.
@@ -142,7 +141,9 @@ pub fn run_probe(frames: u32) -> Result<(), String> {
                 gl.Clear(ffi::COLOR_BUFFER_BIT | ffi::DEPTH_BUFFER_BIT);
             })
             .map_err(|e| format!("frame {i} clear: {e}"))?;
-        backend.finish_frame().map_err(|e| format!("frame {i} finish: {e}"))?;
+        backend
+            .finish_frame()
+            .map_err(|e| format!("frame {i} finish: {e}"))?;
         // Pace below the nominal refresh so the vblank drain in
         // begin_frame keeps up with the flip queue.
         std::thread::sleep(std::time::Duration::from_millis(16));
@@ -163,9 +164,15 @@ pub fn run_flip_probe(frames: u32) -> Result<(), String> {
     let mut backend = DrmGraphicsBackend::try_new_impl(false).map_err(|e| e.to_string())?;
     info!(frames, size = ?backend.size(), "flip probe start");
     for i in 0..frames {
-        backend.begin_frame().map_err(|e| format!("frame {i} begin: {e}"))?;
-        backend.fill_current_pattern(i).map_err(|e| format!("frame {i} fill: {e}"))?;
-        backend.finish_frame().map_err(|e| format!("frame {i} finish: {e}"))?;
+        backend
+            .begin_frame()
+            .map_err(|e| format!("frame {i} begin: {e}"))?;
+        backend
+            .fill_current_pattern(i)
+            .map_err(|e| format!("frame {i} fill: {e}"))?;
+        backend
+            .finish_frame()
+            .map_err(|e| format!("frame {i} finish: {e}"))?;
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
     // Drain the final flip with a generous deadline (vblank pacing).
@@ -199,7 +206,11 @@ impl DrmGraphicsBackend {
             .find(|f| f.dmabuf == dmabuf)
             .map(|f| f.rw.clone())
             .ok_or("no cached framebuffer for current buffer")?;
-        let fd = rw.handles().next().ok_or("dmabuf has no planes")?.as_raw_fd();
+        let fd = rw
+            .handles()
+            .next()
+            .ok_or("dmabuf has no planes")?
+            .as_raw_fd();
         let len = stride as usize * height as usize;
         unsafe {
             let ptr = libc::mmap(
@@ -260,8 +271,8 @@ impl DrmGraphicsBackend {
         let device_fd = DeviceFd::from(fd);
         let drm_fd = DrmDeviceFd::new(device_fd);
 
-        let (mut device, _dev_notifier) =
-            DrmDevice::new(drm_fd.clone(), false).map_err(|e| DrmBackendError::Drm(format!("{:?}", e)))?;
+        let (mut device, _dev_notifier) = DrmDevice::new(drm_fd.clone(), false)
+            .map_err(|e| DrmBackendError::Drm(format!("{:?}", e)))?;
 
         let crtcs = device.crtcs().to_vec();
         if crtcs.is_empty() {
@@ -288,10 +299,8 @@ impl DrmGraphicsBackend {
             .map_err(|e| DrmBackendError::Drm(format!("GBM device: {}", e)))?;
         let allocator = GbmAllocator::new(gbm_device.clone(), GbmBufferFlags::RENDERING);
 
-        let egl_display = unsafe {
-            smithay::backend::egl::display::EGLDisplay::new(gbm_device)
-        }
-        .map_err(|e| DrmBackendError::Egl(format!("EGL display: {}", e)))?;
+        let egl_display = unsafe { smithay::backend::egl::display::EGLDisplay::new(gbm_device) }
+            .map_err(|e| DrmBackendError::Egl(format!("EGL display: {}", e)))?;
         let egl_context = smithay::backend::egl::context::EGLContext::new(&egl_display)
             .map_err(|e| DrmBackendError::Egl(format!("EGL context: {}", e)))?;
 
@@ -299,7 +308,8 @@ impl DrmGraphicsBackend {
         let renderer_formats = egl_context.dmabuf_render_formats().clone();
         if renderer_formats.iter().next().is_none() {
             return Err(DrmBackendError::Egl(
-                "EGL driver reports no dmabuf render formats — cannot render into GBM buffers".into(),
+                "EGL driver reports no dmabuf render formats — cannot render into GBM buffers"
+                    .into(),
             ));
         }
 
@@ -386,7 +396,9 @@ impl DrmGraphicsBackend {
         if let Some(node) = dmabuf.node() {
             builder.set_node(node);
         }
-        builder.build().ok_or_else(|| "dmabuf rebuild failed".into())
+        builder
+            .build()
+            .ok_or_else(|| "dmabuf rebuild failed".into())
     }
 
     /// Non-blocking drain of completed page flips. Every flip event for
@@ -445,10 +457,9 @@ impl PresentationBackend for DrmGraphicsBackend {
     fn begin_frame(&mut self) -> Result<(), SwapBuffersError> {
         self.drain_flips();
 
-        let (dmabuf, _age) = self
-            .gbm_surface
-            .next_buffer()
-            .map_err(|e| SwapBuffersError::TemporaryFailure(format!("next_buffer: {:?}", e).into()))?;
+        let (dmabuf, _age) = self.gbm_surface.next_buffer().map_err(|e| {
+            SwapBuffersError::TemporaryFailure(format!("next_buffer: {:?}", e).into())
+        })?;
 
         let (w, h) = (self.width as i32, self.height as i32);
         self.current_buffer = Some((
@@ -475,7 +486,9 @@ impl PresentationBackend for DrmGraphicsBackend {
                 .egl_context()
                 .display()
                 .create_image_from_dmabuf(&rw)
-                .map_err(|e| SwapBuffersError::TemporaryFailure(format!("EGL image: {:?}", e).into()))?;
+                .map_err(|e| {
+                    SwapBuffersError::TemporaryFailure(format!("EGL image: {:?}", e).into())
+                })?;
 
             let (rbo, fbo) = self
                 .renderer
@@ -545,7 +558,9 @@ impl PresentationBackend for DrmGraphicsBackend {
             .map(|_| {
                 self.flip_pending = true;
             })
-            .map_err(|e| SwapBuffersError::TemporaryFailure(format!("queue_buffer: {:?}", e).into()))
+            .map_err(|e| {
+                SwapBuffersError::TemporaryFailure(format!("queue_buffer: {:?}", e).into())
+            })
     }
 
     fn size(&self) -> (f32, f32) {
@@ -601,9 +616,7 @@ fn open_drm_device() -> Option<(std::path::PathBuf, OwnedFd)> {
 }
 
 /// Find the first connected connector and its mode.
-fn find_connector_with_mode(
-    device: &DrmDevice,
-) -> Option<(connector::Handle, Mode)> {
+fn find_connector_with_mode(device: &DrmDevice) -> Option<(connector::Handle, Mode)> {
     let fd = device.device_fd();
     let res_handles = fd.resource_handles().ok()?;
     for conn_handle in res_handles.connectors() {
@@ -625,7 +638,10 @@ mod tests {
     #[test]
     fn drm_backend_error_display_is_actionable() {
         let e = DrmBackendError::NoDevice.to_string();
-        assert!(e.contains("/dev/dri/card"), "error should name the searched paths: {e}");
+        assert!(
+            e.contains("/dev/dri/card"),
+            "error should name the searched paths: {e}"
+        );
         let e = DrmBackendError::Egl("ctx dead".into()).to_string();
         assert!(e.contains("EGL"), "error should name the subsystem: {e}");
     }
@@ -635,7 +651,10 @@ mod tests {
         // A nonexistent card must yield None (no silent fallback to
         // another device — the operator asked for a specific one).
         unsafe { std::env::set_var("VEYRA_DRM_CARD", "/dev/dri/card-veyra-test-missing") };
-        assert!(open_drm_device().is_none(), "missing card must not fall back");
+        assert!(
+            open_drm_device().is_none(),
+            "missing card must not fall back"
+        );
         unsafe { std::env::remove_var("VEYRA_DRM_CARD") };
     }
 

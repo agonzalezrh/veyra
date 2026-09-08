@@ -8,25 +8,25 @@ pub struct PerfStats {
     pub last_log: Instant,
 
     // Per-stage accumulators (reset every LOG_INTERVAL)
-    pub stage_update_ns: u64,      // FrameProducer.update()
-    pub stage_tex_copy_ns: u64,    // Copy new texture to Visual
-    pub stage_remove_ns: u64,      // Remove finished Visuals
-    pub stage_render_bind_ns: u64, // Renderer bind + GlesFrame creation
-    pub stage_render_draw_ns: u64, // Scene traversal + GLES draw calls
+    pub stage_update_ns: u64,        // FrameProducer.update()
+    pub stage_tex_copy_ns: u64,      // Copy new texture to Visual
+    pub stage_remove_ns: u64,        // Remove finished Visuals
+    pub stage_render_bind_ns: u64,   // Renderer bind + GlesFrame creation
+    pub stage_render_draw_ns: u64,   // Scene traversal + GLES draw calls
     pub stage_render_submit_ns: u64, // Swap/present
-    pub stage_total_ns: u64,       // Total frame
+    pub stage_total_ns: u64,         // Total frame
     pub frame_count_since_log: u64,
 
     pub consecutive_drops: u64,
     pub total_drops: u64,
 
     // Instrumentation counters (reset every LOG_INTERVAL)
-    pub frame_requested: u64,      // schedule_render() called
-    pub frame_rendered: u64,       // render() actually rendered
-    pub frame_presented: u64,      // eglSwapBuffers succeeded
-    pub frame_dropped: u64,        // render() skipped (idle)
-    pub damage_frames: u64,        // frames with real content change
-    pub idle_frames: u64,          // consecutive idle frames
+    pub frame_requested: u64, // schedule_render() called
+    pub frame_rendered: u64,  // render() actually rendered
+    pub frame_presented: u64, // eglSwapBuffers succeeded
+    pub frame_dropped: u64,   // render() skipped (idle)
+    pub damage_frames: u64,   // frames with real content change
+    pub idle_frames: u64,     // consecutive idle frames
 }
 
 impl PerfStats {

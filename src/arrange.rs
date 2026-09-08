@@ -142,7 +142,10 @@ pub fn arrange(
             continue;
         }
         // Check if any member is detached
-        let all_detached = group.visual_ids.iter().all(|vid| detached_set.contains(vid));
+        let all_detached = group
+            .visual_ids
+            .iter()
+            .all(|vid| detached_set.contains(vid));
         if all_detached {
             continue;
         }
@@ -180,23 +183,12 @@ pub fn arrange(
     let positions = match mode {
         ArrangeMode::Reset => {
             // All items at the anchor position
-            all_items
-                .iter()
-                .map(|_| anchor_pos)
-                .collect::<Vec<_>>()
+            all_items.iter().map(|_| anchor_pos).collect::<Vec<_>>()
         }
-        ArrangeMode::Grid { columns } => {
-            grid_positions(&all_items, columns, config, anchor_pos)
-        }
-        ArrangeMode::Row => {
-            row_positions(&all_items, config, anchor_pos)
-        }
-        ArrangeMode::Column => {
-            column_positions(&all_items, config, anchor_pos)
-        }
-        ArrangeMode::Radial => {
-            radial_positions(&all_items, config, anchor_pos)
-        }
+        ArrangeMode::Grid { columns } => grid_positions(&all_items, columns, config, anchor_pos),
+        ArrangeMode::Row => row_positions(&all_items, config, anchor_pos),
+        ArrangeMode::Column => column_positions(&all_items, config, anchor_pos),
+        ArrangeMode::Radial => radial_positions(&all_items, config, anchor_pos),
     };
 
     // Build result for individual items
@@ -222,10 +214,7 @@ pub fn arrange(
 /// member moves together. Previously only the representative's own
 /// transform was overwritten, leaving the rest of the group behind.
 #[allow(dead_code)] // reserved API surface; not yet wired
-pub fn apply_arrangement(
-    scene: &mut Scene,
-    arrangement: &HashMap<VisualId, Transform3D>,
-) {
+pub fn apply_arrangement(scene: &mut Scene, arrangement: &HashMap<VisualId, Transform3D>) {
     for (vid, tf) in arrangement {
         // Group representative? Move the group, not the member.
         let group_idx = scene

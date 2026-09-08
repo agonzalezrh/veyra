@@ -17,8 +17,7 @@ use crate::scene::{Scene, VisualId};
 /// CRITICAL: Camera mode is a camera/presentation operation, never a
 /// Wayland surface lifecycle operation. Changing focus changes the camera
 /// trajectory, not Wayland keyboard focus.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum CameraMode {
     /// Standard camera — user-orbitable, workspace-aware.
     #[default]
@@ -30,7 +29,6 @@ pub enum CameraMode {
     /// Workspace overview — camera shows all workspaces.
     WorkspaceOverview,
 }
-
 
 /// Describes a camera transition from one state to another.
 #[derive(Debug, Clone)]
@@ -69,9 +67,21 @@ impl FocusTransition {
         let t = smoothstep(self.progress);
         Camera {
             position: Point3::new(
-                lerp(self.source_camera.position.x, self.target_camera.position.x, t),
-                lerp(self.source_camera.position.y, self.target_camera.position.y, t),
-                lerp(self.source_camera.position.z, self.target_camera.position.z, t),
+                lerp(
+                    self.source_camera.position.x,
+                    self.target_camera.position.x,
+                    t,
+                ),
+                lerp(
+                    self.source_camera.position.y,
+                    self.target_camera.position.y,
+                    t,
+                ),
+                lerp(
+                    self.source_camera.position.z,
+                    self.target_camera.position.z,
+                    t,
+                ),
             ),
             yaw: lerp(self.source_camera.yaw, self.target_camera.yaw, t),
             pitch: lerp(self.source_camera.pitch, self.target_camera.pitch, t),
@@ -112,14 +122,13 @@ impl FocusManager {
     pub fn enter(&mut self, camera: &Camera, target: VisualId, scene: &Scene) {
         self.saved_camera = Some(camera.clone());
         self.focus_target = Some(target);
-        let target_cam = target_focus_camera(target, scene)
-            .unwrap_or_else(|| {
-                // Default: look at origin from a moderate distance
-                Camera {
-                    position: cgmath::Point3::new(0.0, 0.0, 500.0),
-                    ..Camera::new()
-                }
-            });
+        let target_cam = target_focus_camera(target, scene).unwrap_or_else(|| {
+            // Default: look at origin from a moderate distance
+            Camera {
+                position: cgmath::Point3::new(0.0, 0.0, 500.0),
+                ..Camera::new()
+            }
+        });
         self.transition = Some(FocusTransition::new(camera.clone(), target_cam));
         self.camera_mode = CameraMode::Focus(target);
     }
@@ -479,14 +488,20 @@ mod tests {
     fn overview_with_zero_visuals() {
         let scene = Scene::default();
         let cam = overview_camera(&scene, &[]);
-        assert!(cam.is_none(), "overview with zero visuals should return None");
+        assert!(
+            cam.is_none(),
+            "overview with zero visuals should return None"
+        );
     }
 
     #[test]
     fn overview_with_one_visual() {
         let scene = Scene::default();
         let cam = overview_camera(&scene, &[VisualId(1)]);
-        assert!(cam.is_none(), "overview with non-existent visual should return None");
+        assert!(
+            cam.is_none(),
+            "overview with non-existent visual should return None"
+        );
     }
 
     #[test]

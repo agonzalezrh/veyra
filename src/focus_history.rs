@@ -55,11 +55,7 @@ impl FocusHistory {
 
     /// Next candidate after `current` in MRU order (wraps), skipping
     /// everything `focusable` rejects. Used for Alt+Tab / Super+Tab.
-    pub fn next_after(
-        &self,
-        current: Option<VisualId>,
-        focusable: &Focusable,
-    ) -> Option<VisualId> {
+    pub fn next_after(&self, current: Option<VisualId>, focusable: &Focusable) -> Option<VisualId> {
         self.cycle_from(current, 1, focusable)
     }
 
@@ -102,11 +98,16 @@ impl FocusHistory {
             }
             _ => {
                 // current missing: start scanning from the front.
-                if dir >= 0 { 0 } else { self.order.len() - 1 }
+                if dir >= 0 {
+                    0
+                } else {
+                    self.order.len() - 1
+                }
             }
         };
         for step in 0..self.order.len() {
-            let idx = (start + (step as isize * dir).rem_euclid(self.order.len() as isize) as usize)
+            let idx = (start
+                + (step as isize * dir).rem_euclid(self.order.len() as isize) as usize)
                 % self.order.len();
             let cand = self.order[idx];
             if Some(cand) == current {
@@ -240,7 +241,7 @@ mod tests {
         let mut mru = FocusHistory::new();
         mru.touch(a);
         mru.touch(b); // focused = b, MRU = [b, a]
-        // b destroyed: replacement for b is a, never b itself
+                      // b destroyed: replacement for b is a, never b itself
         assert_eq!(mru.focus_replacement(Some(b), &|_v| true), Some(a));
     }
 }

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-
 use crate::focus::FocusManager;
 use crate::input::Camera;
 use crate::layout::LayoutMode;
@@ -115,7 +114,10 @@ pub struct WorkspaceManager {
 impl WorkspaceManager {
     /// Create a new manager with `count` default workspaces.
     pub fn new(count: usize) -> Self {
-        assert!(count >= 1, "WorkspaceManager must have at least one workspace");
+        assert!(
+            count >= 1,
+            "WorkspaceManager must have at least one workspace"
+        );
         let workspaces = (0..count).map(|_| Workspace::new()).collect();
         WorkspaceManager {
             workspaces,
@@ -311,7 +313,10 @@ mod tests {
         let mut mgr = WorkspaceManager::new(3);
         let mut scene = Scene::default();
         mgr.switch(2, &mut scene);
-        assert_eq!(mgr.active().camera.position, cgmath::Point3::new(0.0, 0.0, 800.0));
+        assert_eq!(
+            mgr.active().camera.position,
+            cgmath::Point3::new(0.0, 0.0, 800.0)
+        );
     }
 
     #[test]
@@ -455,10 +460,7 @@ mod tests {
     /// destruction — no orphans in the global scene.
     fn assert_no_orphans(mgr: &WorkspaceManager, scene: &Scene) {
         for v in &scene.visuals {
-            let owners = mgr
-                .iter()
-                .filter(|ws| ws.contains(v.id))
-                .count();
+            let owners = mgr.iter().filter(|ws| ws.contains(v.id)).count();
             assert_eq!(
                 owners, 1,
                 "visual {:?} must be owned by exactly one workspace, found {}",
@@ -482,9 +484,19 @@ mod tests {
         // Rehomed into workspace 0 (the surviving fallback for id != 0).
         assert!(mgr.workspaces[0].contains(vid), "visual rehomed into ws0");
         assert_eq!(mgr.workspaces[0].visual_ids.len(), 1);
-        assert!(mgr.workspaces[0].detached_set.contains(&vid), "detached state rehomed");
-        assert_eq!(mgr.workspaces[0].focused_id, Some(vid), "focus target rehomed");
-        let t = mgr.workspaces[0].transforms.get(&vid).expect("transform rehomed");
+        assert!(
+            mgr.workspaces[0].detached_set.contains(&vid),
+            "detached state rehomed"
+        );
+        assert_eq!(
+            mgr.workspaces[0].focused_id,
+            Some(vid),
+            "focus target rehomed"
+        );
+        let t = mgr.workspaces[0]
+            .transforms
+            .get(&vid)
+            .expect("transform rehomed");
         assert_eq!(t.position.x, 12.0, "saved transform preserved");
         assert_no_orphans(&mgr, &scene);
     }
@@ -502,8 +514,14 @@ mod tests {
         assert_eq!(mgr.len(), 2);
         assert_eq!(mgr.active_id(), 0);
         // id != 0 → destination is workspace 0, which becomes the new active.
-        assert!(mgr.workspaces[0].contains(vid), "visual rehomed into the new active workspace");
-        let t = mgr.workspaces[0].transforms.get(&vid).expect("transform rehomed");
+        assert!(
+            mgr.workspaces[0].contains(vid),
+            "visual rehomed into the new active workspace"
+        );
+        let t = mgr.workspaces[0]
+            .transforms
+            .get(&vid)
+            .expect("transform rehomed");
         assert_eq!(t.position.x, 5.0);
         assert_no_orphans(&mgr, &scene);
     }
@@ -520,10 +538,16 @@ mod tests {
 
         assert_eq!(mgr.len(), 2);
         // dest was 1; after removal old ws1 shifted to index 0.
-        assert!(mgr.workspaces[0].contains(vid), "visual rehomed, index shifted");
+        assert!(
+            mgr.workspaces[0].contains(vid),
+            "visual rehomed, index shifted"
+        );
         // The visual must appear in the surviving workspaces exactly once
         // in total — no duplicates from the merge.
-        let total: usize = mgr.iter().map(|ws| ws.visual_ids.iter().filter(|v| **v == vid).count()).sum();
+        let total: usize = mgr
+            .iter()
+            .map(|ws| ws.visual_ids.iter().filter(|v| **v == vid).count())
+            .sum();
         assert_eq!(total, 1, "visual must be a member of exactly one workspace");
         assert_no_orphans(&mgr, &scene);
     }

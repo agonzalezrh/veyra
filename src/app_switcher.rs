@@ -24,9 +24,7 @@ pub struct ApplicationSwitcher {
 
 impl ApplicationSwitcher {
     pub fn new() -> Self {
-        ApplicationSwitcher {
-            apps: Vec::new(),
-        }
+        ApplicationSwitcher { apps: Vec::new() }
     }
 
     pub fn register_visual(&mut self, app_id: &str, _visual_id: VisualId) {

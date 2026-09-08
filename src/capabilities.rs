@@ -99,7 +99,8 @@ pub fn check_capabilities() -> CapabilityReport {
                             // 6. Check GLES version
                             let _ = renderer.with_context(|gl| {
                                 let version = unsafe {
-                                    let ptr = gl.GetString(smithay::backend::renderer::gles::ffi::VERSION);
+                                    let ptr = gl
+                                        .GetString(smithay::backend::renderer::gles::ffi::VERSION);
                                     if ptr.is_null() {
                                         "unknown".to_string()
                                     } else {
@@ -138,7 +139,10 @@ pub fn check_capabilities() -> CapabilityReport {
         }
     }
 
-    info!(can_render = report.can_render_natively(), "capability check complete");
+    info!(
+        can_render = report.can_render_natively(),
+        "capability check complete"
+    );
     report
 }
 
@@ -163,19 +167,17 @@ fn open_drm_device(path: &std::path::Path) -> Result<DeviceFd, String> {
 #[allow(dead_code)] // reserved API surface; not yet wired
 fn create_gbm_device(fd: &DeviceFd) -> Result<(), String> {
     // Just try to create a GBM device — if it works, GBM is available
-    let _gbm = smithay::reexports::gbm::Device::new(fd)
-        .map_err(|e| format!("gbm::Device::new: {}", e))?;
+    let _gbm =
+        smithay::reexports::gbm::Device::new(fd).map_err(|e| format!("gbm::Device::new: {}", e))?;
     Ok(())
 }
 
 #[allow(dead_code)] // reserved API surface; not yet wired
 fn create_egl_context() -> Result<(EGLDisplay, EGLContext), String> {
     let display = unsafe {
-        EGLDisplay::new(EGLSurfacelessDisplay)
-            .map_err(|e| format!("EGLDisplay::new: {}", e))?
+        EGLDisplay::new(EGLSurfacelessDisplay).map_err(|e| format!("EGLDisplay::new: {}", e))?
     };
-    let context = EGLContext::new(&display)
-        .map_err(|e| format!("EGLContext::new: {}", e))?;
+    let context = EGLContext::new(&display).map_err(|e| format!("EGLContext::new: {}", e))?;
     Ok((display, context))
 }
 

@@ -4,8 +4,8 @@ use cgmath::SquareMatrix;
 use cgmath::Vector3;
 use cgmath::Vector4;
 
-use crate::scene::{Scene, VisualId};
 use crate::input::Camera;
+use crate::scene::{Scene, VisualId};
 
 /// Which mode the interaction controller is in.
 /// This decides how pointer events are interpreted.
@@ -100,7 +100,13 @@ impl InteractionController {
     }
 
     /// Unproject NDC to two world-space points along the ray.
-    fn world_ray(&self, ndc_x: f32, ndc_y: f32, camera: &Camera, spatial_mode: bool) -> (Vector3<f32>, Vector3<f32>) {
+    fn world_ray(
+        &self,
+        ndc_x: f32,
+        ndc_y: f32,
+        camera: &Camera,
+        spatial_mode: bool,
+    ) -> (Vector3<f32>, Vector3<f32>) {
         let pv = self.proj_matrix(camera, spatial_mode) * camera.view_matrix();
         let inv_pv = pv.invert().unwrap_or(Matrix4::identity());
         let near = inv_pv * Vector4::new(ndc_x, ndc_y, -1.0, 1.0);
@@ -159,7 +165,7 @@ impl InteractionController {
     /// event to content input or scene manipulation.
     /// `visible_ids` optionally restricts picking to a set of visual IDs
     /// (e.g., the active workspace). If None, all visuals are pickable.
-#[allow(clippy::too_many_arguments)] // wide GL/routing signatures are inherent
+    #[allow(clippy::too_many_arguments)] // wide GL/routing signatures are inherent
     pub fn handle_pointer_down(
         &mut self,
         x: f64,
@@ -271,7 +277,9 @@ impl InteractionController {
                 scene.detached_set.push(vid);
             }
 
-            if let Some(hit) = Self::ray_plane_intersect(ray_origin, ray_dir, plane_point, plane_normal) {
+            if let Some(hit) =
+                Self::ray_plane_intersect(ray_origin, ray_dir, plane_point, plane_normal)
+            {
                 let grab_offset = hit - pos;
                 self.active = Some(ActiveManip {
                     mode: ManipMode::Translate,
@@ -306,7 +314,9 @@ impl InteractionController {
         self.mouse_x = x;
         self.mouse_y = y;
 
-        let Some(ref active) = self.active.clone() else { return };
+        let Some(ref active) = self.active.clone() else {
+            return;
+        };
         let visual = match scene.get_mut(active.vid) {
             Some(v) => v,
             None => return,
@@ -319,7 +329,10 @@ impl InteractionController {
                 let (ray_origin, ray_far) = self.world_ray(nx, ny, camera, spatial_mode);
                 let ray_dir = (ray_far - ray_origin).normalize();
                 if let Some(hit) = Self::ray_plane_intersect(
-                    ray_origin, ray_dir, active.origin, active.plane_normal,
+                    ray_origin,
+                    ray_dir,
+                    active.origin,
+                    active.plane_normal,
                 ) {
                     let delta = hit - active.origin;
                     visual.transform.position = active.start_position + delta;
@@ -346,12 +359,7 @@ impl InteractionController {
 
     /// Handle scroll for scale.
     #[allow(dead_code)] // reserved API surface; not yet wired
-    pub fn handle_scroll(
-        &mut self,
-        _x: f64,
-        y: f64,
-        scene: &mut Scene,
-    ) {
+    pub fn handle_scroll(&mut self, _x: f64, y: f64, scene: &mut Scene) {
         let Some(vid) = scene.selected_id else { return };
         let visual = match scene.get_mut(vid) {
             Some(v) => v,
@@ -483,7 +491,14 @@ mod tests {
         let (mut scene, ids) = two_visual_scene();
         let mut ctrl = InteractionController::new();
         let mode = ctrl.handle_pointer_down(
-            420.0, 360.0, &mut scene, &front_camera(), false, false, false, false,
+            420.0,
+            360.0,
+            &mut scene,
+            &front_camera(),
+            false,
+            false,
+            false,
+            false,
             Some(ids.to_vec()),
         );
         assert_eq!(mode, None, "no modifier — event is for content, not scene");
@@ -503,7 +518,14 @@ mod tests {
         // Restrict to the right visual only: its screen position must pick it.
         let mut ctrl = InteractionController::new();
         ctrl.handle_pointer_down(
-            860.0, 360.0, &mut scene, &front_camera(), false, false, false, false,
+            860.0,
+            360.0,
+            &mut scene,
+            &front_camera(),
+            false,
+            false,
+            false,
+            false,
             Some(vec![ids[1]]),
         );
         assert_eq!(scene.selected_id, Some(ids[1]));
@@ -511,7 +533,14 @@ mod tests {
         // Restrict to the decoy: same ray as the left visual must select the decoy.
         let mut ctrl = InteractionController::new();
         ctrl.handle_pointer_down(
-            420.0, 360.0, &mut scene, &front_camera(), false, false, false, false,
+            420.0,
+            360.0,
+            &mut scene,
+            &front_camera(),
+            false,
+            false,
+            false,
+            false,
             Some(vec![decoy_id]),
         );
         assert_eq!(scene.selected_id, Some(decoy_id));
@@ -523,7 +552,14 @@ mod tests {
         scene.select(Some(ids[0]));
         let mut ctrl = InteractionController::new();
         ctrl.handle_pointer_down(
-            10.0, 10.0, &mut scene, &front_camera(), false, false, false, false,
+            10.0,
+            10.0,
+            &mut scene,
+            &front_camera(),
+            false,
+            false,
+            false,
+            false,
             Some(ids.to_vec()),
         );
         assert_eq!(scene.selected_id, None, "miss clears selection");
@@ -534,10 +570,20 @@ mod tests {
         let (mut scene, ids) = two_visual_scene();
         let mut ctrl = InteractionController::new();
         let mode = ctrl.handle_pointer_down(
-            420.0, 360.0, &mut scene, &front_camera(), false, true, false, false,
+            420.0,
+            360.0,
+            &mut scene,
+            &front_camera(),
+            false,
+            true,
+            false,
+            false,
             Some(ids.to_vec()),
         );
-        assert!(matches!(mode, Some(ManipMode::RotateY)), "shift starts rotate drag");
+        assert!(
+            matches!(mode, Some(ManipMode::RotateY)),
+            "shift starts rotate drag"
+        );
         assert!(ctrl.is_dragging());
         ctrl.handle_pointer_up();
         assert!(!ctrl.is_dragging(), "release terminates drag");
@@ -550,12 +596,22 @@ mod tests {
         let camera = front_camera();
         let mut ctrl = InteractionController::new();
         ctrl.handle_pointer_down(
-            420.0, 360.0, &mut scene, &camera, false, false, false, false,
+            420.0,
+            360.0,
+            &mut scene,
+            &camera,
+            false,
+            false,
+            false,
+            false,
             Some(ids.to_vec()),
         );
         let start = scene.get(ids[0]).unwrap().transform.position;
         ctrl.force_translate(420.0, 360.0, &mut scene, &camera, false);
-        assert!(ctrl.is_dragging(), "drag must start with a front-facing camera");
+        assert!(
+            ctrl.is_dragging(),
+            "drag must start with a front-facing camera"
+        );
 
         ctrl.handle_pointer_move(520.0, 360.0, &mut scene, &camera, false);
         let after = scene.get(ids[0]).unwrap().transform.position;
@@ -565,7 +621,10 @@ mod tests {
             start.x,
             after.x
         );
-        assert!(approx_eq(after.z, start.z, 1e-4), "depth unchanged (screen-parallel plane)");
+        assert!(
+            approx_eq(after.z, start.z, 1e-4),
+            "depth unchanged (screen-parallel plane)"
+        );
         assert!(approx_eq(after.y, start.y, 1e-4), "no vertical drift");
     }
 
@@ -575,16 +634,19 @@ mod tests {
         let camera = front_camera();
         let mut ctrl = InteractionController::new();
         ctrl.handle_pointer_down(
-            860.0, 360.0, &mut scene, &camera, false, false, false, false,
+            860.0,
+            360.0,
+            &mut scene,
+            &camera,
+            false,
+            false,
+            false,
+            false,
             Some(ids.to_vec()),
         );
         ctrl.force_translate(860.0, 360.0, &mut scene, &camera, false);
         let other_before = scene.get(ids[0]).unwrap().transform.position;
-        let cam_before = (
-            camera.position,
-            camera.yaw,
-            camera.pitch,
-        );
+        let cam_before = (camera.position, camera.yaw, camera.pitch);
 
         ctrl.handle_pointer_move(400.0, 300.0, &mut scene, &camera, false);
 
@@ -607,7 +669,14 @@ mod tests {
         let camera = front_camera();
         let mut ctrl = InteractionController::new();
         ctrl.handle_pointer_down(
-            640.0, 360.0, &mut scene, &camera, false, false, false, false,
+            640.0,
+            360.0,
+            &mut scene,
+            &camera,
+            false,
+            false,
+            false,
+            false,
             Some(vec![vid]),
         );
         ctrl.force_translate(640.0, 360.0, &mut scene, &camera, false);
@@ -626,7 +695,14 @@ mod tests {
         let camera = front_camera();
         let mut ctrl = InteractionController::new();
         ctrl.handle_pointer_down(
-            420.0, 360.0, &mut scene, &camera, false, false, false, false,
+            420.0,
+            360.0,
+            &mut scene,
+            &camera,
+            false,
+            false,
+            false,
+            false,
             Some(ids.to_vec()),
         );
         ctrl.force_translate(420.0, 360.0, &mut scene, &camera, false);
@@ -648,7 +724,14 @@ mod tests {
         let camera = front_camera();
         let mut ctrl = InteractionController::new();
         ctrl.handle_pointer_down(
-            420.0, 360.0, &mut scene, &camera, false, false, false, false,
+            420.0,
+            360.0,
+            &mut scene,
+            &camera,
+            false,
+            false,
+            false,
+            false,
             Some(ids.to_vec()),
         );
         ctrl.force_translate(420.0, 360.0, &mut scene, &camera, false);

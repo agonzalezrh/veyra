@@ -26,14 +26,54 @@ pub struct ResizeEdges {
 
 #[allow(dead_code)] // reserved API surface; not yet wired
 impl ResizeEdges {
-    pub const NORTH: ResizeEdges = ResizeEdges { left: false, right: false, top: true, bottom: false };
-    pub const SOUTH: ResizeEdges = ResizeEdges { left: false, right: false, top: false, bottom: true };
-    pub const EAST: ResizeEdges = ResizeEdges { left: false, right: true, top: false, bottom: false };
-    pub const WEST: ResizeEdges = ResizeEdges { left: true, right: false, top: false, bottom: false };
-    pub const NORTH_WEST: ResizeEdges = ResizeEdges { left: true, right: false, top: true, bottom: false };
-    pub const NORTH_EAST: ResizeEdges = ResizeEdges { left: false, right: true, top: true, bottom: false };
-    pub const SOUTH_WEST: ResizeEdges = ResizeEdges { left: true, right: false, top: false, bottom: true };
-    pub const SOUTH_EAST: ResizeEdges = ResizeEdges { left: false, right: true, top: false, bottom: true };
+    pub const NORTH: ResizeEdges = ResizeEdges {
+        left: false,
+        right: false,
+        top: true,
+        bottom: false,
+    };
+    pub const SOUTH: ResizeEdges = ResizeEdges {
+        left: false,
+        right: false,
+        top: false,
+        bottom: true,
+    };
+    pub const EAST: ResizeEdges = ResizeEdges {
+        left: false,
+        right: true,
+        top: false,
+        bottom: false,
+    };
+    pub const WEST: ResizeEdges = ResizeEdges {
+        left: true,
+        right: false,
+        top: false,
+        bottom: false,
+    };
+    pub const NORTH_WEST: ResizeEdges = ResizeEdges {
+        left: true,
+        right: false,
+        top: true,
+        bottom: false,
+    };
+    pub const NORTH_EAST: ResizeEdges = ResizeEdges {
+        left: false,
+        right: true,
+        top: true,
+        bottom: false,
+    };
+    pub const SOUTH_WEST: ResizeEdges = ResizeEdges {
+        left: true,
+        right: false,
+        top: false,
+        bottom: true,
+    };
+    pub const SOUTH_EAST: ResizeEdges = ResizeEdges {
+        left: false,
+        right: true,
+        top: false,
+        bottom: true,
+    };
 
     pub fn is_corner(&self) -> bool {
         (self.left || self.right) && (self.top || self.bottom)
@@ -138,8 +178,12 @@ impl ResizeSession {
         let min_h = self.min_size.1.max(1);
         let (max_w, max_h) = self.max_size.unwrap_or((i32::MAX, i32::MAX));
 
-        let w = (self.start_size.0 as f32 + dw_px).round().clamp(min_w as f32, max_w as f32) as i32;
-        let h = (self.start_size.1 as f32 + dh_px).round().clamp(min_h as f32, max_h as f32) as i32;
+        let w = (self.start_size.0 as f32 + dw_px)
+            .round()
+            .clamp(min_w as f32, max_w as f32) as i32;
+        let h = (self.start_size.1 as f32 + dh_px)
+            .round()
+            .clamp(min_h as f32, max_h as f32) as i32;
 
         // Actual world-size change after clamping; the grabbed edge follows
         // the cursor only as far as the clamp allows.
@@ -160,7 +204,10 @@ impl ResizeSession {
             pos_delta -= self.up_axis * (dt_h / 2.0);
         }
 
-        ResizeUpdate { size: (w, h), position_delta: pos_delta }
+        ResizeUpdate {
+            size: (w, h),
+            position_delta: pos_delta,
+        }
     }
 }
 
@@ -203,15 +250,39 @@ mod tests {
         let bu = 0.05;
         let bv = 0.05;
         // Edges
-        assert_eq!(hit_test_resize_zone(0.01, 0.5, bu, bv), Some(ResizeEdges::WEST));
-        assert_eq!(hit_test_resize_zone(0.99, 0.5, bu, bv), Some(ResizeEdges::EAST));
-        assert_eq!(hit_test_resize_zone(0.5, 0.01, bu, bv), Some(ResizeEdges::NORTH));
-        assert_eq!(hit_test_resize_zone(0.5, 0.99, bu, bv), Some(ResizeEdges::SOUTH));
+        assert_eq!(
+            hit_test_resize_zone(0.01, 0.5, bu, bv),
+            Some(ResizeEdges::WEST)
+        );
+        assert_eq!(
+            hit_test_resize_zone(0.99, 0.5, bu, bv),
+            Some(ResizeEdges::EAST)
+        );
+        assert_eq!(
+            hit_test_resize_zone(0.5, 0.01, bu, bv),
+            Some(ResizeEdges::NORTH)
+        );
+        assert_eq!(
+            hit_test_resize_zone(0.5, 0.99, bu, bv),
+            Some(ResizeEdges::SOUTH)
+        );
         // Corners
-        assert_eq!(hit_test_resize_zone(0.01, 0.01, bu, bv), Some(ResizeEdges::NORTH_WEST));
-        assert_eq!(hit_test_resize_zone(0.99, 0.01, bu, bv), Some(ResizeEdges::NORTH_EAST));
-        assert_eq!(hit_test_resize_zone(0.01, 0.99, bu, bv), Some(ResizeEdges::SOUTH_WEST));
-        assert_eq!(hit_test_resize_zone(0.99, 0.99, bu, bv), Some(ResizeEdges::SOUTH_EAST));
+        assert_eq!(
+            hit_test_resize_zone(0.01, 0.01, bu, bv),
+            Some(ResizeEdges::NORTH_WEST)
+        );
+        assert_eq!(
+            hit_test_resize_zone(0.99, 0.01, bu, bv),
+            Some(ResizeEdges::NORTH_EAST)
+        );
+        assert_eq!(
+            hit_test_resize_zone(0.01, 0.99, bu, bv),
+            Some(ResizeEdges::SOUTH_WEST)
+        );
+        assert_eq!(
+            hit_test_resize_zone(0.99, 0.99, bu, bv),
+            Some(ResizeEdges::SOUTH_EAST)
+        );
         // Interior (content) is not a resize zone; a point inside the top
         // band IS (resize wins over title bar at the border).
         assert_eq!(hit_test_resize_zone(0.5, 0.5, bu, bv), None);
@@ -226,7 +297,11 @@ mod tests {
         let up = s.update((0.125, 0.0));
         assert_eq!(up.size, (START_W + 100, START_H));
         // Center shifts right by half the world growth.
-        assert!(approx(up.position_delta.x, 25.0), "center +dx/2, got {}", up.position_delta.x);
+        assert!(
+            approx(up.position_delta.x, 25.0),
+            "center +dx/2, got {}",
+            up.position_delta.x
+        );
         assert!(approx(up.position_delta.y, 0.0));
         assert!(approx(up.position_delta.z, 0.0));
     }
@@ -247,7 +322,10 @@ mod tests {
         let s = session(ResizeEdges::WEST);
         let up = s.update((-0.125, 0.0));
         assert_eq!(up.size, (START_W + 100, START_H));
-        assert!(approx(up.position_delta.x, -25.0), "center follows left edge");
+        assert!(
+            approx(up.position_delta.x, -25.0),
+            "center follows left edge"
+        );
     }
 
     #[test]
@@ -297,7 +375,11 @@ mod tests {
     fn non_grabbed_axis_is_untouched() {
         let s = session(ResizeEdges::EAST);
         let up = s.update((0.125, -0.5));
-        assert_eq!(up.size, (START_W + 100, START_H), "vertical ignored for E edge");
+        assert_eq!(
+            up.size,
+            (START_W + 100, START_H),
+            "vertical ignored for E edge"
+        );
         assert!(approx(up.position_delta.y, 0.0));
     }
 

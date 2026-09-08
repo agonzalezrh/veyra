@@ -112,13 +112,7 @@ impl ButtonLayout {
 /// Which button (if any) does a title-bar hit at UV (u, v) land on?
 /// `v` is the full-quad UV (0 = top edge), `title_frac` the strip
 /// height in the same units.
-pub fn hit_button(
-    gw: f32,
-    gh: f32,
-    title_frac: f32,
-    u: f64,
-    v: f64,
-) -> Option<TitleButton> {
+pub fn hit_button(gw: f32, gh: f32, title_frac: f32, u: f64, v: f64) -> Option<TitleButton> {
     if v < 0.0 || v as f32 > title_frac {
         return None;
     }

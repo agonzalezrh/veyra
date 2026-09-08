@@ -1,7 +1,7 @@
-use cgmath::Vector3;
 use cgmath::Rotation3;
+use cgmath::Vector3;
 
-use crate::scene::{Scene, VisualId, Transform3D};
+use crate::scene::{Scene, Transform3D, VisualId};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // reserved API surface; not yet wired
@@ -74,11 +74,8 @@ impl SpatialShelf {
         for (i, entry) in self.entries.iter().enumerate() {
             if let Some(visual) = scene.get_mut(entry.visual_id) {
                 let x_offset = (i as f32 - self.entries.len() as f32 / 2.0) * 150.0;
-                visual.transform.position = Vector3::new(
-                    shelf_pos.x + x_offset,
-                    shelf_pos.y,
-                    shelf_pos.z,
-                );
+                visual.transform.position =
+                    Vector3::new(shelf_pos.x + x_offset, shelf_pos.y, shelf_pos.z);
                 visual.transform.scale = Vector3::new(0.5, 0.5, 1.0);
                 visual.transform.rotation = cgmath::Quaternion::from_angle_z(cgmath::Deg(0.0));
             }

@@ -100,9 +100,7 @@ impl ClientResizeCoordinator {
     /// Whether the visual has an outstanding (unacknowledged) request.
     /// While true, the compositor must not send another configure.
     pub fn awaiting_ack(&self, vid: VisualId) -> bool {
-        self.entries
-            .iter()
-            .any(|e| e.vid == vid && !e.acknowledged)
+        self.entries.iter().any(|e| e.vid == vid && !e.acknowledged)
     }
 
     /// The outstanding request for a visual, if any.
@@ -252,7 +250,10 @@ mod tests {
     #[test]
     fn commits_without_requests_are_normal() {
         let mut c = ClientResizeCoordinator::default();
-        assert_eq!(c.note_commit(vid(9), (1920, 1080)), CommitOutcome::NotResizing);
+        assert_eq!(
+            c.note_commit(vid(9), (1920, 1080)),
+            CommitOutcome::NotResizing
+        );
         assert!(!c.note_ack(Serial::from(70u32)));
     }
 

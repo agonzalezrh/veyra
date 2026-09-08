@@ -68,21 +68,24 @@ pub fn place_new_visual(
     // past the ±331-unit half-height of a 720p view).
     let base_spacing = (bounds.half_h * 0.45).clamp(90.0, 300.0);
 
-    let fits_bounds =
-        |x: f32, y: f32| -> bool {
-            x - width * 0.5 >= -bounds.half_w + EDGE_MARGIN
-                && x + width * 0.5 <= bounds.half_w - EDGE_MARGIN
-                && y - height * 0.5 >= -bounds.half_h + EDGE_MARGIN
-                && y + height * 0.5 <= bounds.half_h - EDGE_MARGIN
-        };
+    let fits_bounds = |x: f32, y: f32| -> bool {
+        x - width * 0.5 >= -bounds.half_w + EDGE_MARGIN
+            && x + width * 0.5 <= bounds.half_w - EDGE_MARGIN
+            && y - height * 0.5 >= -bounds.half_h + EDGE_MARGIN
+            && y + height * 0.5 <= bounds.half_h - EDGE_MARGIN
+    };
     let overlaps_existing = |x: f32, y: f32| -> bool {
         scene.visuals.iter().any(|v| {
-            if scene.detached_set.contains(&v.id) { return false; }
+            if scene.detached_set.contains(&v.id) {
+                return false;
+            }
             // Workspace-scoped (same rule as apply_layout, I6): windows
             // on OTHER workspaces must not influence placement here, or
             // a fresh workspace's first window appends to another
             // workspace's row and lands outside its view.
-            if !eligible.contains(&v.id) { return false; }
+            if !eligible.contains(&v.id) {
+                return false;
+            }
             let vw = v.total_width();
             let vh = v.total_height();
             let dx = (x - v.transform.position.x).abs();
@@ -208,12 +211,8 @@ pub fn apply_layout(
 ) {
     match mode {
         LayoutMode::Freeform => {}
-        LayoutMode::Flat => {
-            apply_flat(scene, config, detached_set, world_width, eligible)
-        }
-        LayoutMode::Grid { .. } => {
-            apply_grid(scene, config, detached_set, world_height, eligible)
-        }
+        LayoutMode::Flat => apply_flat(scene, config, detached_set, world_width, eligible),
+        LayoutMode::Grid { .. } => apply_grid(scene, config, detached_set, world_height, eligible),
     }
 }
 
@@ -236,10 +235,14 @@ fn apply_flat(
     _world_width: f32,
     eligible: &[VisualId],
 ) {
-    let n: usize = scene.visuals.iter()
+    let n: usize = scene
+        .visuals
+        .iter()
         .filter(|v| layout_eligible(v, detached_set, eligible))
         .count();
-    let total_width: f32 = scene.visuals.iter()
+    let total_width: f32 = scene
+        .visuals
+        .iter()
         .filter(|v| layout_eligible(v, detached_set, eligible))
         .map(|v| v.geometry.size.w as f32)
         .sum();
@@ -251,11 +254,8 @@ fn apply_flat(
         if !layout_eligible(visual, detached_set, eligible) {
             continue;
         }
-        visual.transform.position = Vector3::new(
-            cursor_x + visual.geometry.size.w as f32 / 2.0,
-            0.0,
-            0.0,
-        );
+        visual.transform.position =
+            Vector3::new(cursor_x + visual.geometry.size.w as f32 / 2.0, 0.0, 0.0);
         visual.transform.rotation = Quaternion::from_angle_z(cgmath::Deg(0.0));
         cursor_x += visual.geometry.size.w as f32 + config.spacing;
     }
@@ -295,7 +295,9 @@ fn cols_for(
     detached_set: &[VisualId],
     eligible: &[VisualId],
 ) -> usize {
-    let visible: Vec<_> = scene.visuals.iter()
+    let visible: Vec<_> = scene
+        .visuals
+        .iter()
         .filter(|v| layout_eligible(v, detached_set, eligible))
         .collect();
     let count = visible.len();
@@ -320,16 +322,43 @@ mod tests {
     fn empty_scene_no_crash() {
         let mut scene = Scene::default();
         let config = LayoutConfig::default();
-        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0, &[]);
-        apply_layout(&mut scene, LayoutMode::Grid { columns: 3 }, &config, &[], 1280.0, 720.0, &[]);
-        apply_layout(&mut scene, LayoutMode::Freeform, &config, &[], 1280.0, 720.0, &[]);
+        apply_layout(
+            &mut scene,
+            LayoutMode::Flat,
+            &config,
+            &[],
+            1280.0,
+            720.0,
+            &[],
+        );
+        apply_layout(
+            &mut scene,
+            LayoutMode::Grid { columns: 3 },
+            &config,
+            &[],
+            1280.0,
+            720.0,
+            &[],
+        );
+        apply_layout(
+            &mut scene,
+            LayoutMode::Freeform,
+            &config,
+            &[],
+            1280.0,
+            720.0,
+            &[],
+        );
     }
 
     #[test]
     fn flat_layout_calculus() {
         // Verify flat layout math without Visual objects:
         // position.x = cursor_x + w/2, where cursor_x advances by w + spacing
-        let w1 = 200.0; let w2 = 150.0; let spacing = 40.0; let margin = 0.0;
+        let w1 = 200.0;
+        let w2 = 150.0;
+        let spacing = 40.0;
+        let margin = 0.0;
         let total = w1 + w2;
         let spacing_total = spacing;
         let start_x = -total / 2.0 - spacing_total / 2.0 + margin;
@@ -371,9 +400,33 @@ mod tests {
     fn layout_idempotent() {
         let mut scene = Scene::default();
         let config = LayoutConfig::default();
-        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0, &[]);
-        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0, &[]);
-        apply_layout(&mut scene, LayoutMode::Flat, &config, &[], 1280.0, 720.0, &[]);
+        apply_layout(
+            &mut scene,
+            LayoutMode::Flat,
+            &config,
+            &[],
+            1280.0,
+            720.0,
+            &[],
+        );
+        apply_layout(
+            &mut scene,
+            LayoutMode::Flat,
+            &config,
+            &[],
+            1280.0,
+            720.0,
+            &[],
+        );
+        apply_layout(
+            &mut scene,
+            LayoutMode::Flat,
+            &config,
+            &[],
+            1280.0,
+            720.0,
+            &[],
+        );
     }
 
     #[test]
@@ -426,7 +479,6 @@ mod tests {
     fn bounds_16_9() -> VisibleBounds {
         VisibleBounds::for_camera(800.0, 45.0, 1280.0 / 720.0)
     }
-
 
     /// All visuals currently in the scene (tests place within one
     /// workspace, so every visual is eligible).
@@ -522,7 +574,10 @@ mod tests {
                 assert!(
                     dx >= (pw + wt) * 0.5 || dy >= (ph + ht) * 0.5,
                     "window at ({}, {}) overlaps an earlier one (dx={} dy={})",
-                    pos.x, pos.y, dx, dy
+                    pos.x,
+                    pos.y,
+                    dx,
+                    dy
                 );
             }
             placed.push((pos.x, pos.y, wt, ht));
@@ -541,7 +596,10 @@ mod tests {
         // Tiny frustum: half-extents 300×200; window 700×500 cannot fit.
         // Tier 3 now appends to the row at y=0 (the compositor zooms the
         // camera out to frame it) instead of clamping.
-        let bounds = VisibleBounds { half_w: 300.0, half_h: 200.0 };
+        let bounds = VisibleBounds {
+            half_w: 300.0,
+            half_h: 200.0,
+        };
         let pos = place_new_visual(700.0, 500.0, &scene, bounds, &all_eligible(&scene));
         // First window of an empty scene: row-append starts at the
         // workspace center.

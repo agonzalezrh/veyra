@@ -142,7 +142,7 @@ impl Scene {
             .map(|g| g.world_matrix())
     }
 
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     /// Set a group's transform.
     pub fn set_group_transform(&mut self, group_id: GroupId, transform: Transform3D) -> bool {
         match self.groups.iter_mut().find(|g| g.id == group_id) {
@@ -155,7 +155,7 @@ impl Scene {
     }
 
     /// Get the visual IDs in a group.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn group_visuals(&self, group_id: GroupId) -> Option<&[VisualId]> {
         self.groups
             .iter()
@@ -165,14 +165,11 @@ impl Scene {
 
     /// Find the first group containing a visual. Returns None if not in any group.
     pub fn find_group_containing(&self, vid: VisualId) -> Option<GroupId> {
-        self.groups
-            .iter()
-            .find(|g| g.contains(vid))
-            .map(|g| g.id)
+        self.groups.iter().find(|g| g.contains(vid)).map(|g| g.id)
     }
 
     /// Find which group(s) a visual belongs to.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn groups_for_visual(&self, vid: VisualId) -> Vec<GroupId> {
         self.groups
             .iter()
@@ -187,13 +184,13 @@ impl Scene {
     ///
     /// R5: [`Scene::world_matrix`] composes groups directly; this
     /// remains as the explicit spelling for existing call sites.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn world_matrix_with_groups(&self, id: VisualId) -> Matrix4<f32> {
         self.world_matrix(id)
     }
 
     /// Get all groups.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn all_groups(&self) -> &[SpatialGroup] {
         &self.groups
     }
@@ -203,10 +200,10 @@ impl Scene {
 mod tests {
     use super::*;
     use crate::scene::Transform3D;
-    use cgmath::Vector3;
-    use cgmath::Quaternion;
     use cgmath::Deg;
+    use cgmath::Quaternion;
     use cgmath::Rotation3;
+    use cgmath::Vector3;
 
     fn make_scene_with_visuals(count: usize) -> Scene {
         let mut scene = Scene::default();
@@ -292,8 +289,10 @@ mod tests {
         // Verify world_matrix_with_groups includes group transform
         let world = scene.world_matrix_with_groups(VisualId(1000));
         // With identity local transform, world = group = translate(100, 0, 0)
-        assert!((world[3][0] - 100.0).abs() < 0.01,
-            "world x should include group translation");
+        assert!(
+            (world[3][0] - 100.0).abs() < 0.01,
+            "world x should include group translation"
+        );
     }
 
     #[test]
@@ -369,14 +368,12 @@ mod tests {
         assert!((wb[3][0] - 350.0).abs() < 0.01, "B x {}", wb[3][0]);
 
         // 2) Rotation rotates member offsets around the group origin.
-        scene.groups[0].transform.rotation =
-            cgmath::Quaternion::from_angle_z(cgmath::Deg(90.0));
+        scene.groups[0].transform.rotation = cgmath::Quaternion::from_angle_z(cgmath::Deg(90.0));
         let wb = scene.world_matrix(vb);
         // Local offset (250,0,0) rotated 90° about z → (0,250,0) + group translation.
         assert!((wb[3][0] - 100.0).abs() < 0.01, "rotated B x {}", wb[3][0]);
         assert!((wb[3][1] - 250.0).abs() < 0.01, "rotated B y {}", wb[3][1]);
-        scene.groups[0].transform.rotation =
-            cgmath::Quaternion::from_angle_z(cgmath::Deg(0.0));
+        scene.groups[0].transform.rotation = cgmath::Quaternion::from_angle_z(cgmath::Deg(0.0));
 
         // 3) Picking hits members at their group-moved locations.
         let view = cgmath::Matrix4::from_translation(cgmath::Vector3::new(0.0, 0.0, -800.0));
@@ -384,10 +381,18 @@ mod tests {
         let pv = proj * view;
         let world_pt = pv * cgmath::Vector4::new(100.0, 0.0, 0.0, 1.0);
         let hit = scene.pick(&pv, world_pt.x / world_pt.w, world_pt.y / world_pt.w);
-        assert_eq!(hit.map(|(id, _)| id), Some(va), "A picked at group-moved position");
+        assert_eq!(
+            hit.map(|(id, _)| id),
+            Some(va),
+            "A picked at group-moved position"
+        );
         let world_pt = pv * cgmath::Vector4::new(350.0, 0.0, 0.0, 1.0);
         let hit = scene.pick(&pv, world_pt.x / world_pt.w, world_pt.y / world_pt.w);
-        assert_eq!(hit.map(|(id, _)| id), Some(vb), "B picked at group-moved position");
+        assert_eq!(
+            hit.map(|(id, _)| id),
+            Some(vb),
+            "B picked at group-moved position"
+        );
 
         // 4) Arrangement moves the GROUP transform: both members travel
         // together and the representative lands at the arranged spot.
@@ -407,12 +412,14 @@ mod tests {
             (wa[3][0] - arranged.position.x).abs() < 0.01
                 && (wa[3][1] - arranged.position.y).abs() < 0.01,
             "representative landed at the arranged position ({}, {})",
-            wa[3][0], wa[3][1]
+            wa[3][0],
+            wa[3][1]
         );
         assert!(
             (wb[3][0] - wa[3][0] - 250.0).abs() < 0.01,
             "members moved together (B x {} vs A x {})",
-            wb[3][0], wa[3][0]
+            wb[3][0],
+            wa[3][0]
         );
     }
 }

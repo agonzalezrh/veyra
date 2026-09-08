@@ -35,7 +35,10 @@ pub struct ClosedWindowHistory {
 
 impl ClosedWindowHistory {
     pub fn new(cap: usize) -> Self {
-        ClosedWindowHistory { entries: Vec::new(), cap: cap.max(1) }
+        ClosedWindowHistory {
+            entries: Vec::new(),
+            cap: cap.max(1),
+        }
     }
 
     /// Record a closed window, trimming to the capacity (oldest dropped).
@@ -61,10 +64,7 @@ impl ClosedWindowHistory {
     /// Most recently closed window for the given app id, if any.
     #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn most_recent_for_app(&self, app_id: &str) -> Option<&ClosedWindow> {
-        self.entries
-            .iter()
-            .rev()
-            .find(|w| w.app_id == app_id)
+        self.entries.iter().rev().find(|w| w.app_id == app_id)
     }
 
     #[allow(dead_code)] // reserved API surface; not yet wired
@@ -94,8 +94,7 @@ pub fn app_id_matches_entry(app_id: &str, entry_app_id: &str, entry_name: &str) 
     }
     let owned = entry_app_id.to_lowercase();
     let base = owned.rsplit('/').next().unwrap_or("");
-    base == app_lower.as_str()
-        || base.rsplit('.').next() == Some(app_lower.as_str())
+    base == app_lower.as_str() || base.rsplit('.').next() == Some(app_lower.as_str())
 }
 
 #[cfg(test)]
@@ -157,8 +156,16 @@ mod tests {
     fn app_id_matching_rules() {
         assert!(app_id_matches_entry("foot", "foot", "Foot"));
         assert!(app_id_matches_entry("Foot", "foot", "foot terminal"));
-        assert!(app_id_matches_entry("firefox", "/usr/lib/firefox/firefox", "Firefox"));
-        assert!(app_id_matches_entry("firefox", "org.mozilla.firefox", "Firefox"));
+        assert!(app_id_matches_entry(
+            "firefox",
+            "/usr/lib/firefox/firefox",
+            "Firefox"
+        ));
+        assert!(app_id_matches_entry(
+            "firefox",
+            "org.mozilla.firefox",
+            "Firefox"
+        ));
         // substring suffixes must NOT match
         assert!(!app_id_matches_entry("fox", "firefox", "Firefox"));
         assert!(!app_id_matches_entry("", "foot", "Foot"));

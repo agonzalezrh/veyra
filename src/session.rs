@@ -40,7 +40,10 @@ impl Session {
         self.shutdown_requested
     }
 
-    pub fn startup_sequence(&mut self, workspace_manager: &mut WorkspaceManager) -> Result<(), String> {
+    pub fn startup_sequence(
+        &mut self,
+        workspace_manager: &mut WorkspaceManager,
+    ) -> Result<(), String> {
         info!("session startup sequence beginning");
 
         let count = workspace_manager.len();
@@ -58,7 +61,10 @@ impl Session {
         // Ensure all workspaces have a valid camera
         for i in 0..count {
             if let Some(ws) = workspace_manager.get_mut(i) {
-                if ws.camera.position.z == 0.0 && ws.camera.position.x == 0.0 && ws.camera.position.y == 0.0 {
+                if ws.camera.position.z == 0.0
+                    && ws.camera.position.x == 0.0
+                    && ws.camera.position.y == 0.0
+                {
                     ws.camera.position.z = 800.0;
                     info!(workspace = i, "reset default camera for workspace");
                 }
@@ -74,10 +80,7 @@ impl Session {
         Ok(())
     }
 
-    pub fn shutdown_sequence(
-        &mut self,
-        save_state: impl FnOnce(),
-    ) -> Result<(), String> {
+    pub fn shutdown_sequence(&mut self, save_state: impl FnOnce()) -> Result<(), String> {
         if self.shutdown_completed {
             info!("shutdown already completed, skipping");
             return Ok(());
@@ -120,9 +123,11 @@ mod tests {
         session.startup_sequence(&mut wm).unwrap();
 
         let mut state_saved = false;
-        session.shutdown_sequence(|| {
-            state_saved = true;
-        }).unwrap();
+        session
+            .shutdown_sequence(|| {
+                state_saved = true;
+            })
+            .unwrap();
 
         assert!(state_saved, "state should have been saved during shutdown");
     }
@@ -148,14 +153,18 @@ mod tests {
         session.startup_sequence(&mut wm).unwrap();
 
         let mut save_count = 0;
-        session.shutdown_sequence(|| {
-            save_count += 1;
-        }).unwrap();
+        session
+            .shutdown_sequence(|| {
+                save_count += 1;
+            })
+            .unwrap();
 
         // Second call should be a no-op
-        session.shutdown_sequence(|| {
-            save_count += 1;
-        }).unwrap();
+        session
+            .shutdown_sequence(|| {
+                save_count += 1;
+            })
+            .unwrap();
 
         assert_eq!(save_count, 1, "state should only be saved once");
         assert!(session.shutdown_completed);
@@ -204,7 +213,11 @@ mod tests {
         session.startup_sequence(&mut wm).unwrap();
         for i in 0..wm.len() {
             if let Some(ws) = wm.get(i) {
-                assert!(ws.camera.position.z > 0.0, "workspace {} should have valid camera z", i);
+                assert!(
+                    ws.camera.position.z > 0.0,
+                    "workspace {} should have valid camera z",
+                    i
+                );
             }
         }
     }

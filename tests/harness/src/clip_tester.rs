@@ -21,6 +21,10 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use smithay_client_toolkit::reexports::client::protocol::wl_shm::Format;
+use smithay_client_toolkit::reexports::protocols::xdg::shell::client::{
+    xdg_surface, xdg_toplevel, xdg_wm_base,
+};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_output, delegate_registry, delegate_shm,
@@ -37,16 +41,15 @@ use wayland_client::{
     },
     Connection, Dispatch, QueueHandle,
 };
-use smithay_client_toolkit::reexports::client::protocol::wl_shm::Format;
-use smithay_client_toolkit::reexports::protocols::xdg::shell::client::{
-    xdg_surface, xdg_toplevel, xdg_wm_base,
-};
 
 const W: i32 = 240;
 const H: i32 = 160;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Mode { Set, Paste }
+pub enum Mode {
+    Set,
+    Paste,
+}
 
 #[derive(Default)]
 struct OfferState {
@@ -106,14 +109,13 @@ pub fn run_clip(mode: Mode, mimes: Vec<String>, payload: String, duration_ms: u6
         Ok(w) => w,
         Err(_) => return 2,
     };
-    let ddm: wl_data_device_manager::WlDataDeviceManager =
-        match globals.bind(&qh, 1..=3, ()) {
-            Ok(d) => d,
-            Err(_) => {
-                eprintln!("wl_data_device_manager not available");
-                return 2;
-            }
-        };
+    let ddm: wl_data_device_manager::WlDataDeviceManager = match globals.bind(&qh, 1..=3, ()) {
+        Ok(d) => d,
+        Err(_) => {
+            eprintln!("wl_data_device_manager not available");
+            return 2;
+        }
+    };
     let seat: wayland_client::protocol::wl_seat::WlSeat = match globals.bind(&qh, 1..=7, ()) {
         Ok(s) => s,
         Err(_) => return 2,
@@ -169,7 +171,10 @@ pub fn run_clip(mode: Mode, mimes: Vec<String>, payload: String, duration_ms: u6
         // keyboard-enter must have been processed first (focus-on-map).
         if !tester.set_done
             && tester.mode == Mode::Set
-            && tester.configured_at.map(|t| t.elapsed() >= Duration::from_millis(300)).unwrap_or(false)
+            && tester
+                .configured_at
+                .map(|t| t.elapsed() >= Duration::from_millis(300))
+                .unwrap_or(false)
         {
             let qh = qh.clone();
             tester.set_selection(&qh);
@@ -177,7 +182,11 @@ pub fn run_clip(mode: Mode, mimes: Vec<String>, payload: String, duration_ms: u6
         let _ = conn.flush();
         use std::os::fd::AsRawFd as _;
         let fd = conn.backend().poll_fd().as_raw_fd();
-        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
         let ret = unsafe { libc::poll(&mut pfd, 1, 50) };
         if ret > 0 {
             if let Some(guard) = conn.prepare_read() {
@@ -228,8 +237,12 @@ impl ClipTester {
         if self.mode != Mode::Paste || self.active_offer.as_ref() != Some(offer) {
             return;
         }
-        let Some(want) = self.mimes.first() else { return };
-        let Some(os) = self.offers.get(offer) else { return };
+        let Some(want) = self.mimes.first() else {
+            return;
+        };
+        let Some(os) = self.offers.get(offer) else {
+            return;
+        };
         if os.mimes.iter().any(|m| m == want) {
             receive_and_log(offer, want);
         }
@@ -242,7 +255,9 @@ impl ClipTester {
         if self.mode != Mode::Set {
             return;
         }
-        let Some(device) = self.device.clone() else { return };
+        let Some(device) = self.device.clone() else {
+            return;
+        };
         let source = self.ddm.create_data_source(qh, ());
         for m in &self.mimes {
             source.offer(m.clone());
@@ -295,20 +310,18 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for ClipTester {
             wl_data_device::Event::DataOffer { id } => {
                 state.offers.insert(id, OfferState::default());
             }
-            wl_data_device::Event::Selection { id } => {
-                match id {
-                    Some(offer) => {
-                        crate::log_kv(&[("ev", "clip_selection".into()), ("has_offer", true.into())]);
-                        state.active_offer = Some(offer.clone());
-                        state.maybe_receive(&offer);
-                    }
-                    None => {
-                        crate::log_kv(&[("ev", "clip_selection".into()), ("has_offer", false.into())]);
-                        crate::log_kv(&[("ev", "clip_cleared".into())]);
-                        state.active_offer = None;
-                    }
+            wl_data_device::Event::Selection { id } => match id {
+                Some(offer) => {
+                    crate::log_kv(&[("ev", "clip_selection".into()), ("has_offer", true.into())]);
+                    state.active_offer = Some(offer.clone());
+                    state.maybe_receive(&offer);
                 }
-            }
+                None => {
+                    crate::log_kv(&[("ev", "clip_selection".into()), ("has_offer", false.into())]);
+                    crate::log_kv(&[("ev", "clip_cleared".into())]);
+                    state.active_offer = None;
+                }
+            },
             _ => {}
         }
     }
@@ -332,7 +345,10 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for ClipTester {
             if let Some(o) = state.offers.get_mut(offer) {
                 o.mimes.push(mime_type.clone());
             }
-            crate::log_kv(&[("ev", "clip_mime".into()), ("mime", mime_type.clone().into())]);
+            crate::log_kv(&[
+                ("ev", "clip_mime".into()),
+                ("mime", mime_type.clone().into()),
+            ]);
             state.maybe_receive(offer);
         }
     }
@@ -384,10 +400,7 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for ClipTester {
     ) {
         match event {
             wl_data_source::Event::Target { mime_type } => {
-                crate::log_kv(&[
-                    ("ev", "clip_target".into()),
-                    ("mime", mime_type.into()),
-                ]);
+                crate::log_kv(&[("ev", "clip_target".into()), ("mime", mime_type.into())]);
             }
             wl_data_source::Event::Send { mime_type, fd } => {
                 let payload = state.payload.clone();
@@ -499,8 +512,22 @@ impl CompositorHandler for ClipTester {
     ) {
     }
 
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
 
     fn transform_changed(
         &mut self,
@@ -511,14 +538,7 @@ impl CompositorHandler for ClipTester {
     ) {
     }
 
-    fn frame(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: u32,
-    ) {
-    }
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
 }
 
 impl OutputHandler for ClipTester {

@@ -20,7 +20,11 @@ impl MenuMetrics {
         let sv = (h / 720.0).clamp(1.0, 2.5);
         let item_height = 24.0 * sv;
         let glyph_scale = ((item_height * 0.58) / 7.0).round().clamp(2.0, 6.0);
-        MenuMetrics { menu_width: 220.0 * su, item_height, glyph_scale }
+        MenuMetrics {
+            menu_width: 220.0 * su,
+            item_height,
+            glyph_scale,
+        }
     }
 }
 
@@ -50,7 +54,10 @@ pub struct MenuItem {
 
 impl MenuItem {
     pub fn new(label: impl Into<String>, action: MenuAction) -> Self {
-        MenuItem { label: label.into(), action }
+        MenuItem {
+            label: label.into(),
+            action,
+        }
     }
 }
 
@@ -110,7 +117,11 @@ impl ContextMenu {
         if !maximized {
             return;
         }
-        if let Some(item) = self.items.iter_mut().find(|i| i.action == MenuAction::Maximize) {
+        if let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|i| i.action == MenuAction::Maximize)
+        {
             item.label = "Restore size".into();
         }
     }
@@ -132,12 +143,18 @@ impl ContextMenu {
         }
         let (_, my) = self.position;
         let idx = ((y - my) / item_height) as usize;
-        if idx < self.items.len() { Some(idx) } else { None }
+        if idx < self.items.len() {
+            Some(idx)
+        } else {
+            None
+        }
     }
 
     /// Select the next item in the menu (down arrow).
     pub fn select_next(&mut self) {
-        if !self.visible || self.items.is_empty() { return; }
+        if !self.visible || self.items.is_empty() {
+            return;
+        }
         let current = match self.selected {
             Some(i) => i,
             None => {
@@ -150,7 +167,9 @@ impl ContextMenu {
 
     /// Select the previous item in the menu (up arrow).
     pub fn select_prev(&mut self) {
-        if !self.visible || self.items.is_empty() { return; }
+        if !self.visible || self.items.is_empty() {
+            return;
+        }
         let current = match self.selected {
             Some(i) => i,
             None => {
@@ -163,7 +182,9 @@ impl ContextMenu {
 
     /// Confirm the current selection and return the action.
     pub fn confirm_selection(&self) -> Option<MenuAction> {
-        self.selected.and_then(|idx| self.items.get(idx)).map(|item| item.action)
+        self.selected
+            .and_then(|idx| self.items.get(idx))
+            .map(|item| item.action)
     }
 }
 
@@ -199,7 +220,7 @@ mod tests {
         assert_eq!(m.menu_width, 440.0);
         assert_eq!(m.item_height, 48.0);
         assert_eq!(m.glyph_scale, 4.0); // 28px glyphs in 48px rows
-        // Glyph fills ~58% of the row at every size (readable)
+                                        // Glyph fills ~58% of the row at every size (readable)
         let ink = 7.0 * m.glyph_scale;
         assert!((ink / m.item_height - 0.58).abs() < 0.06);
         // 1.5x display (e.g. 1080p panel): must get 3x glyphs, not 2x
@@ -263,13 +284,34 @@ mod tests {
     fn menu_has_expected_items() {
         let mut menu = ContextMenu::new();
         menu.show(0.0, 0.0, VisualId(1), 3);
-        assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Focus)));
-        assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Arrange)));
-        assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Close)));
-        assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::ResetTransform)));
-        assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Maximize)));
-        assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Fullscreen)));
-        assert!(menu.items.iter().any(|i| matches!(i.action, MenuAction::Minimize)));
+        assert!(menu
+            .items
+            .iter()
+            .any(|i| matches!(i.action, MenuAction::Focus)));
+        assert!(menu
+            .items
+            .iter()
+            .any(|i| matches!(i.action, MenuAction::Arrange)));
+        assert!(menu
+            .items
+            .iter()
+            .any(|i| matches!(i.action, MenuAction::Close)));
+        assert!(menu
+            .items
+            .iter()
+            .any(|i| matches!(i.action, MenuAction::ResetTransform)));
+        assert!(menu
+            .items
+            .iter()
+            .any(|i| matches!(i.action, MenuAction::Maximize)));
+        assert!(menu
+            .items
+            .iter()
+            .any(|i| matches!(i.action, MenuAction::Fullscreen)));
+        assert!(menu
+            .items
+            .iter()
+            .any(|i| matches!(i.action, MenuAction::Minimize)));
     }
 
     #[test]

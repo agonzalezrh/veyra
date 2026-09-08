@@ -153,7 +153,11 @@ impl FullscreenCoordinator {
 
     pub fn abort(&mut self, vid: VisualId) {
         self.intents.retain(|i| i.vid != vid);
-        if self.deferred.as_ref().is_some_and(|(dvid, _, _)| *dvid == vid) {
+        if self
+            .deferred
+            .as_ref()
+            .is_some_and(|(dvid, _, _)| *dvid == vid)
+        {
             self.deferred = None;
         }
     }
@@ -162,8 +166,8 @@ impl FullscreenCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cgmath::Quaternion;
     use crate::scene::VisualId;
+    use cgmath::Quaternion;
 
     const AREA: (f32, f32) = (1280.0, 720.0);
 
@@ -180,7 +184,10 @@ mod tests {
     fn presentation_area_scales_with_window() {
         // Nothing is hardcoded: the area derives from the actual window.
         assert_eq!(PresentationArea::for_window_size(AREA).size(), (1280, 720));
-        assert_eq!(PresentationArea::for_window_size((1000.4, 800.6)).size(), (1000, 801));
+        assert_eq!(
+            PresentationArea::for_window_size((1000.4, 800.6)).size(),
+            (1000, 801)
+        );
         assert_eq!(PresentationArea::for_window_size((0.0, 0.0)).size(), (1, 1));
     }
 
@@ -189,7 +196,8 @@ mod tests {
         // cgmath Quaternion::new is scalar-first (w, x, y, z); the
         // snapshot stores ijkw so restore can map straight back.
         let q = Quaternion::new(0.9, 0.1, 0.2, 0.3); // (w, i, j, k)
-        let s = FullscreenSnapshot::capture((10, 20), cgmath::Vector3::new(1.0, 2.0, 3.0), q, false);
+        let s =
+            FullscreenSnapshot::capture((10, 20), cgmath::Vector3::new(1.0, 2.0, 3.0), q, false);
         assert_eq!(s.restore_rot, [0.1, 0.2, 0.3, 0.9]);
         assert_eq!(s.restore_pos, (1.0, 2.0, 3.0));
         assert_eq!(s.restore_size, (10, 20));
@@ -201,15 +209,23 @@ mod tests {
         let mut fc = FullscreenCoordinator::default();
         let vid = VisualId(1);
         fc.begin(FullscreenIntent {
-            vid, kind: FullscreenKind::Fullscreen,
-            source: FullscreenSource::Client, serial: smithay::utils::Serial::from(1),
-            target: (1280, 720), previous: (800, 600), snapshot: Some(snap(false)),
+            vid,
+            kind: FullscreenKind::Fullscreen,
+            source: FullscreenSource::Client,
+            serial: smithay::utils::Serial::from(1),
+            target: (1280, 720),
+            previous: (800, 600),
+            snapshot: Some(snap(false)),
         });
         // A newer request for the same surface supersedes the old one.
         fc.begin(FullscreenIntent {
-            vid, kind: FullscreenKind::Unfullscreen,
-            source: FullscreenSource::Compositor, serial: smithay::utils::Serial::from(2),
-            target: (800, 600), previous: (1280, 720), snapshot: None,
+            vid,
+            kind: FullscreenKind::Unfullscreen,
+            source: FullscreenSource::Compositor,
+            serial: smithay::utils::Serial::from(2),
+            target: (800, 600),
+            previous: (1280, 720),
+            snapshot: None,
         });
         assert_eq!(fc.intents.len(), 1);
         assert!(fc.intent(vid).unwrap().kind == FullscreenKind::Unfullscreen);
@@ -223,10 +239,18 @@ mod tests {
         let mut fc = FullscreenCoordinator::default();
         let vid = VisualId(2);
         fc.defer(vid, FullscreenKind::Fullscreen, FullscreenSource::Client);
-        fc.defer(vid, FullscreenKind::Unfullscreen, FullscreenSource::Compositor);
+        fc.defer(
+            vid,
+            FullscreenKind::Unfullscreen,
+            FullscreenSource::Compositor,
+        );
         assert_eq!(
             fc.take_deferred(),
-            Some((vid, FullscreenKind::Unfullscreen, FullscreenSource::Compositor))
+            Some((
+                vid,
+                FullscreenKind::Unfullscreen,
+                FullscreenSource::Compositor
+            ))
         );
         fc.defer(vid, FullscreenKind::Fullscreen, FullscreenSource::Client);
         fc.abort(vid);
@@ -239,9 +263,13 @@ mod tests {
         let mut fc = FullscreenCoordinator::default();
         let vid = VisualId(3);
         fc.begin(FullscreenIntent {
-            vid, kind: FullscreenKind::Fullscreen,
-            source: FullscreenSource::Compositor, serial: smithay::utils::Serial::from(5),
-            target: (640, 480), previous: (320, 240), snapshot: None,
+            vid,
+            kind: FullscreenKind::Fullscreen,
+            source: FullscreenSource::Compositor,
+            serial: smithay::utils::Serial::from(5),
+            target: (640, 480),
+            previous: (320, 240),
+            snapshot: None,
         });
         let taken = fc.take_intent(vid).expect("intent owned");
         assert_eq!(taken.snapshot, None);

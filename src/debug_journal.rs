@@ -46,7 +46,11 @@ pub fn event(kind: &str, fields: &[(&str, String)]) {
         line.push_str(&format!(",\"{}\":{}", k, v));
     }
     line.push_str("}\n");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }
@@ -96,7 +100,12 @@ pub fn snapshot(rows: &[WindowRow], focused: Option<VisualId>, active_ws: usize,
         "snapshot",
         &[
             ("windows", format!("[{}]", windows.join(","))),
-            ("focused", focused.map(|v| v.0.to_string()).unwrap_or_else(|| "null".into())),
+            (
+                "focused",
+                focused
+                    .map(|v| v.0.to_string())
+                    .unwrap_or_else(|| "null".into()),
+            ),
             ("active_ws", active_ws.to_string()),
             ("camera_z", format!("{:.1}", camera_z)),
         ],

@@ -72,7 +72,11 @@ pub fn parse_desktop_file(path: &Path) -> Option<DesktopFile> {
                 "Exec" => exec = value.to_string(),
                 "Icon" => icon = Some(value.to_string()),
                 "Categories" => {
-                    categories = value.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    categories = value
+                        .split(';')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
                 }
                 "NoDisplay" => no_display = value == "true",
                 "Terminal" => terminal = value == "true",
@@ -179,15 +183,22 @@ impl Launcher {
 
     pub fn launch(&self, index: usize) -> Option<std::process::Child> {
         let entry = self.applications.get(index)?;
-        let command = entry.command.replace("%f", "").replace("%F", "")
-            .replace("%u", "").replace("%U", "");
+        let command = entry
+            .command
+            .replace("%f", "")
+            .replace("%F", "")
+            .replace("%u", "")
+            .replace("%U", "");
         let parts: Vec<&str> = command.split_whitespace().collect();
         if parts.is_empty() {
             return None;
         }
         std::process::Command::new(parts[0])
             .args(&parts[1..])
-            .env("WAYLAND_DISPLAY", std::env::var("WAYLAND_DISPLAY").unwrap_or_default())
+            .env(
+                "WAYLAND_DISPLAY",
+                std::env::var("WAYLAND_DISPLAY").unwrap_or_default(),
+            )
             .spawn()
             .ok()
     }
@@ -230,8 +241,9 @@ mod tests {
     fn parse_desktop_no_display() {
         let tmp = std::env::temp_dir().join("veyra-test-desktop-nd");
         let _ = std::fs::create_dir_all(&tmp);
-        let path = create_test_desktop(&tmp,
-            "[Desktop Entry]\nType=Application\nName=Hidden App\nExec=hidden\nNoDisplay=true\n"
+        let path = create_test_desktop(
+            &tmp,
+            "[Desktop Entry]\nType=Application\nName=Hidden App\nExec=hidden\nNoDisplay=true\n",
         );
         let df = parse_desktop_file(&path).unwrap();
         assert!(df.no_display);
@@ -242,9 +254,7 @@ mod tests {
     fn parse_invalid_desktop_missing_name() {
         let tmp = std::env::temp_dir().join("veyra-test-desktop-mn");
         let _ = std::fs::create_dir_all(&tmp);
-        let path = create_test_desktop(&tmp,
-            "[Desktop Entry]\nType=Application\nExec=test\n"
-        );
+        let path = create_test_desktop(&tmp, "[Desktop Entry]\nType=Application\nExec=test\n");
         assert!(parse_desktop_file(&path).is_none());
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -253,8 +263,9 @@ mod tests {
     fn parse_invalid_desktop_wrong_type() {
         let tmp = std::env::temp_dir().join("veyra-test-desktop-wt");
         let _ = std::fs::create_dir_all(&tmp);
-        let path = create_test_desktop(&tmp,
-            "[Desktop Entry]\nType=Link\nName=Link\nURL=http://example.com\n"
+        let path = create_test_desktop(
+            &tmp,
+            "[Desktop Entry]\nType=Link\nName=Link\nURL=http://example.com\n",
         );
         assert!(parse_desktop_file(&path).is_none());
         let _ = std::fs::remove_dir_all(&tmp);
@@ -300,10 +311,16 @@ mod tests {
     fn launcher_empty_filter_returns_all() {
         let mut launcher = Launcher::new();
         launcher.applications.push(LauncherEntry {
-            app_id: "a".into(), name: "A".into(), command: "a".into(), icon: None,
+            app_id: "a".into(),
+            name: "A".into(),
+            command: "a".into(),
+            icon: None,
         });
         launcher.applications.push(LauncherEntry {
-            app_id: "b".into(), name: "B".into(), command: "b".into(), icon: None,
+            app_id: "b".into(),
+            name: "B".into(),
+            command: "b".into(),
+            icon: None,
         });
         assert_eq!(launcher.filtered().len(), 2);
     }

@@ -29,7 +29,12 @@ impl SimulatedFrameProducer {
         let h = 256u32;
         let pixels = Self::generate(w, h, 0);
         let tex = renderer
-            .import_memory(&pixels, Fourcc::Abgr8888, (w as i32, h as i32).into(), false)
+            .import_memory(
+                &pixels,
+                Fourcc::Abgr8888,
+                (w as i32, h as i32).into(),
+                false,
+            )
             .ok()?;
         Some(SimulatedFrameProducer {
             texture: tex,
@@ -96,7 +101,11 @@ impl FrameProducer for SimulatedFrameProducer {
                 info!(?kind, u, v, "simulated input (pointer)");
             }
             fn handle_keyboard(&mut self, event: KeyboardEvent) {
-                info!(key = event.key, pressed = event.pressed, "simulated input (keyboard)");
+                info!(
+                    key = event.key,
+                    pressed = event.pressed,
+                    "simulated input (keyboard)"
+                );
             }
         }
         Some(Box::new(LogInputSink))

@@ -19,6 +19,7 @@ use smithay_client_toolkit::{
     delegate_compositor, delegate_keyboard, delegate_output, delegate_pointer, delegate_registry,
     delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
     output::{OutputHandler, OutputState},
+    reexports::csd_frame::WindowState,
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
@@ -33,8 +34,10 @@ use smithay_client_toolkit::{
         },
         WaylandSurface,
     },
-    shm::{slot::{Buffer, SlotPool}, Shm, ShmHandler},
-    reexports::csd_frame::WindowState,
+    shm::{
+        slot::{Buffer, SlotPool},
+        Shm, ShmHandler,
+    },
 };
 use wayland_client::{
     globals::registry_queue_init,
@@ -54,12 +57,14 @@ fn log(ev: serde_json::Value) {
 mod clip_tester;
 mod dnd_tester;
 mod popup_tester;
-use popup_tester::run_popups_opts;
-use dnd_tester::{run_dnd, Role};
 use clip_tester::{run_clip, Mode as ClipMode};
+use dnd_tester::{run_dnd, Role};
+use popup_tester::run_popups_opts;
 
 fn opt_value(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 fn log_kv(pairs: &[(&str, serde_json::Value)]) {
@@ -74,7 +79,6 @@ fn log_kv(pairs: &[(&str, serde_json::Value)]) {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Policy {
-
     /// Commit buffers matching the configured size (well-behaved client).
     Match,
     /// Ignore configured sizes and always commit a fixed size
@@ -151,11 +155,13 @@ fn parse_args() -> Opts {
         match args[i].as_str() {
             "--duration" => opts.duration_ms = next(&mut i).parse().unwrap_or(4000),
             "--app-id" => opts.app_id = next(&mut i),
-            "--exit-after-commits" => {
-                opts.exit_after_commits = next(&mut i).parse().ok()
-            }
+            "--exit-after-commits" => opts.exit_after_commits = next(&mut i).parse().ok(),
             "--policy" => {
-                opts.policy = if next(&mut i) == "ignore" { Policy::Ignore } else { Policy::Match };
+                opts.policy = if next(&mut i) == "ignore" {
+                    Policy::Ignore
+                } else {
+                    Policy::Match
+                };
             }
             "--fixed" => opts.fixed_size = parse_size(&next(&mut i)),
             "--min" => opts.min_size = Some(parse_size(&next(&mut i))),
@@ -220,7 +226,8 @@ impl TestClient {
         self.commits += 1;
         let mut width = self.width;
         let mut height = self.height;
-        if let (Some(target), true) = (self.opts.resize_to, self.commits > self.opts.after_commits) {
+        if let (Some(target), true) = (self.opts.resize_to, self.commits > self.opts.after_commits)
+        {
             width = target.0;
             height = target.1;
         }
@@ -236,14 +243,24 @@ impl TestClient {
         }
         let pool = self.pool.as_mut().expect("pool");
         let buffer = self.buffer.get_or_insert_with(|| {
-            pool.create_buffer(width as i32, height as i32, stride, wl_shm::Format::Argb8888)
-                .expect("create buffer")
-                .0
+            pool.create_buffer(
+                width as i32,
+                height as i32,
+                stride,
+                wl_shm::Format::Argb8888,
+            )
+            .expect("create buffer")
+            .0
         });
         let stale = self.buffer_size != (width, height);
         let canvas = if stale {
             let (second, canvas) = pool
-                .create_buffer(width as i32, height as i32, stride, wl_shm::Format::Argb8888)
+                .create_buffer(
+                    width as i32,
+                    height as i32,
+                    stride,
+                    wl_shm::Format::Argb8888,
+                )
                 .expect("create replacement buffer");
             *buffer = second;
             canvas
@@ -252,7 +269,12 @@ impl TestClient {
                 Some(c) => c,
                 None => {
                     let (second, canvas) = pool
-                        .create_buffer(width as i32, height as i32, stride, wl_shm::Format::Argb8888)
+                        .create_buffer(
+                            width as i32,
+                            height as i32,
+                            stride,
+                            wl_shm::Format::Argb8888,
+                        )
                         .expect("create double-buffer");
                     *buffer = second;
                     canvas
@@ -275,7 +297,9 @@ impl TestClient {
         self.window
             .wl_surface()
             .frame(qh, self.window.wl_surface().clone());
-        buffer.attach_to(self.window.wl_surface()).expect("buffer attach");
+        buffer
+            .attach_to(self.window.wl_surface())
+            .expect("buffer attach");
         self.buffer_size = (width, height);
         self.window.commit();
         log_kv(&[
@@ -320,8 +344,6 @@ impl TestClient {
             }
         }
     }
-
-
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────
@@ -431,10 +453,22 @@ impl WindowHandler for TestClient {
             ("serial", serial.into()),
             ("w", configure.new_size.0.map(|v| v.get() as u64).into()),
             ("h", configure.new_size.1.map(|v| v.get() as u64).into()),
-            ("resizing", configure.state.contains(WindowState::RESIZING).into()),
-            ("maximized", configure.state.contains(WindowState::MAXIMIZED).into()),
-            ("fullscreen", configure.state.contains(WindowState::FULLSCREEN).into()),
-            ("activated", configure.state.contains(WindowState::ACTIVATED).into()),
+            (
+                "resizing",
+                configure.state.contains(WindowState::RESIZING).into(),
+            ),
+            (
+                "maximized",
+                configure.state.contains(WindowState::MAXIMIZED).into(),
+            ),
+            (
+                "fullscreen",
+                configure.state.contains(WindowState::FULLSCREEN).into(),
+            ),
+            (
+                "activated",
+                configure.state.contains(WindowState::ACTIVATED).into(),
+            ),
             ("first", first.into()),
         ]);
         self.draw(qh);
@@ -456,12 +490,17 @@ impl SeatHandler for TestClient {
         capability: Capability,
     ) {
         if capability == Capability::Keyboard && self.keyboard.is_none() {
-            let keyboard =
-                self.seat_state.get_keyboard(qh, &seat, None).expect("keyboard capability");
+            let keyboard = self
+                .seat_state
+                .get_keyboard(qh, &seat, None)
+                .expect("keyboard capability");
             self.keyboard = Some(keyboard);
         }
         if capability == Capability::Pointer && self.pointer.is_none() {
-            let pointer = self.seat_state.get_pointer(qh, &seat).expect("pointer capability");
+            let pointer = self
+                .seat_state
+                .get_pointer(qh, &seat)
+                .expect("pointer capability");
             self.pointer = Some(pointer);
         }
     }
@@ -534,7 +573,10 @@ impl KeyboardHandler for TestClient {
         ]);
         if let Some(expect) = &self.opts.expect {
             if self.got_keys.contains(expect.as_str()) {
-                log_kv(&[("ev", "expect_matched".into()), ("got", self.got_keys.clone().into())]);
+                log_kv(&[
+                    ("ev", "expect_matched".into()),
+                    ("got", self.got_keys.clone().into()),
+                ]);
                 self.exit = true;
             }
         }
@@ -636,7 +678,11 @@ impl PointerHandler for TestClient {
                         ("pressed", false.into()),
                     ]);
                 }
-                PointerEventKind::Axis { horizontal, vertical, .. } => {
+                PointerEventKind::Axis {
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
                     log_kv(&[
                         ("ev", "axis".into()),
                         ("v", vertical.absolute.into()),
@@ -688,7 +734,11 @@ fn run_until(
         }
         let _ = conn.flush();
         let fd = conn.backend().poll_fd().as_raw_fd();
-        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
         let ret = unsafe { libc::poll(&mut pfd, 1, 50) };
         if ret > 0 {
             if let Some(guard) = conn.prepare_read() {
@@ -721,8 +771,12 @@ fn main() {
     let cmd = args.first().cloned().unwrap_or_default();
     // Raw popup lifecycle tester has its own connection flow.
     if cmd == "popups" {
-        let cycles = opt_value(&args, "--cycles").and_then(|v| v.parse().ok()).unwrap_or(3);
-        let duration = opt_value(&args, "--duration").and_then(|v| v.parse().ok()).unwrap_or(8000);
+        let cycles = opt_value(&args, "--cycles")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+        let duration = opt_value(&args, "--duration")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8000);
         let hold = args.iter().any(|a| a == "--hold");
         let code = run_popups_opts(cycles, duration, hold);
         std::process::exit(code);
@@ -739,7 +793,9 @@ fn main() {
         };
         let mime = opt_value(&args, "--mime").unwrap_or_else(|| "text/plain".into());
         let payload = opt_value(&args, "--payload").unwrap_or_else(|| "veyra-dnd".into());
-        let duration = opt_value(&args, "--duration").and_then(|v| v.parse().ok()).unwrap_or(15000);
+        let duration = opt_value(&args, "--duration")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15000);
         let code = run_dnd(role, mime, payload, duration);
         std::process::exit(code);
     }
@@ -760,7 +816,9 @@ fn main() {
             .filter(|s| !s.is_empty())
             .collect();
         let payload = opt_value(&args, "--payload").unwrap_or_else(|| "veyra-clip".into());
-        let duration = opt_value(&args, "--duration").and_then(|v| v.parse().ok()).unwrap_or(10000);
+        let duration = opt_value(&args, "--duration")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10000);
         let code = run_clip(mode, mimes, payload, duration);
         std::process::exit(code);
     }

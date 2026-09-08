@@ -41,7 +41,9 @@ pub fn run_native(
     mut state: LookingGlass,
 ) -> Result<(), NativeError> {
     info!("Native backend stub — DRM/KMS rendering loop will be implemented in Group D");
-    info!("Input path consistency already established: all backends call same LookingGlass methods");
+    info!(
+        "Input path consistency already established: all backends call same LookingGlass methods"
+    );
     info!("  LookingGlass::handle_key() — keyboard input");
     info!("  LookingGlass::handle_pointer_move() — pointer motion");
     info!("  LookingGlass::handle_pointer_down/up() — button events");

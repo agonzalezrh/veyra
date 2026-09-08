@@ -27,10 +27,7 @@ impl DmabufManager {
         ];
         let global = state.create_global::<crate::compositor::LookingGlass>(display, formats);
 
-        DmabufManager {
-            state,
-            global,
-        }
+        DmabufManager { state, global }
     }
 }
 

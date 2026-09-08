@@ -55,10 +55,14 @@ pub trait FrameProducer {
     /// Optionally create an InputSink for this producer's content.
     /// Returns None if the producer doesn't support input routing.
     #[allow(dead_code)] // reserved API surface; not yet wired
-    fn create_input_sink(&mut self) -> Option<Box<dyn InputSink>> { None }
+    fn create_input_sink(&mut self) -> Option<Box<dyn InputSink>> {
+        None
+    }
     /// Report provider capabilities.
     #[allow(dead_code)] // reserved API surface; not yet wired
-    fn capabilities(&self) -> ProviderCapabilities { ProviderCapabilities::default() }
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::default()
+    }
 }
 
 /// An animated checkerboard that deliberately tests edge cases.
@@ -84,7 +88,14 @@ impl HostileCheckerboard {
         let w = 256u32;
         let h = 256u32;
         let pixels = Self::generate(w, h, 0);
-        let tex = renderer.import_memory(&pixels, Fourcc::Abgr8888, (w as i32, h as i32).into(), false).ok()?;
+        let tex = renderer
+            .import_memory(
+                &pixels,
+                Fourcc::Abgr8888,
+                (w as i32, h as i32).into(),
+                false,
+            )
+            .ok()?;
         Some(HostileCheckerboard {
             texture: tex,
             width: w,
@@ -131,11 +142,19 @@ impl StaticColor {
                 pixels.extend_from_slice(&[b, g, r, 255]);
             }
         }
-        let tex = renderer.import_memory(
-            &pixels, smithay::backend::allocator::Fourcc::Abgr8888,
-            (w as i32, h as i32).into(), false,
-        ).ok()?;
-        Some(StaticColor { texture: tex, width: w, height: h })
+        let tex = renderer
+            .import_memory(
+                &pixels,
+                smithay::backend::allocator::Fourcc::Abgr8888,
+                (w as i32, h as i32).into(),
+                false,
+            )
+            .ok()?;
+        Some(StaticColor {
+            texture: tex,
+            width: w,
+            height: h,
+        })
     }
 }
 
@@ -143,8 +162,12 @@ impl FrameProducer for StaticColor {
     fn update(&mut self, _renderer: &mut GlesRenderer) -> FrameResult {
         FrameResult::Unchanged
     }
-    fn texture(&self) -> &GlesTexture { &self.texture }
-    fn size(&self) -> (u32, u32) { (self.width, self.height) }
+    fn texture(&self) -> &GlesTexture {
+        &self.texture
+    }
+    fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
 }
 
 impl FrameProducer for HostileCheckerboard {
@@ -184,7 +207,10 @@ impl FrameProducer for HostileCheckerboard {
             self.height = new_h;
             let pixels = Self::generate(new_w, new_h, self.frame_count / 3);
             if let Ok(tex) = renderer.import_memory(
-                &pixels, Fourcc::Abgr8888, (new_w as i32, new_h as i32).into(), false,
+                &pixels,
+                Fourcc::Abgr8888,
+                (new_w as i32, new_h as i32).into(),
+                false,
             ) {
                 self.texture = tex;
                 return FrameResult::Resized(new_w, new_h);

@@ -2,8 +2,7 @@ use smithay::input::pointer::PointerHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::wayland::pointer_constraints::{
-    with_pointer_constraint, PointerConstraintsHandler, PointerConstraintsState,
-    PointerConstraint,
+    with_pointer_constraint, PointerConstraint, PointerConstraintsHandler, PointerConstraintsState,
 };
 use tracing::info;
 
@@ -60,7 +59,10 @@ pub fn constrain_to_region(
     proposed: (f64, f64),
     origin: (f64, f64),
     content_size: (f64, f64),
-    region_rects: &[(smithay::wayland::compositor::RectangleKind, smithay::utils::Rectangle<i32, smithay::utils::Logical>)],
+    region_rects: &[(
+        smithay::wayland::compositor::RectangleKind,
+        smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    )],
 ) -> (f64, f64) {
     // Content bounds in compositor space (origin is below the title bar).
     let mut min_x = origin.0;
@@ -72,9 +74,7 @@ pub fn constrain_to_region(
     // compositor space).
     let add_rects: Vec<_> = region_rects
         .iter()
-        .filter(|(kind, _)| {
-            matches!(kind, smithay::wayland::compositor::RectangleKind::Add)
-        })
+        .filter(|(kind, _)| matches!(kind, smithay::wayland::compositor::RectangleKind::Add))
         .map(|(_, r)| r)
         .collect();
     if !add_rects.is_empty() {
@@ -151,7 +151,10 @@ impl PointerConstraintsHandler for LookingGlass {
 mod tests {
     use super::constrain_to_region;
     use smithay::utils::{Point, Rectangle, Size};
-    type R = (smithay::wayland::compositor::RectangleKind, Rectangle<i32, smithay::utils::Logical>);
+    type R = (
+        smithay::wayland::compositor::RectangleKind,
+        Rectangle<i32, smithay::utils::Logical>,
+    );
 
     fn add(x: i32, y: i32, w: i32, h: i32) -> R {
         (

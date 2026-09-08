@@ -5,30 +5,26 @@ use smithay::backend::renderer::ImportAll;
 use smithay::backend::SwapBuffersError;
 
 use crate::backend::PresentationBackend;
+use smithay::backend::input::{KeyState, Keycode};
 use smithay::delegate_compositor;
-use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::delegate_data_device;
+use smithay::delegate_dmabuf;
 use smithay::delegate_output;
+use smithay::delegate_pointer_constraints;
 use smithay::delegate_primary_selection;
+use smithay::delegate_relative_pointer;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_xdg_shell;
-use smithay::backend::input::{KeyState, Keycode};
 use smithay::input::keyboard::{FilterResult, KeyboardHandle, LedState};
 use smithay::input::pointer::{ButtonEvent, CursorImageStatus, MotionEvent, PointerHandle};
 use smithay::input::Seat;
 use smithay::input::SeatHandler;
 use smithay::input::SeatState;
-use smithay::wayland::selection::data_device::{ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler};
-use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
-use smithay::wayland::selection::primary_selection::{PrimarySelectionHandler, PrimarySelectionState};
-use smithay::wayland::output::OutputHandler;
-use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
-use smithay::delegate_dmabuf;
-use smithay::delegate_pointer_constraints;
-use smithay::delegate_relative_pointer;
+use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Client;
 use smithay::reexports::wayland_server::DisplayHandle;
@@ -41,13 +37,21 @@ use smithay::wayland::compositor::CompositorClientState;
 use smithay::wayland::compositor::CompositorHandler;
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::compositor::SurfaceAttributes;
+use smithay::wayland::output::OutputHandler;
+use smithay::wayland::selection::data_device::{
+    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+};
+use smithay::wayland::selection::primary_selection::{
+    PrimarySelectionHandler, PrimarySelectionState,
+};
+use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
 use smithay::wayland::shell::xdg::Configure;
 use smithay::wayland::shell::xdg::PositionerState;
+use smithay::wayland::shell::xdg::SurfaceCachedState;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 use smithay::wayland::shell::xdg::XdgShellHandler;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
-use smithay::wayland::shell::xdg::SurfaceCachedState;
 use smithay::wayland::shm::ShmHandler;
 use smithay::wayland::shm::ShmState;
 use std::collections::HashMap;
@@ -68,14 +72,14 @@ use crate::launcher::Launcher;
 use crate::layout;
 use crate::navigation::{EscapeAction, NavigationModel};
 use crate::perf::PerfStats;
+use crate::producer::{FrameProducer, FrameResult};
 use crate::recovery::Recovery;
+use crate::renderer;
+use crate::scene::{DamageKind, Scene, Visual, VisualContent, VisualId};
 use crate::scheduler::RenderScheduler;
 use crate::session::Session;
 use crate::shelf::SpatialShelf;
 use crate::workspace::WorkspaceManager;
-use crate::producer::{FrameProducer, FrameResult};
-use crate::scene::{DamageKind, Scene, Visual, VisualContent, VisualId};
-use crate::renderer;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
@@ -90,7 +94,8 @@ use tracing::warn;
 static SELECTION_OWNER_CLIPBOARD: Mutex<Option<Client>> = Mutex::new(None);
 static SELECTION_OWNER_PRIMARY: Mutex<Option<Client>> = Mutex::new(None);
 static KBD_FOCUS_CLIENT: Mutex<Option<Client>> = Mutex::new(None);
-static SELECTION_REFRESH_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SELECTION_REFRESH_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Debug, Default)]
 pub struct ClientState {
@@ -124,7 +129,10 @@ impl ClientData for ClientState {
             .is_some();
         if was_clipboard || was_primary {
             SELECTION_REFRESH_PENDING.store(true, std::sync::atomic::Ordering::SeqCst);
-            info!(?client_id, "selection owner disconnected; refresh scheduled");
+            info!(
+                ?client_id,
+                "selection owner disconnected; refresh scheduled"
+            );
         }
     }
 }
@@ -354,7 +362,11 @@ pub struct LookingGlass {
 
 /// Result of routing a pointer event to the selected visual's content.
 #[derive(Clone, Copy, PartialEq)]
-enum ContentRouting { Routed, TitleBarHit, NoTarget }
+enum ContentRouting {
+    Routed,
+    TitleBarHit,
+    NoTarget,
+}
 
 /// Monotonic milliseconds timestamp for input events (R10).
 ///
@@ -432,7 +444,10 @@ impl LookingGlass {
         // R11: the handle is compositor state — without it the output's
         // advertised mode could never follow the actual backend size.
         output.change_current_state(
-            Some(Mode { size: (1280, 720).into(), refresh: 60000 }),
+            Some(Mode {
+                size: (1280, 720).into(),
+                refresh: 60000,
+            }),
             None,
             Some(Scale::Integer(1)),
             None,
@@ -498,7 +513,9 @@ impl LookingGlass {
             session: Session::new(config.clone()),
             recovery: Recovery::new(),
             scheduler: RenderScheduler::new(),
-            pointer_constraints: crate::pointer_constraints::PointerConstraints::new(display_handle),
+            pointer_constraints: crate::pointer_constraints::PointerConstraints::new(
+                display_handle,
+            ),
             closed_windows: crate::closed::ClosedWindowHistory::new(10),
             pending_reopen: None,
             client_resizes: crate::client_resize::ClientResizeCoordinator::default(),
@@ -506,7 +523,10 @@ impl LookingGlass {
             fullscreen: crate::fullscreen::FullscreenCoordinator::default(),
             resize_session: None,
             dnd_active: false,
-            relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<LookingGlass>(display_handle),
+            relative_pointer_state:
+                smithay::wayland::relative_pointer::RelativePointerManagerState::new::<LookingGlass>(
+                    display_handle,
+                ),
             dmabuf_manager: crate::dmabuf::DmabufManager::new(display_handle),
         }
     }
@@ -570,10 +590,16 @@ impl LookingGlass {
                 self.saved_state = Some(state);
 
                 // Validate version mismatch
-                if self.saved_state.as_ref().is_some_and(|s| s.version > crate::persist::CURRENT_VERSION) {
-                    warn!("saved state version {} > current version {}, attempt load",
+                if self
+                    .saved_state
+                    .as_ref()
+                    .is_some_and(|s| s.version > crate::persist::CURRENT_VERSION)
+                {
+                    warn!(
+                        "saved state version {} > current version {}, attempt load",
                         self.saved_state.as_ref().unwrap().version,
-                        crate::persist::CURRENT_VERSION);
+                        crate::persist::CURRENT_VERSION
+                    );
                 }
             }
             Err(e) => {
@@ -667,9 +693,12 @@ impl LookingGlass {
         last_size: Option<(i32, i32)>,
     ) -> Vec<smithay::utils::Rectangle<i32, smithay::utils::Buffer>> {
         use smithay::utils::{Point, Rectangle, Size};
-        let Some((w, h)) = last_size else { return Vec::new() };
+        let Some((w, h)) = last_size else {
+            return Vec::new();
+        };
         let buf = Rectangle::new(Point::new(0, 0), Size::new(w, h));
-        damage.into_iter()
+        damage
+            .into_iter()
             .filter_map(|r| r.intersection(buf))
             .filter(|r| r.size.w > 0 && r.size.h > 0)
             .collect()
@@ -684,11 +713,15 @@ impl LookingGlass {
 
         // Find the lifecycle state for this surface
         let lifecycle = if is_popup {
-            self.popups.iter().find(|p| p.wl_surface == *surface)
+            self.popups
+                .iter()
+                .find(|p| p.wl_surface == *surface)
                 .map(|p| p.lifecycle)
                 .unwrap_or(SurfaceLifecycle::Destroyed)
         } else {
-            self.toplevels.iter().find(|t| t.toplevel.wl_surface() == surface)
+            self.toplevels
+                .iter()
+                .find(|t| t.toplevel.wl_surface() == surface)
                 .map(|t| t.lifecycle)
                 .unwrap_or(SurfaceLifecycle::Destroyed)
         };
@@ -708,16 +741,20 @@ impl LookingGlass {
                 Some(BufferAssignment::NewBuffer(b)) => Some(b.clone()),
                 _ => None,
             };
-            let dmg = attrs.damage.iter().map(|d| match d {
-                smithay::wayland::compositor::Damage::Buffer(r) => *r,
-                smithay::wayland::compositor::Damage::Surface(r) => {
-                    let bs = attrs.buffer_scale.max(1);
-                    smithay::utils::Rectangle::new(
-                        smithay::utils::Point::new(r.loc.x * bs, r.loc.y * bs),
-                        smithay::utils::Size::new(r.size.w * bs, r.size.h * bs),
-                    )
-                }
-            }).collect();
+            let dmg = attrs
+                .damage
+                .iter()
+                .map(|d| match d {
+                    smithay::wayland::compositor::Damage::Buffer(r) => *r,
+                    smithay::wayland::compositor::Damage::Surface(r) => {
+                        let bs = attrs.buffer_scale.max(1);
+                        smithay::utils::Rectangle::new(
+                            smithay::utils::Point::new(r.loc.x * bs, r.loc.y * bs),
+                            smithay::utils::Size::new(r.size.w * bs, r.size.h * bs),
+                        )
+                    }
+                })
+                .collect();
             (buf, dmg)
         });
         let Some(wl_buffer) = wl_buffer else { return };
@@ -726,8 +763,8 @@ impl LookingGlass {
         // the CURRENT buffer's dimensions (not the last committed size —
         // on a shrink 464→432 the stale bound let a 464-tall damage
         // upload into the 432-tall texture: GL_INVALID_VALUE spam).
-        let buf_size = smithay::backend::renderer::buffer_dimensions(&wl_buffer)
-            .map(|s| (s.w, s.h));
+        let buf_size =
+            smithay::backend::renderer::buffer_dimensions(&wl_buffer).map(|s| (s.w, s.h));
         let damage = Self::sanitize_damage(damage, buf_size);
 
         if let Some(backend) = self.backend.as_mut() {
@@ -744,7 +781,9 @@ impl LookingGlass {
 
                         if is_popup {
                             // ── Popup commit ──
-                            let popup_idx = self.popups.iter()
+                            let popup_idx = self
+                                .popups
+                                .iter()
                                 .position(|p| p.wl_surface == *surface)
                                 .unwrap();
                             self.popups[popup_idx].lifecycle = SurfaceLifecycle::Mapped;
@@ -754,11 +793,18 @@ impl LookingGlass {
                                 if let Some(vid) = existing_vid {
                                     // Compute position before mutable borrow of scene
                                     let new_pos = self.popups[popup_idx].positioner.get_geometry();
-                                    let parent_pos = self.popups[popup_idx].parent_toplevel_vid
+                                    let parent_pos = self.popups[popup_idx]
+                                        .parent_toplevel_vid
                                         .and_then(|pvid| {
-                                            self.scene.visuals.iter().find(|v| v.id == pvid).map(|parent| {
-                                                (parent.transform.position, parent.total_width(), parent.total_height())
-                                            })
+                                            self.scene.visuals.iter().find(|v| v.id == pvid).map(
+                                                |parent| {
+                                                    (
+                                                        parent.transform.position,
+                                                        parent.total_width(),
+                                                        parent.total_height(),
+                                                    )
+                                                },
+                                            )
                                         });
                                     if let Some(visual) = self.scene.get_mut(vid) {
                                         if let Some(dst) = visual.texture_mut() {
@@ -774,9 +820,12 @@ impl LookingGlass {
                                         if let Some((_p_pos, p_total_w, p_total_h)) = parent_pos {
                                             let popup_w = new_pos.size.w as f32;
                                             let popup_h = new_pos.size.h as f32;
-                                            let local_x = new_pos.loc.x as f32 + popup_w * 0.5 - p_total_w * 0.5;
-                                            let local_y = -(new_pos.loc.y as f32 + popup_h * 0.5 - p_total_h * 0.5);
-                                            visual.transform.position = cgmath::Vector3::new(local_x, local_y, 10.0);
+                                            let local_x = new_pos.loc.x as f32 + popup_w * 0.5
+                                                - p_total_w * 0.5;
+                                            let local_y = -(new_pos.loc.y as f32 + popup_h * 0.5
+                                                - p_total_h * 0.5);
+                                            visual.transform.position =
+                                                cgmath::Vector3::new(local_x, local_y, 10.0);
                                         }
                                         self.workspace_manager.active_mut().add(vid);
                                         info!(?vid, "popup remapped");
@@ -788,11 +837,19 @@ impl LookingGlass {
                                 // Compute popup position from xdg_positioner before creating visual
                                 let popup_geometry = positioner.get_geometry();
                                 // Find parent position info before mutable borrow
-                                let parent_info = parent_vid.and_then(|pvid| {
-                                    self.scene.visuals.iter().find(|v| v.id == pvid).map(|parent| {
-                                        (parent.transform.position, parent.total_width(), parent.total_height(), pvid)
-                                    })
-                                });
+                                let parent_info =
+                                    parent_vid.and_then(|pvid| {
+                                        self.scene.visuals.iter().find(|v| v.id == pvid).map(
+                                            |parent| {
+                                                (
+                                                    parent.transform.position,
+                                                    parent.total_width(),
+                                                    parent.total_height(),
+                                                    pvid,
+                                                )
+                                            },
+                                        )
+                                    });
                                 let mut visual = Visual::new(
                                     VisualContent::WaylandSurface(texture),
                                     smithay::utils::Rectangle::new(
@@ -812,9 +869,12 @@ impl LookingGlass {
                                     // baked the parent's world position into the
                                     // local transform, double-applying it for any
                                     // parent not at the origin.)
-                                    let local_x = popup_geometry.loc.x as f32 + popup_w * 0.5 - p_total_w * 0.5;
-                                    let local_y = -(popup_geometry.loc.y as f32 + popup_h * 0.5 - p_total_h * 0.5);
-                                    visual.transform.position = cgmath::Vector3::new(local_x, local_y, 10.0);
+                                    let local_x = popup_geometry.loc.x as f32 + popup_w * 0.5
+                                        - p_total_w * 0.5;
+                                    let local_y = -(popup_geometry.loc.y as f32 + popup_h * 0.5
+                                        - p_total_h * 0.5);
+                                    visual.transform.position =
+                                        cgmath::Vector3::new(local_x, local_y, 10.0);
                                     visual.parent = Some(pvid);
                                 }
                                 let visual_id = visual.id;
@@ -837,7 +897,9 @@ impl LookingGlass {
                                 // J2 observability: log the parent-local offset
                                 // and the derived world position (parent
                                 // transform applied) for harness assertions.
-                                let (local_dbg, world_dbg) = self.scene.visuals
+                                let (local_dbg, world_dbg) = self
+                                    .scene
+                                    .visuals
                                     .iter()
                                     .find(|v| v.id == visual_id)
                                     .map(|v| {
@@ -853,7 +915,9 @@ impl LookingGlass {
                             }
                         } else {
                             // ── Toplevel commit ──
-                            let idx = self.toplevels.iter()
+                            let idx = self
+                                .toplevels
+                                .iter()
                                 .position(|t| t.toplevel.wl_surface() == surface)
                                 .unwrap();
                             self.toplevels[idx].lifecycle = SurfaceLifecycle::Mapped;
@@ -893,7 +957,11 @@ impl LookingGlass {
                                 // Pending reopen (I1): reattach saved transform
                                 // when the relaunched app's toplevel maps.
                                 let mut reopened: Option<crate::closed::PendingReopen> = None;
-                                if self.pending_reopen.as_ref().is_some_and(|pr| pr.app_id == *app_id) {
+                                if self
+                                    .pending_reopen
+                                    .as_ref()
+                                    .is_some_and(|pr| pr.app_id == *app_id)
+                                {
                                     reopened = self.pending_reopen.take();
                                     if let Some(pr) = &reopened {
                                         visual.transform = pr.transform.clone();
@@ -932,7 +1000,8 @@ impl LookingGlass {
                                         &ws_eligible,
                                     );
                                     visual.transform.position = pos;
-                                    visual.transform.rotation = cgmath::Quaternion::from_angle_y(Deg(angle_y));
+                                    visual.transform.rotation =
+                                        cgmath::Quaternion::from_angle_y(Deg(angle_y));
                                 }
                                 let visual_id = visual.id;
                                 let map_pos = visual.transform.position;
@@ -957,30 +1026,40 @@ impl LookingGlass {
                                 // R3: a restored window returns to its SAVED
                                 // workspace, not the active one.
                                 if let Some(ws_idx) = restored {
-                                    if ws_idx < self.workspace_manager.len() && ws_idx != self.workspace_manager.active_id() {
+                                    if ws_idx < self.workspace_manager.len()
+                                        && ws_idx != self.workspace_manager.active_id()
+                                    {
                                         if let Some(ws) = self.workspace_manager.get_mut(ws_idx) {
                                             ws.add(visual_id);
                                         }
                                         self.workspace_manager.active_mut().remove(visual_id);
-                                        info!(?visual_id, workspace = ws_idx, "restored window placed in saved workspace");
+                                        info!(
+                                            ?visual_id,
+                                            workspace = ws_idx,
+                                            "restored window placed in saved workspace"
+                                        );
                                     }
                                 }
                                 // Reopen targets a specific workspace: move the
                                 // visual there if it differs from the active one.
                                 if let Some(ws_idx) = reopen_workspace {
-                                    if ws_idx < self.workspace_manager.len() && ws_idx != self.workspace_manager.active_id() {
+                                    if ws_idx < self.workspace_manager.len()
+                                        && ws_idx != self.workspace_manager.active_id()
+                                    {
                                         if let Some(ws) = self.workspace_manager.get_mut(ws_idx) {
                                             ws.add(visual_id);
                                         }
                                         self.workspace_manager.active_mut().remove(visual_id);
-                                        info!(?visual_id, workspace = ws_idx, "reopened window restored to workspace");
+                                        info!(
+                                            ?visual_id,
+                                            workspace = ws_idx,
+                                            "reopened window restored to workspace"
+                                        );
                                     }
                                 }
                                 self.scene.focus(Some(visual_id));
-                                self.app_switcher.register_visual(
-                                    &self.toplevels[idx].app_id,
-                                    visual_id,
-                                );
+                                self.app_switcher
+                                    .register_visual(&self.toplevels[idx].app_id, visual_id);
                                 // J1: a new window takes focus (GNOME
                                 // policy) — this also seeds the MRU.
                                 self.set_keyboard_focus(Some(visual_id));
@@ -991,12 +1070,18 @@ impl LookingGlass {
                                        total_h = map_total_h,
                                        scale = ?map_scale,
                                        "surface mapped");
-                                crate::debug_journal::event("map", &[
-                                    ("vid", crate::debug_journal::d(visual_id)),
-                                    ("app", crate::debug_journal::s(&self.toplevels[idx].app_id)),
-                                    ("pos", format!("{:?}", map_pos)),
-                                    ("size", format!("[{},{}]", map_total_w, map_total_h)),
-                                ]);
+                                crate::debug_journal::event(
+                                    "map",
+                                    &[
+                                        ("vid", crate::debug_journal::d(visual_id)),
+                                        (
+                                            "app",
+                                            crate::debug_journal::s(&self.toplevels[idx].app_id),
+                                        ),
+                                        ("pos", format!("{:?}", map_pos)),
+                                        ("size", format!("[{},{}]", map_total_w, map_total_h)),
+                                    ],
+                                );
                                 self.debug_snapshot();
                                 // G-B1: a freshly mapped client may have
                                 // bound its data device just now — smithay
@@ -1018,27 +1103,39 @@ impl LookingGlass {
                         // Resolve any outstanding geometry request (I3a).
                         // A mismatched buffer means the client overrode us —
                         // committed geometry always wins.
-                        let outcome = self.client_resizes.note_commit(vid, (tex_size.w, tex_size.h));
+                        let outcome = self
+                            .client_resizes
+                            .note_commit(vid, (tex_size.w, tex_size.h));
                         match outcome {
                             crate::client_resize::CommitOutcome::Fulfilled => {
-                                info!(?vid, w = tex_size.w, h = tex_size.h, "client resize fulfilled");
+                                info!(
+                                    ?vid,
+                                    w = tex_size.w,
+                                    h = tex_size.h,
+                                    "client resize fulfilled"
+                                );
                                 // Client pacing (I3b): continue with the
                                 // latest desired size, if the session moved on.
                                 self.flush_resize_desired(vid);
                             }
                             crate::client_resize::CommitOutcome::ClientOverride => {
-                                info!(?vid, w = tex_size.w, h = tex_size.h, "client overrode requested size; adopting committed geometry");
+                                info!(
+                                    ?vid,
+                                    w = tex_size.w,
+                                    h = tex_size.h,
+                                    "client overrode requested size; adopting committed geometry"
+                                );
                             }
                             crate::client_resize::CommitOutcome::NotResizing => {}
                         }
-        let committed = (tex_size.w, tex_size.h);
-        // I4: a committed buffer completes any outstanding
-        // maximize/unmaximize transition for this surface.
-        self.complete_maximize_intent(vid, committed);
-        self.flush_deferred_maximize();
-        // I7: same completion discipline for fullscreen.
-        self.complete_fullscreen_intent(vid, committed);
-        self.flush_fullscreen_deferred();
+                        let committed = (tex_size.w, tex_size.h);
+                        // I4: a committed buffer completes any outstanding
+                        // maximize/unmaximize transition for this surface.
+                        self.complete_maximize_intent(vid, committed);
+                        self.flush_deferred_maximize();
+                        // I7: same completion discipline for fullscreen.
+                        self.complete_fullscreen_intent(vid, committed);
+                        self.flush_fullscreen_deferred();
                         if let Some(visual) = self.scene.get_mut(vid) {
                             if let Some(dst) = visual.texture_mut() {
                                 *dst = texture;
@@ -1053,7 +1150,12 @@ impl LookingGlass {
                                     smithay::utils::Point::new(0, 0),
                                     smithay::utils::Size::new(tex_size.w, tex_size.h),
                                 );
-                                info!(?vid, w = tex_size.w, h = tex_size.h, "visual geometry adopted from client buffer");
+                                info!(
+                                    ?vid,
+                                    w = tex_size.w,
+                                    h = tex_size.h,
+                                    "visual geometry adopted from client buffer"
+                                );
                             }
                             visual.damage = DamageKind::Content;
                         }
@@ -1076,7 +1178,9 @@ impl LookingGlass {
         use smithay::backend::allocator::Fourcc;
         use smithay::backend::renderer::ImportMem;
 
-        let Some(backend) = self.backend.as_mut() else { return };
+        let Some(backend) = self.backend.as_mut() else {
+            return;
+        };
         let renderer = backend.renderer();
         if let Ok(texture) = renderer.import_memory(
             &pixels,
@@ -1104,10 +1208,19 @@ impl LookingGlass {
         info!(?vid, "input sink registered");
     }
 
-    pub fn add_benchmark_visual(&mut self, mut producer: Box<dyn FrameProducer>, index: usize, total: usize) {
-        let Some(backend) = self.backend.as_mut() else { return };
+    pub fn add_benchmark_visual(
+        &mut self,
+        mut producer: Box<dyn FrameProducer>,
+        index: usize,
+        total: usize,
+    ) {
+        let Some(backend) = self.backend.as_mut() else {
+            return;
+        };
         let renderer = backend.renderer();
-        if !matches!(producer.update(renderer), FrameResult::Unchanged) { return; }
+        if !matches!(producer.update(renderer), FrameResult::Unchanged) {
+            return;
+        }
         let (w, h) = producer.size();
         let cols = (total as f32).sqrt().ceil() as i32;
         let spacing = 160;
@@ -1140,10 +1253,15 @@ impl LookingGlass {
     pub fn add_producer(&mut self, mut producer: Box<dyn FrameProducer>) -> Option<VisualId> {
         let renderer = self.backend.as_mut()?.renderer();
         let result = producer.update(renderer);
-        let is_ok = matches!(result, FrameResult::Updated | FrameResult::Unchanged | FrameResult::Resized(_, _));
+        let is_ok = matches!(
+            result,
+            FrameResult::Updated | FrameResult::Unchanged | FrameResult::Resized(_, _)
+        );
         if !is_ok {
             match result {
-                FrameResult::Error(msg) => warn!(?msg, "frame producer not added: initial update failed"),
+                FrameResult::Error(msg) => {
+                    warn!(?msg, "frame producer not added: initial update failed")
+                }
                 FrameResult::Finished => info!("frame producer finished before registration"),
                 _ => {}
             }
@@ -1160,7 +1278,13 @@ impl LookingGlass {
             ),
         );
         let ws_eligible = self.workspace_manager.active().visual_ids.clone();
-        visual.transform.position = layout::place_new_visual(w as f32, h as f32, &self.scene, self.visible_bounds(), &ws_eligible);
+        visual.transform.position = layout::place_new_visual(
+            w as f32,
+            h as f32,
+            &self.scene,
+            self.visible_bounds(),
+            &ws_eligible,
+        );
         let vid = visual.id;
 
         // Try to create an InputSink from the producer before moving it
@@ -1236,8 +1360,13 @@ impl LookingGlass {
     /// backend) and on every resize; smithay propagates mode events to
     /// connected clients automatically.
     pub fn sync_output_mode(&mut self, w: i32, h: i32, refresh: i32) {
-        let Some(output) = self.output.clone() else { return };
-        let mode = Mode { size: (w, h).into(), refresh };
+        let Some(output) = self.output.clone() else {
+            return;
+        };
+        let mode = Mode {
+            size: (w, h).into(),
+            refresh,
+        };
         let current = output.current_mode().map(|m| m.size);
         if current == Some((w, h).into()) {
             return;
@@ -1342,7 +1471,10 @@ impl LookingGlass {
                 }
             }
         }
-        self.perf.record_stage(PipelineStage::TexCopy, t_tex_start.elapsed().as_nanos() as u64);
+        self.perf.record_stage(
+            PipelineStage::TexCopy,
+            t_tex_start.elapsed().as_nanos() as u64,
+        );
 
         // Step 3: Apply layout
         let (world_w, world_h) = self.window_size;
@@ -1382,8 +1514,10 @@ impl LookingGlass {
             let t = (self.perf.frame_count as f32) * 0.003;
             self.camera.yaw = t.cos() * 0.8;
             self.camera.pitch = (t * 0.5).sin() * 0.3 + 0.2;
-        } else if !self.spatial_cam_adapted && self.spatial_cam_pose.is_none()
-                  && self.focus_manager.transition.is_none() {
+        } else if !self.spatial_cam_adapted
+            && self.spatial_cam_pose.is_none()
+            && self.focus_manager.transition.is_none()
+        {
             // One-shot frustum fit: with fov_y=45° and aspect w/h, a
             // camera at distance 1.2071*h sees exactly the ortho view
             // rectangle (±w/2, ±h/2) on the z=0 plane. Camera::new's
@@ -1397,7 +1531,9 @@ impl LookingGlass {
             info!(distance = d, "spatial camera fitted to view");
         }
         // Focus/overview mode interpolates the camera toward the target
-        let render_camera = self.focus_manager.interpolated_camera(&self.camera, &self.scene);
+        let render_camera = self
+            .focus_manager
+            .interpolated_camera(&self.camera, &self.scene);
         let (w, h) = self.window_size;
         let view = render_camera.view_matrix();
         let proj = if self.spatial_mode {
@@ -1411,19 +1547,22 @@ impl LookingGlass {
             _ => Some(self.workspace_manager.active().visual_ids.as_slice()),
         };
         // Keep animating if focus/overview transition is active
-        if self.focus_manager.transition.is_some()
-            || self.workspace_manager.active().auto_orbit
-        {
+        if self.focus_manager.transition.is_some() || self.workspace_manager.active().auto_orbit {
             self.scheduler.set_animating(true);
         } else {
             self.scheduler.set_animating(false);
         }
-        let context_menu = if self.context_menu.visible { Some(&self.context_menu) } else { None };
+        let context_menu = if self.context_menu.visible {
+            Some(&self.context_menu)
+        } else {
+            None
+        };
         // Bind the EGL surface before rendering (makes rendering context current)
         if let Err(e) = back.begin_frame() {
             error!(?e, "begin_frame failed");
             self.scheduler.clear();
-            self.perf.record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
+            self.perf
+                .record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
             self.perf.record_frame();
             return;
         }
@@ -1431,7 +1570,15 @@ impl LookingGlass {
             context_menu,
             taskbar: Some(&taskbar),
         };
-        let context_lost = match renderer::render_scene(back, &self.scene, &view, &proj, &mut self.perf, ws_visible, &overlays) {
+        let context_lost = match renderer::render_scene(
+            back,
+            &self.scene,
+            &view,
+            &proj,
+            &mut self.perf,
+            ws_visible,
+            &overlays,
+        ) {
             Err(SwapBuffersError::ContextLost(e)) => {
                 error!(?e, "Context lost");
                 true
@@ -1441,7 +1588,8 @@ impl LookingGlass {
         if context_lost {
             self.backend = None;
             self.scheduler.clear();
-            self.perf.record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
+            self.perf
+                .record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
             self.perf.record_frame();
             return;
         }
@@ -1460,7 +1608,8 @@ impl LookingGlass {
                 error!(?e, "Context lost on finish_frame");
                 self.backend = None;
                 self.scheduler.clear();
-                self.perf.record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
+                self.perf
+                    .record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
                 self.perf.record_frame();
                 return;
             }
@@ -1474,7 +1623,9 @@ impl LookingGlass {
         // and never render their initial content.
         let time = now_ms();
         for toplevel in &self.toplevels {
-            if toplevel.lifecycle == SurfaceLifecycle::Mapped || toplevel.lifecycle == SurfaceLifecycle::Configured {
+            if toplevel.lifecycle == SurfaceLifecycle::Mapped
+                || toplevel.lifecycle == SurfaceLifecycle::Configured
+            {
                 let surface = toplevel.toplevel.wl_surface();
                 with_states(surface, |states| {
                     let mut attrs = states.cached_state.get::<SurfaceAttributes>();
@@ -1496,7 +1647,8 @@ impl LookingGlass {
 
         self.scene.clear_damage();
 
-        self.perf.record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
+        self.perf
+            .record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
         self.perf.record_frame();
     }
 
@@ -1552,7 +1704,9 @@ impl LookingGlass {
     /// inactive — an unfocused client must not affect global pointer
     /// behavior (new_constraint only activates when already focused).
     pub fn activate_constraints_for_focus(&mut self, surface: &WlSurface) {
-        let Some(ph) = self.pointer_handle.clone() else { return };
+        let Some(ph) = self.pointer_handle.clone() else {
+            return;
+        };
         smithay::wayland::pointer_constraints::with_pointer_constraint(
             surface,
             &ph,
@@ -1585,9 +1739,9 @@ impl LookingGlass {
         // Unlock pointer on focus change (unless the same visual)
         if self.pointer_constraints.pointer_locked {
             let locked_surface = self.pointer_constraints.locked_surface.clone();
-            let is_same_surface = vid.and_then(|v| self.wayland_surfaces.get(&v)).is_some_and(|s| {
-                locked_surface.as_ref() == Some(s)
-            });
+            let is_same_surface = vid
+                .and_then(|v| self.wayland_surfaces.get(&v))
+                .is_some_and(|s| locked_surface.as_ref() == Some(s));
             if !is_same_surface {
                 self.unlock_pointer();
             }
@@ -1603,10 +1757,13 @@ impl LookingGlass {
             if self.toplevels.iter().any(|t| t.visual_id == Some(vid)) {
                 self.focus_history.touch(vid);
                 info!(?vid, order = ?self.focus_history.order(), "focus history updated");
-                crate::debug_journal::event("focus", &[
-                    ("vid", crate::debug_journal::d(vid)),
-                    ("mru", crate::debug_journal::d(self.focus_history.order())),
-                ]);
+                crate::debug_journal::event(
+                    "focus",
+                    &[
+                        ("vid", crate::debug_journal::d(vid)),
+                        ("mru", crate::debug_journal::d(self.focus_history.order())),
+                    ],
+                );
             }
         }
 
@@ -1644,25 +1801,36 @@ impl LookingGlass {
         if let Some(ref seat) = self.seat {
             let dh = &self.display_handle;
             smithay::wayland::selection::data_device::set_data_device_focus::<Self>(dh, seat, None);
-            smithay::wayland::selection::primary_selection::set_primary_focus::<Self>(dh, seat, None);
-            smithay::wayland::selection::data_device::set_data_device_focus::<Self>(dh, seat, kbd.clone());
-            smithay::wayland::selection::primary_selection::set_primary_focus::<Self>(dh, seat, kbd);
+            smithay::wayland::selection::primary_selection::set_primary_focus::<Self>(
+                dh, seat, None,
+            );
+            smithay::wayland::selection::data_device::set_data_device_focus::<Self>(
+                dh,
+                seat,
+                kbd.clone(),
+            );
+            smithay::wayland::selection::primary_selection::set_primary_focus::<Self>(
+                dh, seat, kbd,
+            );
             info!("selection state refreshed after owner disconnect");
         }
     }
 
     fn update_data_device_focus(&mut self, vid: Option<VisualId>) {
-        let client = vid.and_then(|vid| {
-            self.wayland_surfaces.get(&vid)
-                .and_then(Resource::client)
-        });
+        let client = vid.and_then(|vid| self.wayland_surfaces.get(&vid).and_then(Resource::client));
         // G-B1: publish the keyboard-focus client for the selection
         // disconnect cleanup (it restores focus after the toggle).
         *KBD_FOCUS_CLIENT.lock().unwrap() = client.clone();
         if let Some(ref seat) = self.seat {
             let dh = &self.display_handle;
-            smithay::wayland::selection::data_device::set_data_device_focus::<Self>(dh, seat, client.clone());
-            smithay::wayland::selection::primary_selection::set_primary_focus::<Self>(dh, seat, client);
+            smithay::wayland::selection::data_device::set_data_device_focus::<Self>(
+                dh,
+                seat,
+                client.clone(),
+            );
+            smithay::wayland::selection::primary_selection::set_primary_focus::<Self>(
+                dh, seat, client,
+            );
         }
     }
 
@@ -1736,7 +1904,11 @@ impl LookingGlass {
                 .find(|t| t.visual_id == Some(vid))
                 .map(|t| {
                     let title = t.title.trim();
-                    if title.is_empty() { t.app_id.clone() } else { title.to_string() }
+                    if title.is_empty() {
+                        t.app_id.clone()
+                    } else {
+                        title.to_string()
+                    }
                 })
                 .unwrap_or_else(|| "window".to_string())
         };
@@ -1780,7 +1952,9 @@ impl LookingGlass {
     fn handle_taskbar_click(&mut self, x: f64, y: f64) -> bool {
         let (_, h) = self.window_size;
         let layout = self.build_taskbar();
-        let Some(item) = layout.hit(h, x, y) else { return false };
+        let Some(item) = layout.hit(h, x, y) else {
+            return false;
+        };
         match item.hit.clone() {
             crate::shell::TaskbarHit::Window(vid) => {
                 // GNOME semantics: a taskbar click ALWAYS activates (or
@@ -1790,13 +1964,19 @@ impl LookingGlass {
                 // on the title-bar button and the keyboard.
                 if self.is_minimized(vid) {
                     info!(?vid, "taskbar: restore window");
-                    crate::debug_journal::event("taskbar_restore", &[("vid", crate::debug_journal::d(vid))]);
+                    crate::debug_journal::event(
+                        "taskbar_restore",
+                        &[("vid", crate::debug_journal::d(vid))],
+                    );
                     self.restore_minimized(vid, crate::maximize::MinimizeSource::Compositor);
                 } else if self.scene.focused_id == Some(vid) {
                     info!(?vid, "taskbar: already focused");
                 } else {
                     info!(?vid, "taskbar: activate window");
-                    crate::debug_journal::event("taskbar_activate", &[("vid", crate::debug_journal::d(vid))]);
+                    crate::debug_journal::event(
+                        "taskbar_activate",
+                        &[("vid", crate::debug_journal::d(vid))],
+                    );
                     self.scene.select(Some(vid));
                     self.scene.bring_to_front(vid);
                     self.set_keyboard_focus(Some(vid));
@@ -1863,8 +2043,12 @@ impl LookingGlass {
     }
 
     fn route_to_content(&mut self, kind: PointerEventKind, x: f64, y: f64) -> ContentRouting {
-        let Some(vid) = self.scene.selected_id else { return ContentRouting::NoTarget };
-        if !self.scene.is_active(vid) { return ContentRouting::NoTarget }
+        let Some(vid) = self.scene.selected_id else {
+            return ContentRouting::NoTarget;
+        };
+        if !self.scene.is_active(vid) {
+            return ContentRouting::NoTarget;
+        }
 
         let (w, h) = self.window_size;
         let ndc_x = (x as f32 / w) * 2.0 - 1.0;
@@ -1890,24 +2074,25 @@ impl LookingGlass {
         // visuals (popups) route clicks where they are drawn.
         let transform = self.scene.world_transform(vid);
 
-        if let Some((u, v)) = input_router::screen_to_visual_uv(
-            &pv, ndc_x, ndc_y, &transform, gw, gh,
-        ) {
+        if let Some((u, v)) =
+            input_router::screen_to_visual_uv(&pv, ndc_x, ndc_y, &transform, gw, gh)
+        {
             // J3: title-bar BUTTONS win over focus/drag/resize. Clicking
             // a button dispatches through the same handlers the context
             // menu uses — no second semantics. Buttons deliberately do
             // NOT take keyboard focus (GNOME convention).
             if kind == PointerEventKind::Down {
-                if let Some(button) =
-                    crate::chrome::hit_button(gw, gh, title_frac_f, u, v)
-                {
+                if let Some(button) = crate::chrome::hit_button(gw, gh, title_frac_f, u, v) {
                     info!(?vid, button = %button.name(), u, v, "title bar button pressed");
                     match button {
                         crate::chrome::TitleButton::Minimize => {
                             self.begin_minimize(vid, crate::maximize::MinimizeSource::Compositor);
                         }
                         crate::chrome::TitleButton::Maximize => {
-                            self.toggle_maximize_for(vid, crate::maximize::MaximizeSource::Compositor);
+                            self.toggle_maximize_for(
+                                vid,
+                                crate::maximize::MaximizeSource::Compositor,
+                            );
                         }
                         crate::chrome::TitleButton::Close => {
                             if let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() {
@@ -1964,11 +2149,22 @@ impl LookingGlass {
             // Clone handles first to avoid borrow conflicts with ph.motion(self,...)
             let wl_surface = self.wayland_surfaces.get(&vid).cloned();
             let pointer_handle = self.pointer_handle.clone();
-            let geom_w = self.scene.visuals.iter().find(|v| v.id == vid).map(|v| v.geometry.size.w as f64);
+            let geom_w = self
+                .scene
+                .visuals
+                .iter()
+                .find(|v| v.id == vid)
+                .map(|v| v.geometry.size.w as f64);
 
             if let (Some(wl_surface), Some(ph)) = (wl_surface, pointer_handle) {
                 if let Some(gw) = geom_w {
-                    let geom_h = self.scene.visuals.iter().find(|v| v.id == vid).map(|v| v.geometry.size.h as f64).unwrap_or(1.0);
+                    let geom_h = self
+                        .scene
+                        .visuals
+                        .iter()
+                        .find(|v| v.id == vid)
+                        .map(|v| v.geometry.size.h as f64)
+                        .unwrap_or(1.0);
                     let px = content_u * gw;
                     let py = content_v * geom_h;
                     let pos: smithay::utils::Point<f64, smithay::utils::Logical> = (px, py).into();
@@ -1984,7 +2180,8 @@ impl LookingGlass {
                             _ => smithay::backend::input::ButtonState::Pressed,
                         },
                     };
-                    let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
+                    let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> =
+                        (x, y).into();
                     let mot_ev = MotionEvent {
                         location: global_pos,
                         serial,
@@ -2011,7 +2208,9 @@ impl LookingGlass {
                 }
             }
 
-            let Some(sink) = self.input_sinks.get_mut(&vid) else { return ContentRouting::NoTarget };
+            let Some(sink) = self.input_sinks.get_mut(&vid) else {
+                return ContentRouting::NoTarget;
+            };
             sink.handle_pointer(kind, content_u, content_v);
             return ContentRouting::Routed;
         }
@@ -2022,8 +2221,12 @@ impl LookingGlass {
     /// key: winit platform key code (X11 keycodes when under X11, offset +8 from evdev).
     /// The offset is subtracted to get raw evdev codes for HID mapping.
     fn route_keyboard(&mut self, key: u32, pressed: bool) {
-        let Some(vid) = self.scene.focused_id else { return };
-        if !self.scene.is_active(vid) { return }
+        let Some(vid) = self.scene.focused_id else {
+            return;
+        };
+        if !self.scene.is_active(vid) {
+            return;
+        }
 
         // For Wayland surfaces, set keyboard focus and deliver key event
         let wl_focus = self.wayland_surfaces.get(&vid).cloned();
@@ -2031,7 +2234,11 @@ impl LookingGlass {
         if let (Some(wl_surface), Some(ref kh_handle)) = (wl_focus, kh) {
             let serial = self.next_serial();
             let time = now_ms();
-            let state = if pressed { KeyState::Pressed } else { KeyState::Released };
+            let state = if pressed {
+                KeyState::Pressed
+            } else {
+                KeyState::Released
+            };
             // Ensure keyboard focus is on the right surface
             kh_handle.set_focus(self, Some(wl_surface), serial);
             let xkb_keycode = Keycode::new(key);
@@ -2058,7 +2265,9 @@ impl LookingGlass {
         }
 
         // For external producers (non-Wayland), use InputSink path
-        let Some(sink) = self.input_sinks.get_mut(&vid) else { return };
+        let Some(sink) = self.input_sinks.get_mut(&vid) else {
+            return;
+        };
         let evdev = if key > 8 { key - 8 } else { key };
         let hid = input_router::linux_to_hid(evdev);
         if hid == 0 {
@@ -2110,7 +2319,12 @@ impl LookingGlass {
     /// Smithay's queue — is unacknowledged, so at most one configure per
     /// surface is ever outstanding. The client decides geometry by what
     /// it commits; see `ClientResizeCoordinator`.
-    pub fn begin_client_resize(&mut self, vid: VisualId, w: i32, h: i32) -> Option<smithay::utils::Serial> {
+    pub fn begin_client_resize(
+        &mut self,
+        vid: VisualId,
+        w: i32,
+        h: i32,
+    ) -> Option<smithay::utils::Serial> {
         if w <= 0 || h <= 0 {
             return None;
         }
@@ -2118,7 +2332,9 @@ impl LookingGlass {
             return None;
         }
         let wl_surface = self.wayland_surfaces.get(&vid).cloned()?;
-        let toplevel = self.toplevels.iter()
+        let toplevel = self
+            .toplevels
+            .iter()
             .find(|t| t.toplevel.wl_surface() == &wl_surface)
             .map(|t| t.toplevel.clone())?;
         if !toplevel.alive() {
@@ -2159,7 +2375,8 @@ impl LookingGlass {
         let had_request = self.client_resizes.abort(vid);
         let wl_surface = self.wayland_surfaces.get(&vid).cloned();
         let toplevel = wl_surface.and_then(|wl_surface| {
-            self.toplevels.iter()
+            self.toplevels
+                .iter()
                 .find(|t| t.toplevel.wl_surface() == &wl_surface)
                 .map(|t| t.toplevel.clone())
         });
@@ -2201,11 +2418,19 @@ impl LookingGlass {
             info!(?vid, "resize session refused: window is fullscreen");
             return false;
         }
-        let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() else { return false };
-        if !self.toplevels.iter().any(|t| t.toplevel.wl_surface() == &wl_surface) {
+        let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() else {
+            return false;
+        };
+        if !self
+            .toplevels
+            .iter()
+            .any(|t| t.toplevel.wl_surface() == &wl_surface)
+        {
             return false; // popups are transient and not resizable
         }
-        let Some(visual) = self.scene.get(vid) else { return false };
+        let Some(visual) = self.scene.get(vid) else {
+            return false;
+        };
         let start_transform = visual.transform.clone();
         let start_total = (visual.total_width(), visual.total_height());
         let start_size = (visual.geometry.size.w, visual.geometry.size.h);
@@ -2221,8 +2446,16 @@ impl LookingGlass {
             (
                 attrs.min_size.w.max(1),
                 attrs.min_size.h.max(1),
-                if attrs.max_size.w > 0 { attrs.max_size.w } else { i32::MAX },
-                if attrs.max_size.h > 0 { attrs.max_size.h } else { i32::MAX },
+                if attrs.max_size.w > 0 {
+                    attrs.max_size.w
+                } else {
+                    i32::MAX
+                },
+                if attrs.max_size.h > 0 {
+                    attrs.max_size.h
+                } else {
+                    i32::MAX
+                },
             )
         });
         let max_size = if max_w == i32::MAX && max_h == i32::MAX {
@@ -2257,20 +2490,28 @@ impl LookingGlass {
     /// anchor-preserving position delta, and sends a configure only when the
     /// previous transaction has completed (client pacing).
     fn update_resize_session(&mut self, x: f64, y: f64) {
-        let Some(session) = self.resize_session.clone() else { return };
+        let Some(session) = self.resize_session.clone() else {
+            return;
+        };
         let (w, h) = self.window_size;
-        if w <= 0.0 || h <= 0.0 { return; }
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
         let ndc_x = (x as f32 / w) * 2.0 - 1.0;
         let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
         let pv = self.proj_view();
         // Unproject against the FROZEN start transform: the session frame
         // does not follow the visual as its geometry evolves.
         let Some(local) = input_router::screen_to_visual_local_point(
-            &pv, ndc_x, ndc_y,
+            &pv,
+            ndc_x,
+            ndc_y,
             &session.start_transform,
             session.start_total.0,
             session.start_total.1,
-        ) else { return };
+        ) else {
+            return;
+        };
         let upd = session.update(local);
         let vid = session.vid;
 
@@ -2294,9 +2535,15 @@ impl LookingGlass {
     /// Send the session's pending desired size once the previous configure
     /// transaction completed (called from ack_configure and handle_commit).
     fn flush_resize_desired(&mut self, vid: VisualId) {
-        let Some(session) = self.resize_session.as_ref() else { return };
-        if session.vid != vid { return; }
-        if self.client_resizes.awaiting_ack(vid) { return; }
+        let Some(session) = self.resize_session.as_ref() else {
+            return;
+        };
+        if session.vid != vid {
+            return;
+        }
+        if self.client_resizes.awaiting_ack(vid) {
+            return;
+        }
         let desired = session.desired;
         let outstanding = self.client_resizes.entry(vid).map(|e| e.requested);
         if outstanding != Some(desired) {
@@ -2307,7 +2554,9 @@ impl LookingGlass {
     /// Terminate the resize session on pointer release.
     /// Returns true when a session was active.
     pub fn finish_resize_session(&mut self) -> bool {
-        let Some(session) = self.resize_session.take() else { return false };
+        let Some(session) = self.resize_session.take() else {
+            return false;
+        };
         self.abort_client_resize(session.vid);
         info!(vid = ?session.vid, "resize session finished");
         true
@@ -2325,12 +2574,16 @@ impl LookingGlass {
 
     /// Whether the toplevel for `vid` is currently maximized (I4).
     pub fn is_maximized(&self, vid: VisualId) -> bool {
-        self.toplevels.iter().any(|t| t.visual_id == Some(vid) && t.maximized)
+        self.toplevels
+            .iter()
+            .any(|t| t.visual_id == Some(vid) && t.maximized)
     }
 
     /// Whether the toplevel for `vid` is currently fullscreen (I7).
     pub fn is_fullscreened(&self, vid: VisualId) -> bool {
-        self.toplevels.iter().any(|t| t.visual_id == Some(vid) && t.fullscreened)
+        self.toplevels
+            .iter()
+            .any(|t| t.visual_id == Some(vid) && t.fullscreened)
     }
 
     // ── I7: fullscreen / unfullscreen ─────────────────────────────────
@@ -2347,19 +2600,31 @@ impl LookingGlass {
     /// the toplevel; unfullscreen returns it to maximized (not NORMAL).
     pub fn begin_fullscreen(&mut self, vid: VisualId, source: crate::fullscreen::FullscreenSource) {
         use crate::fullscreen::{FullscreenIntent, FullscreenKind};
-        let Some(toplevel) = self.toplevel_for_vid(vid) else { return };
+        let Some(toplevel) = self.toplevel_for_vid(vid) else {
+            return;
+        };
         if self.is_fullscreened(vid) {
             info!(?vid, ?source, "fullscreen ignored: already fullscreen");
             return;
         }
         if self.resize_session.as_ref().is_some_and(|s| s.vid == vid) {
-            info!(?vid, ?source, "fullscreen refused: resize session in progress");
+            info!(
+                ?vid,
+                ?source,
+                "fullscreen refused: resize session in progress"
+            );
             return;
         }
-        let Some(visual) = self.scene.get(vid) else { return };
+        let Some(visual) = self.scene.get(vid) else {
+            return;
+        };
         let restore = (visual.geometry.size.w, visual.geometry.size.h);
         if restore.0 <= 0 || restore.1 <= 0 {
-            info!(?vid, ?source, "fullscreen refused: no committed geometry yet");
+            info!(
+                ?vid,
+                ?source,
+                "fullscreen refused: no committed geometry yet"
+            );
             return;
         }
         let was_maximized = self.is_maximized(vid);
@@ -2376,14 +2641,16 @@ impl LookingGlass {
         let wl_surface = self.wayland_surfaces.get(&vid).cloned();
         let unacked = wl_surface.is_some_and(|wl_surface| {
             with_states(&wl_surface, |states| {
-                states.data_map
+                states
+                    .data_map
                     .get::<XdgToplevelSurfaceData>()
                     .map(|attrs| !attrs.lock().unwrap().pending_configures().is_empty())
                     .unwrap_or(false)
             })
         });
         if unacked || self.client_resizes.awaiting_ack(vid) {
-            self.fullscreen.defer(vid, FullscreenKind::Fullscreen, source);
+            self.fullscreen
+                .defer(vid, FullscreenKind::Fullscreen, source);
             info!(?vid, ?source, "fullscreen deferred: configure outstanding");
             return;
         }
@@ -2403,29 +2670,50 @@ impl LookingGlass {
         let serial = toplevel.send_configure();
         self.client_resizes.mark_sent(vid, serial, target);
         self.fullscreen.begin(FullscreenIntent {
-            vid, kind: FullscreenKind::Fullscreen, source, serial, target,
-            previous: restore, snapshot: None,
+            vid,
+            kind: FullscreenKind::Fullscreen,
+            source,
+            serial,
+            target,
+            previous: restore,
+            snapshot: None,
         });
         // The snapshot lives on the toplevel row so it survives intent
         // replacement and is consumed by unfullscreen.
         if let Some(info) = self.toplevels.iter_mut().find(|t| t.visual_id == Some(vid)) {
             info.fullscreen_snapshot = Some(snapshot);
         }
-        info!(?vid, ?source, ?serial, target_w = target.0, target_h = target.1, was_maximized, "fullscreen requested");
+        info!(
+            ?vid,
+            ?source,
+            ?serial,
+            target_w = target.0,
+            target_h = target.1,
+            was_maximized,
+            "fullscreen requested"
+        );
     }
 
     /// Begin an unfullscreen transition: restores the state that existed
     /// immediately before fullscreen (MAXIMIZED → FULLSCREEN → MAXIMIZED,
     /// NORMAL → FULLSCREEN → NORMAL) and hands the pre-fullscreen size
     /// back to the client.
-    pub fn begin_unfullscreen(&mut self, vid: VisualId, source: crate::fullscreen::FullscreenSource) {
+    pub fn begin_unfullscreen(
+        &mut self,
+        vid: VisualId,
+        source: crate::fullscreen::FullscreenSource,
+    ) {
         use crate::fullscreen::{FullscreenIntent, FullscreenKind};
-        let Some(toplevel) = self.toplevel_for_vid(vid) else { return };
+        let Some(toplevel) = self.toplevel_for_vid(vid) else {
+            return;
+        };
         if !self.is_fullscreened(vid) && self.fullscreen.intent(vid).is_none() {
             info!(?vid, ?source, "unfullscreen ignored: not fullscreen");
             return;
         }
-        let snapshot = self.toplevels.iter()
+        let snapshot = self
+            .toplevels
+            .iter()
             .find(|t| t.visual_id == Some(vid))
             .and_then(|t| t.fullscreen_snapshot.clone())
             .unwrap_or_else(|| {
@@ -2443,17 +2731,23 @@ impl LookingGlass {
         let was_maximized = snapshot.was_maximized;
 
         let wl_surface = self.wayland_surfaces.get(&vid).cloned();
-        let unacked = wl_surface.is_some_and( |wl_surface| {
+        let unacked = wl_surface.is_some_and(|wl_surface| {
             with_states(&wl_surface, |states| {
-                states.data_map
+                states
+                    .data_map
                     .get::<XdgToplevelSurfaceData>()
                     .map(|attrs| !attrs.lock().unwrap().pending_configures().is_empty())
                     .unwrap_or(false)
             })
         });
         if unacked || self.client_resizes.awaiting_ack(vid) {
-            self.fullscreen.defer(vid, FullscreenKind::Unfullscreen, source);
-            info!(?vid, ?source, "unfullscreen deferred: configure outstanding");
+            self.fullscreen
+                .defer(vid, FullscreenKind::Unfullscreen, source);
+            info!(
+                ?vid,
+                ?source,
+                "unfullscreen deferred: configure outstanding"
+            );
             return;
         }
 
@@ -2463,16 +2757,31 @@ impl LookingGlass {
             // MAXIMIZED → FULLSCREEN → MAXIMIZED: the bit stays parked
             // while fullscreen, so unfullscreen leaves it set.
         });
-        let previous = self.scene.get(vid)
+        let previous = self
+            .scene
+            .get(vid)
             .map(|v| (v.geometry.size.w, v.geometry.size.h))
             .unwrap_or(target);
         let serial = toplevel.send_configure();
         self.client_resizes.mark_sent(vid, serial, target);
         self.fullscreen.begin(FullscreenIntent {
-            vid, kind: FullscreenKind::Unfullscreen, source, serial, target,
-            previous, snapshot: Some(snapshot),
+            vid,
+            kind: FullscreenKind::Unfullscreen,
+            source,
+            serial,
+            target,
+            previous,
+            snapshot: Some(snapshot),
         });
-        info!(?vid, ?source, ?serial, restore_w = target.0, restore_h = target.1, was_maximized, "unfullscreen requested");
+        info!(
+            ?vid,
+            ?source,
+            ?serial,
+            restore_w = target.0,
+            restore_h = target.1,
+            was_maximized,
+            "unfullscreen requested"
+        );
     }
 
     /// Toggle fullscreen on the focused (or selected) visual.
@@ -2485,7 +2794,11 @@ impl LookingGlass {
     }
 
     /// Toggle fullscreen on a specific visual (also the context-menu path).
-    pub fn toggle_fullscreen_for(&mut self, vid: VisualId, source: crate::fullscreen::FullscreenSource) {
+    pub fn toggle_fullscreen_for(
+        &mut self,
+        vid: VisualId,
+        source: crate::fullscreen::FullscreenSource,
+    ) {
         if self.is_fullscreened(vid) {
             self.begin_unfullscreen(vid, source);
         } else {
@@ -2500,11 +2813,16 @@ impl LookingGlass {
     /// size completes with the acknowledged STATE applying anyway.
     fn complete_fullscreen_intent(&mut self, vid: VisualId, committed: (i32, i32)) {
         use crate::fullscreen::FullscreenKind;
-        let Some(intent) = self.fullscreen.intent(vid) else { return };
+        let Some(intent) = self.fullscreen.intent(vid) else {
+            return;
+        };
         if committed == intent.previous && committed != intent.target {
             return; // draining commit — keep the intent armed
         }
-        let intent = self.fullscreen.take_intent(vid).expect("intent peeked above");
+        let intent = self
+            .fullscreen
+            .take_intent(vid)
+            .expect("intent peeked above");
         let client_matched = committed == intent.target;
         if let Some(info) = self.toplevels.iter_mut().find(|t| t.visual_id == Some(vid)) {
             match intent.kind {
@@ -2516,7 +2834,8 @@ impl LookingGlass {
                     // visual centers on the workspace view so the quad
                     // fills the viewport edge to edge.
                     if let Some(v) = self.scene.get_mut(vid) {
-                        v.transform.position = cgmath::Vector3::new(0.0, 0.0, v.transform.position.z);
+                        v.transform.position =
+                            cgmath::Vector3::new(0.0, 0.0, v.transform.position.z);
                         v.transform.rotation = cgmath::Quaternion::new(1.0, 0.0, 0.0, 0.0);
                     }
                 }
@@ -2542,7 +2861,8 @@ impl LookingGlass {
                             // Back in maximized presentation: centered on
                             // the view, bit still parked from fullscreen.
                             if let Some(v) = self.scene.get_mut(vid) {
-                                v.transform.position = cgmath::Vector3::new(0.0, 0.0, v.transform.position.z);
+                                v.transform.position =
+                                    cgmath::Vector3::new(0.0, 0.0, v.transform.position.z);
                                 v.transform.rotation = cgmath::Quaternion::new(1.0, 0.0, 0.0, 0.0);
                             }
                         }
@@ -2572,16 +2892,17 @@ impl LookingGlass {
     fn flush_fullscreen_deferred(&mut self) {
         if let Some((vid, kind, source)) = self.fullscreen.take_deferred() {
             match kind {
-                crate::fullscreen::FullscreenKind::Fullscreen =>
-                    self.begin_fullscreen(vid, source),
-                crate::fullscreen::FullscreenKind::Unfullscreen =>
-                    self.begin_unfullscreen(vid, source),
+                crate::fullscreen::FullscreenKind::Fullscreen => self.begin_fullscreen(vid, source),
+                crate::fullscreen::FullscreenKind::Unfullscreen => {
+                    self.begin_unfullscreen(vid, source)
+                }
             }
         }
     }
 
     fn toplevel_for_vid(&self, vid: VisualId) -> Option<ToplevelSurface> {
-        self.toplevels.iter()
+        self.toplevels
+            .iter()
             .find(|t| t.visual_id == Some(vid))
             .map(|t| t.toplevel.clone())
             .filter(|t| t.alive())
@@ -2595,7 +2916,9 @@ impl LookingGlass {
     /// coordinator so pacing stays "at most one unacknowledged configure".
     pub fn begin_maximize(&mut self, vid: VisualId, source: crate::maximize::MaximizeSource) {
         use crate::maximize::{MaximizeIntent, MaximizeKind};
-        let Some(toplevel) = self.toplevel_for_vid(vid) else { return };
+        let Some(toplevel) = self.toplevel_for_vid(vid) else {
+            return;
+        };
         if self.is_maximized(vid) {
             info!(?vid, ?source, "maximize ignored: already maximized");
             return;
@@ -2608,10 +2931,16 @@ impl LookingGlass {
             return;
         }
         if self.resize_session.as_ref().is_some_and(|s| s.vid == vid) {
-            info!(?vid, ?source, "maximize refused: resize session in progress");
+            info!(
+                ?vid,
+                ?source,
+                "maximize refused: resize session in progress"
+            );
             return;
         }
-        let Some(visual) = self.scene.get(vid) else { return };
+        let Some(visual) = self.scene.get(vid) else {
+            return;
+        };
         let restore = (visual.geometry.size.w, visual.geometry.size.h);
         if restore.0 <= 0 || restore.1 <= 0 {
             info!(?vid, ?source, "maximize refused: no committed geometry yet");
@@ -2632,7 +2961,8 @@ impl LookingGlass {
         let wl_surface = self.wayland_surfaces.get(&vid).cloned();
         let unacked = wl_surface.is_some_and(|wl_surface| {
             with_states(&wl_surface, |states| {
-                states.data_map
+                states
+                    .data_map
                     .get::<XdgToplevelSurfaceData>()
                     .map(|attrs| !attrs.lock().unwrap().pending_configures().is_empty())
                     .unwrap_or(false)
@@ -2651,29 +2981,50 @@ impl LookingGlass {
         let serial = toplevel.send_configure();
         self.client_resizes.mark_sent(vid, serial, target);
         self.maximize.begin(MaximizeIntent {
-            vid, kind: MaximizeKind::Maximize, source, serial, target, restore,
-            previous: restore, restore_pos, restore_rot,
+            vid,
+            kind: MaximizeKind::Maximize,
+            source,
+            serial,
+            target,
+            restore,
+            previous: restore,
+            restore_pos,
+            restore_rot,
         });
-        info!(?vid, ?source, ?serial, target_w = target.0, target_h = target.1, restore_w = restore.0, restore_h = restore.1, "maximize requested");
+        info!(
+            ?vid,
+            ?source,
+            ?serial,
+            target_w = target.0,
+            target_h = target.1,
+            restore_w = restore.0,
+            restore_h = restore.1,
+            "maximize requested"
+        );
     }
 
     /// Begin an unmaximize transition (I4): configure the client back to
     /// its pre-maximize committed size and clear the Maximized state bit.
     pub fn begin_unmaximize(&mut self, vid: VisualId, source: crate::maximize::MaximizeSource) {
         use crate::maximize::{MaximizeIntent, MaximizeKind};
-        let Some(toplevel) = self.toplevel_for_vid(vid) else { return };
+        let Some(toplevel) = self.toplevel_for_vid(vid) else {
+            return;
+        };
         if !self.is_maximized(vid) {
             info!(?vid, ?source, "unmaximize ignored: not maximized");
             return;
         }
-        let restore = self.toplevels.iter()
+        let restore = self
+            .toplevels
+            .iter()
             .find(|t| t.visual_id == Some(vid))
             .and_then(|t| t.restore_size)
             .unwrap_or_else(|| self.maximize_target());
         let wl_surface = self.wayland_surfaces.get(&vid).cloned();
         let unacked = wl_surface.is_some_and(|wl_surface| {
             with_states(&wl_surface, |states| {
-                states.data_map
+                states
+                    .data_map
                     .get::<XdgToplevelSurfaceData>()
                     .map(|attrs| !attrs.lock().unwrap().pending_configures().is_empty())
                     .unwrap_or(false)
@@ -2689,31 +3040,47 @@ impl LookingGlass {
             state.size = Some(smithay::utils::Size::new(restore.0, restore.1));
             state.states.unset(xdg_toplevel::State::Maximized);
         });
-        let previous = self.scene.get(vid)
+        let previous = self
+            .scene
+            .get(vid)
             .map(|v| (v.geometry.size.w, v.geometry.size.h))
             .unwrap_or(restore);
         // Unmaximize restores the captured pre-maximize presentation pose
         // (position + rotation); the size restore goes to the client.
-        let (restore_pos, restore_rot) = self.toplevels.iter()
+        let (restore_pos, restore_rot) = self
+            .toplevels
+            .iter()
             .find(|t| t.visual_id == Some(vid))
             .and_then(|t| t.restore_pose)
-                        .unwrap_or_else(|| {
-                match self.scene.get(vid) {
-                    Some(v) => {
-                        let p = v.transform.position;
-                        let r = v.transform.rotation;
-                        ((p.x, p.y, p.z), [r.v.x, r.v.y, r.v.z, r.s])
-                    }
-                    None => ((0.0, 0.0, 0.0), [0.0, 0.0, 0.0, 1.0]),
+            .unwrap_or_else(|| match self.scene.get(vid) {
+                Some(v) => {
+                    let p = v.transform.position;
+                    let r = v.transform.rotation;
+                    ((p.x, p.y, p.z), [r.v.x, r.v.y, r.v.z, r.s])
                 }
+                None => ((0.0, 0.0, 0.0), [0.0, 0.0, 0.0, 1.0]),
             });
         let serial = toplevel.send_configure();
         self.client_resizes.mark_sent(vid, serial, restore);
         self.maximize.begin(MaximizeIntent {
-            vid, kind: MaximizeKind::Unmaximize, source, serial, target: restore, restore,
-            previous, restore_pos, restore_rot,
+            vid,
+            kind: MaximizeKind::Unmaximize,
+            source,
+            serial,
+            target: restore,
+            restore,
+            previous,
+            restore_pos,
+            restore_rot,
         });
-        info!(?vid, ?source, ?serial, restore_w = restore.0, restore_h = restore.1, "unmaximize requested");
+        info!(
+            ?vid,
+            ?source,
+            ?serial,
+            restore_w = restore.0,
+            restore_h = restore.1,
+            "unmaximize requested"
+        );
     }
 
     /// Toggle maximize on the focused (or selected) visual.
@@ -2737,7 +3104,9 @@ impl LookingGlass {
     // ── I5: minimize / restore ────────────────────────────────────────
 
     pub fn is_minimized(&self, vid: VisualId) -> bool {
-        self.toplevels.iter().any(|t| t.visual_id == Some(vid) && t.minimized)
+        self.toplevels
+            .iter()
+            .any(|t| t.visual_id == Some(vid) && t.minimized)
     }
 
     /// Minimize a window (I5).
@@ -2757,7 +3126,11 @@ impl LookingGlass {
             return;
         }
         if self.resize_session.as_ref().is_some_and(|s| s.vid == vid) {
-            info!(?vid, ?source, "minimize refused: resize session in progress");
+            info!(
+                ?vid,
+                ?source,
+                "minimize refused: resize session in progress"
+            );
             return;
         }
         if self.scene.get(vid).is_none() {
@@ -2769,7 +3142,11 @@ impl LookingGlass {
         // `restore_last_minimized` (which scans toplevels) could never
         // find them — they'd hide forever.
         if !self.toplevels.iter().any(|t| t.visual_id == Some(vid)) {
-            info!(?vid, ?source, "minimize refused: not a toplevel (popups/transients stay visible)");
+            info!(
+                ?vid,
+                ?source,
+                "minimize refused: not a toplevel (popups/transients stay visible)"
+            );
             return;
         }
         // An in-flight maximize/unmaximize transition would fight the
@@ -2817,10 +3194,7 @@ impl LookingGlass {
             let ws_ids = self.workspace_manager.active().visual_ids.clone();
             let this: &LookingGlass = self;
             let replacement = this.focus_history.focus_replacement(Some(vid), &move |r| {
-                r != vid
-                    && ws_ids.contains(&r)
-                    && this.scene.is_visible(r)
-                    && !this.is_minimized(r)
+                r != vid && ws_ids.contains(&r) && this.scene.is_visible(r) && !this.is_minimized(r)
             });
             info!(?replacement, "refocusing after minimize");
             self.scene.select(replacement);
@@ -2842,7 +3216,11 @@ impl LookingGlass {
         // owning workspace first so the restore is actually seen.
         if let Some(ws_idx) = self.workspace_for_visual(vid) {
             if ws_idx != self.workspace_manager.active_id() {
-                info!(?vid, workspace = ws_idx, "restoring across workspace switch");
+                info!(
+                    ?vid,
+                    workspace = ws_idx,
+                    "restoring across workspace switch"
+                );
                 self.switch_workspace(ws_idx);
             }
         }
@@ -2863,7 +3241,10 @@ impl LookingGlass {
     /// The scan runs in reverse toplevel order, so the latest-created
     /// minimized window wins.
     pub fn restore_last_minimized(&mut self, source: crate::maximize::MinimizeSource) {
-        let target = self.toplevels.iter().rev()
+        let target = self
+            .toplevels
+            .iter()
+            .rev()
             .find(|t| t.minimized)
             .and_then(|t| t.visual_id);
         match target {
@@ -2888,9 +3269,10 @@ impl LookingGlass {
     fn layout_detached(&self) -> Vec<VisualId> {
         let mut d = self.scene.detached_set.clone();
         d.extend(
-            self.toplevels.iter()
+            self.toplevels
+                .iter()
                 .filter(|t| t.maximized || t.minimized || t.fullscreened)
-                .filter_map(|t| t.visual_id)
+                .filter_map(|t| t.visual_id),
         );
         d
     }
@@ -2911,7 +3293,9 @@ impl LookingGlass {
     /// fulfilled log records the post-transition transform as evidence.
     fn complete_maximize_intent(&mut self, vid: VisualId, committed: (i32, i32)) {
         use crate::maximize::MaximizeKind;
-        let Some(intent) = self.maximize.intent(vid) else { return };
+        let Some(intent) = self.maximize.intent(vid) else {
+            return;
+        };
         if committed == intent.previous && committed != intent.target {
             return; // draining commit — keep the intent armed
         }
@@ -2928,9 +3312,15 @@ impl LookingGlass {
                     // the quad fills the viewport edge to edge.
                     if let Some(v) = self.scene.get_mut(vid) {
                         let p = v.transform.position;
-                        info.restore_pose = Some(((p.x, p.y, p.z),
-                            [intent.restore_rot[0], intent.restore_rot[1],
-                             intent.restore_rot[2], intent.restore_rot[3]]));
+                        info.restore_pose = Some((
+                            (p.x, p.y, p.z),
+                            [
+                                intent.restore_rot[0],
+                                intent.restore_rot[1],
+                                intent.restore_rot[2],
+                                intent.restore_rot[3],
+                            ],
+                        ));
                         v.transform.position = cgmath::Vector3::new(0.0, 0.0, p.z);
                         v.transform.rotation = cgmath::Quaternion::new(1.0, 0.0, 0.0, 0.0);
                     }
@@ -2940,7 +3330,10 @@ impl LookingGlass {
                     if let Some(v) = self.scene.get_mut(vid) {
                         // Restore the exact pre-maximize pose captured at
                         // maximize time (fall back to the transition pose).
-                        let pose = info.restore_pose.take().unwrap_or((intent.restore_pos, intent.restore_rot));
+                        let pose = info
+                            .restore_pose
+                            .take()
+                            .unwrap_or((intent.restore_pos, intent.restore_rot));
                         let (px, py, pz) = pose.0;
                         let [ri, rj, rk, rw] = pose.1;
                         v.transform.position = cgmath::Vector3::new(px, py, pz);
@@ -2974,7 +3367,9 @@ impl LookingGlass {
     /// unacknowledged configures (called from ack/commit paths).
     fn flush_deferred_maximize(&mut self) {
         use crate::maximize::MaximizeKind;
-        let Some((vid, kind, source)) = self.maximize.take_deferred() else { return };
+        let Some((vid, kind, source)) = self.maximize.take_deferred() else {
+            return;
+        };
         match kind {
             MaximizeKind::Maximize => self.begin_maximize(vid, source),
             MaximizeKind::Unmaximize => self.begin_unmaximize(vid, source),
@@ -2992,7 +3387,11 @@ impl LookingGlass {
         let ndc_x = (x as f32 / w) * 2.0 - 1.0;
         let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
         let pv = self.proj_view();
-        let ws_ids: Vec<VisualId> = self.workspace_manager.active().visual_ids.iter()
+        let ws_ids: Vec<VisualId> = self
+            .workspace_manager
+            .active()
+            .visual_ids
+            .iter()
             .copied()
             .filter(|id| self.scene.is_visible(*id))
             .collect();
@@ -3002,9 +3401,18 @@ impl LookingGlass {
             let ws_count = self.workspace_manager.len();
             self.context_menu.show(x, y, vid, ws_count);
             self.context_menu.set_maximize_label(self.is_maximized(vid));
-            let m = crate::context_menu::MenuMetrics::for_framebuffer(self.window_size.0, self.window_size.1);
-            info!(menu_width = m.menu_width, item_height = m.item_height, glyph_scale = m.glyph_scale,
-                  fb_w = self.window_size.0, fb_h = self.window_size.1, "context menu metrics");
+            let m = crate::context_menu::MenuMetrics::for_framebuffer(
+                self.window_size.0,
+                self.window_size.1,
+            );
+            info!(
+                menu_width = m.menu_width,
+                item_height = m.item_height,
+                glyph_scale = m.glyph_scale,
+                fb_w = self.window_size.0,
+                fb_h = self.window_size.1,
+                "context menu metrics"
+            );
             info!(?vid, "context menu opened");
             true
         } else {
@@ -3032,7 +3440,15 @@ impl LookingGlass {
                 let detached = self.layout_detached();
                 let eligible = self.workspace_manager.active().visual_ids.clone();
                 let (ww, wh) = self.window_size;
-                layout::apply_layout(&mut self.scene, mode, &layout::LayoutConfig::default(), &detached, ww, wh, &eligible);
+                layout::apply_layout(
+                    &mut self.scene,
+                    mode,
+                    &layout::LayoutConfig::default(),
+                    &detached,
+                    ww,
+                    wh,
+                    &eligible,
+                );
                 info!(?target, "context menu: arrange");
             }
             MenuAction::MoveToWorkspace(ws_idx) => {
@@ -3048,7 +3464,11 @@ impl LookingGlass {
                     // outside the target workspace's view, the auto-fit on
                     // the next switch will frame it. Moving to the ACTIVE
                     // workspace (no-op switch) fits immediately.
-                    info!(?target, workspace = ws_idx, "context menu: move to workspace");
+                    info!(
+                        ?target,
+                        workspace = ws_idx,
+                        "context menu: move to workspace"
+                    );
                     if ws_idx == current_ws {
                         self.auto_fit_camera();
                     }
@@ -3113,8 +3533,14 @@ impl LookingGlass {
     /// Handle a left-click on the context menu. Returns true if the click was handled by the menu.
     pub fn handle_menu_click(&mut self, x: f64, y: f64) -> bool {
         // Must match the renderer's metrics (MenuMetrics::for_framebuffer)
-        let m = crate::context_menu::MenuMetrics::for_framebuffer(self.window_size.0, self.window_size.1);
-        if let Some(idx) = self.context_menu.item_at(x, y, m.menu_width as f64, m.item_height as f64) {
+        let m = crate::context_menu::MenuMetrics::for_framebuffer(
+            self.window_size.0,
+            self.window_size.1,
+        );
+        if let Some(idx) =
+            self.context_menu
+                .item_at(x, y, m.menu_width as f64, m.item_height as f64)
+        {
             if idx < self.context_menu.items.len() {
                 let action = self.context_menu.items[idx].action;
                 self.execute_menu_action(action);
@@ -3150,13 +3576,27 @@ impl LookingGlass {
             if let Some(ph) = self.pointer_handle.clone() {
                 let serial = self.next_serial();
                 let time = now_ms();
-                let focus = self.pick_wayland_target(x, y)
+                let focus = self
+                    .pick_wayland_target(x, y)
                     .and_then(|(vid, s, _)| self.surface_global_origin(vid).map(|o| (s, o)));
-                ph.motion(self, focus, &MotionEvent { location: (x, y).into(), serial, time });
-                ph.button(self, &ButtonEvent {
-                    serial, time, button: 0x110,
-                    state: smithay::backend::input::ButtonState::Pressed,
-                });
+                ph.motion(
+                    self,
+                    focus,
+                    &MotionEvent {
+                        location: (x, y).into(),
+                        serial,
+                        time,
+                    },
+                );
+                ph.button(
+                    self,
+                    &ButtonEvent {
+                        serial,
+                        time,
+                        button: 0x110,
+                        state: smithay::backend::input::ButtonState::Pressed,
+                    },
+                );
                 ph.frame(self);
             }
             let _ = self.display_handle.flush_clients();
@@ -3164,7 +3604,14 @@ impl LookingGlass {
         }
         let ws_ids = self.workspace_manager.active().visual_ids.clone();
         let mode = self.interaction.handle_pointer_down(
-            x, y, &mut self.scene, &self.camera, self.spatial_mode, shift, ctrl, alt,
+            x,
+            y,
+            &mut self.scene,
+            &self.camera,
+            self.spatial_mode,
+            shift,
+            ctrl,
+            alt,
             Some(ws_ids),
         );
         // In overview mode, clicking a visual should focus it
@@ -3176,13 +3623,20 @@ impl LookingGlass {
             return;
         }
         // In workspace overview, clicking a visual switches to its workspace
-        if matches!(self.focus_manager.camera_mode, CameraMode::WorkspaceOverview) {
+        if matches!(
+            self.focus_manager.camera_mode,
+            CameraMode::WorkspaceOverview
+        ) {
             if let Some(vid) = self.scene.selected_id {
                 if let Some(ws_id) = self.workspace_for_visual(vid) {
                     let _ = self.activate_workspace(ws_id);
                     self.focus_manager.exit_overview(&mut self.camera);
                     self.set_keyboard_focus(Some(vid));
-                    info!(?vid, workspace = ws_id, "workspace overview click -> switch");
+                    info!(
+                        ?vid,
+                        workspace = ws_id,
+                        "workspace overview click -> switch"
+                    );
                 }
             }
             return;
@@ -3200,16 +3654,30 @@ impl LookingGlass {
             Some(_) => {}
             None => {
                 // Route to content; title bar hits start a title-bar drag
-                if self.route_to_content(PointerEventKind::Down, x, y) == ContentRouting::TitleBarHit {
+                if self.route_to_content(PointerEventKind::Down, x, y)
+                    == ContentRouting::TitleBarHit
+                {
                     // Start a translate drag from the title bar
                     let ws_ids = self.workspace_manager.active().visual_ids.clone();
                     self.interaction.handle_pointer_down(
-                        x, y, &mut self.scene, &self.camera,
-                        self.spatial_mode, false, false, false, Some(ws_ids),
+                        x,
+                        y,
+                        &mut self.scene,
+                        &self.camera,
+                        self.spatial_mode,
+                        false,
+                        false,
+                        false,
+                        Some(ws_ids),
                     );
                     // Force translate even though no modifier
-                    self.interaction.force_translate(x, y, &mut self.scene,
-                        &self.camera, self.spatial_mode);
+                    self.interaction.force_translate(
+                        x,
+                        y,
+                        &mut self.scene,
+                        &self.camera,
+                        self.spatial_mode,
+                    );
                 }
             }
         }
@@ -3226,7 +3694,11 @@ impl LookingGlass {
             return;
         }
         let has_active = self.interaction.is_dragging();
-        let dragged_vid = if has_active { self.scene.selected_id } else { None };
+        let dragged_vid = if has_active {
+            self.scene.selected_id
+        } else {
+            None
+        };
         // G-B2: while a client DnD grab is active the release MUST
         // always reach the seat pointer — Smithay's DnDGrab ends the
         // drag there and negotiates the drop/cancel. The focus is the
@@ -3240,13 +3712,27 @@ impl LookingGlass {
             if let Some(ph) = self.pointer_handle.clone() {
                 let serial = self.next_serial();
                 let time = now_ms();
-                let focus = self.pick_wayland_target(x, y)
+                let focus = self
+                    .pick_wayland_target(x, y)
                     .and_then(|(vid, s, _)| self.surface_global_origin(vid).map(|o| (s, o)));
-                ph.motion(self, focus.clone(), &MotionEvent { location: (x, y).into(), serial, time });
-                ph.button(self, &ButtonEvent {
-                    serial, time, button: 0x110,
-                    state: smithay::backend::input::ButtonState::Released,
-                });
+                ph.motion(
+                    self,
+                    focus.clone(),
+                    &MotionEvent {
+                        location: (x, y).into(),
+                        serial,
+                        time,
+                    },
+                );
+                ph.button(
+                    self,
+                    &ButtonEvent {
+                        serial,
+                        time,
+                        button: 0x110,
+                        state: smithay::backend::input::ButtonState::Released,
+                    },
+                );
                 ph.frame(self);
                 if focus.is_none() {
                     self.last_wayland_focus = None;
@@ -3262,10 +3748,15 @@ impl LookingGlass {
             // window ended up and where its popup children now are in
             // world space (they follow via the scene graph parent chain).
             if let Some(vid) = dragged_vid {
-                let dragging = self.scene.visuals.iter()
+                let dragging = self
+                    .scene
+                    .visuals
+                    .iter()
                     .find(|v| v.id == vid)
                     .map(|v| (v.transform.position, v.transform.rotation));
-                let popup_worlds: Vec<(VisualId, (f32, f32, f32))> = self.scene.visuals
+                let popup_worlds: Vec<(VisualId, (f32, f32, f32))> = self
+                    .scene
+                    .visuals
                     .iter()
                     .filter(|v| v.parent == Some(vid))
                     .map(|v| {
@@ -3298,7 +3789,10 @@ impl LookingGlass {
         // When pointer is locked, route relative motion to the locked client
         // and skip all spatial interaction.
         if self.pointer_constraints.pointer_locked {
-            if let (Some(ph), Some(surface)) = (self.pointer_handle.clone(), self.pointer_constraints.locked_surface.clone()) {
+            if let (Some(ph), Some(surface)) = (
+                self.pointer_handle.clone(),
+                self.pointer_constraints.locked_surface.clone(),
+            ) {
                 let serial = self.next_serial();
                 let time = now_ms();
                 let pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
@@ -3314,7 +3808,9 @@ impl LookingGlass {
                 };
                 // Same focus-location convention as everywhere else:
                 // the locked surface's global origin (below title bar).
-                let origin = self.wayland_surfaces.iter()
+                let origin = self
+                    .wayland_surfaces
+                    .iter()
                     .find(|(_, s)| **s == surface)
                     .and_then(|(vid, _)| self.surface_global_origin(*vid));
                 ph.motion(self, origin.map(|o| (surface.clone(), o)), &mot_ev);
@@ -3339,9 +3835,11 @@ impl LookingGlass {
                     .find(|(_, s)| **s == surface)
                     .map(|(vid, _)| *vid);
                 let size = vid.and_then(|vid| {
-                    self.scene.visuals.iter().find(|v| v.id == vid).map(|v| {
-                        (v.total_width() as f64, v.total_height() as f64)
-                    })
+                    self.scene
+                        .visuals
+                        .iter()
+                        .find(|v| v.id == vid)
+                        .map(|v| (v.total_width() as f64, v.total_height() as f64))
                 });
                 if let (Some(o), Some((cw, ch))) = (origin, size) {
                     let region_rects = self
@@ -3417,7 +3915,13 @@ impl LookingGlass {
         }
         self.interaction.window_size = self.window_size;
         let was_dragging = self.interaction.is_dragging();
-        self.interaction.handle_pointer_move(x, y, &mut self.scene, &self.camera, self.spatial_mode);
+        self.interaction.handle_pointer_move(
+            x,
+            y,
+            &mut self.scene,
+            &self.camera,
+            self.spatial_mode,
+        );
 
         // Snap correction: if currently dragging, snap dragged visual to nearby edges
         if self.interaction.is_dragging() {
@@ -3428,11 +3932,20 @@ impl LookingGlass {
                     let mh = visual.total_height();
                     // Build anchor list from non-selected, non-detached, same-workspace visuals only
                     let ws_ids = self.workspace_manager.active().visual_ids.as_slice();
-                    let anchors: Vec<_> = self.scene.visuals.iter()
-                        .filter(|v| v.id != vid && !self.scene.detached_set.contains(&v.id) && ws_ids.contains(&v.id))
+                    let anchors: Vec<_> = self
+                        .scene
+                        .visuals
+                        .iter()
+                        .filter(|v| {
+                            v.id != vid
+                                && !self.scene.detached_set.contains(&v.id)
+                                && ws_ids.contains(&v.id)
+                        })
                         .map(|v| (v.transform.position, v.total_width(), v.total_height()))
                         .collect();
-                    if let Some(snap) = crate::snap::snap_position(mpos, mw, mh, &anchors, &Default::default()) {
+                    if let Some(snap) =
+                        crate::snap::snap_position(mpos, mw, mh, &anchors, &Default::default())
+                    {
                         if let Some(v) = self.scene.get_mut(vid) {
                             v.transform.position = snap.position;
                         }
@@ -3447,8 +3960,16 @@ impl LookingGlass {
             if let Some(vid) = self.scene.selected_id {
                 if self.scene.is_active(vid) {
                     let threshold = 5.0;
-                    if (x - self.press_pos.0).abs() > threshold || (y - self.press_pos.1).abs() > threshold {
-                        self.interaction.force_translate(x, y, &mut self.scene, &self.camera, self.spatial_mode);
+                    if (x - self.press_pos.0).abs() > threshold
+                        || (y - self.press_pos.1).abs() > threshold
+                    {
+                        self.interaction.force_translate(
+                            x,
+                            y,
+                            &mut self.scene,
+                            &self.camera,
+                            self.spatial_mode,
+                        );
                     }
                 }
             }
@@ -3483,10 +4004,13 @@ impl LookingGlass {
         );
         let corner_world = t.rotation * corner_local + t.position;
         let (w, h) = self.window_size;
-        Some((
-            (w / 2.0 + corner_world.x) as f64,
-            (h / 2.0 - corner_world.y) as f64,
-        ).into())
+        Some(
+            (
+                (w / 2.0 + corner_world.x) as f64,
+                (h / 2.0 - corner_world.y) as f64,
+            )
+                .into(),
+        )
     }
 
     /// Pick the Wayland surface under the given screen position via 3D ray cast.
@@ -3497,27 +4021,38 @@ impl LookingGlass {
         &self,
         x: f64,
         y: f64,
-    ) -> Option<(VisualId, WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)> {
+    ) -> Option<(
+        VisualId,
+        WlSurface,
+        smithay::utils::Point<f64, smithay::utils::Logical>,
+    )> {
         let (w, h) = self.window_size;
-        if w <= 0.0 || h <= 0.0 { return None; }
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
         let ndc_x = (x as f32 / w) * 2.0 - 1.0;
         let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
         let pv = self.proj_view();
 
-        let ws_visible: Vec<VisualId> = self.workspace_manager.active().visual_ids.iter()
+        let ws_visible: Vec<VisualId> = self
+            .workspace_manager
+            .active()
+            .visual_ids
+            .iter()
             .copied()
             .filter(|id| self.scene.is_visible(*id))
             .collect();
         let (vid, _) = self.scene.pick_visible(&pv, ndc_x, ndc_y, &ws_visible)?;
-        if !self.scene.is_active(vid) { return None; }
+        if !self.scene.is_active(vid) {
+            return None;
+        }
         let wl_surface = self.wayland_surfaces.get(&vid).cloned()?;
         let v = self.scene.visuals.iter().find(|v| v.id == vid)?;
         let transform = v.transform.clone();
         let total_w = v.total_width();
         let total_h = v.total_height();
-        let (u, uv) = input_router::screen_to_visual_uv(
-            &pv, ndc_x, ndc_y, &transform, total_w, total_h,
-        )?;
+        let (u, uv) =
+            input_router::screen_to_visual_uv(&pv, ndc_x, ndc_y, &transform, total_w, total_h)?;
         // R12: use the visual's own chrome height (was hardcoded
         // 0.06/1.06, wrong for custom title heights).
         let (_cu, content_v) = v.content_uv(u, uv);
@@ -3579,7 +4114,9 @@ impl LookingGlass {
 
     /// Center the camera on the currently selected visual.
     pub fn frame_selected(&mut self) -> bool {
-        let Some(vid) = self.scene.selected_id else { return false };
+        let Some(vid) = self.scene.selected_id else {
+            return false;
+        };
         let result = self.camera.frame_visual(vid, &self.scene);
         if result {
             info!(?vid, "camera framed on selected");
@@ -3623,7 +4160,8 @@ impl LookingGlass {
     pub fn enter_overview(&mut self) {
         let ws = self.workspace_manager.active();
         if let Some(overview_cam) = crate::focus::overview_camera(&self.scene, &ws.visual_ids) {
-            self.focus_manager.enter_overview(&self.camera, overview_cam);
+            self.focus_manager
+                .enter_overview(&self.camera, overview_cam);
             info!("overview mode on");
         }
     }
@@ -3638,7 +4176,8 @@ impl LookingGlass {
             pitch: -0.3,
             ..Camera::new()
         };
-        self.focus_manager.enter_workspace_overview(&self.camera, overview_cam);
+        self.focus_manager
+            .enter_workspace_overview(&self.camera, overview_cam);
         info!("workspace overview mode on");
     }
 
@@ -3774,7 +4313,9 @@ impl LookingGlass {
             .map(|vid| ws.contains(vid) && self.scene.is_visible(vid))
             .unwrap_or(false)
             && saved.map(|vid| !self.is_minimized(vid)).unwrap_or(false);
-        let focus_target = if saved_ok { saved } else {
+        let focus_target = if saved_ok {
+            saved
+        } else {
             let this: &LookingGlass = self;
             let fallback_ws = ws.visual_ids.clone();
             this.focus_history
@@ -3785,9 +4326,10 @@ impl LookingGlass {
         };
         self.set_keyboard_focus(focus_target);
         info!(workspace = idx, old = old_id, restored = ?focus_target, "switched workspace");
-        crate::debug_journal::event("workspace", &[
-            ("to", idx.to_string()), ("from", old_id.to_string()),
-        ]);
+        crate::debug_journal::event(
+            "workspace",
+            &[("to", idx.to_string()), ("from", old_id.to_string())],
+        );
         self.debug_snapshot();
         // J4 follow-up: a workspace whose saved camera cannot show its
         // row (e.g. a window moved here from another workspace) must
@@ -3796,7 +4338,7 @@ impl LookingGlass {
         true
     }
 
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     /// Create a new workspace and return its ID.
     pub fn create_workspace(&mut self) -> usize {
         let id = self.workspace_manager.add();
@@ -3807,7 +4349,7 @@ impl LookingGlass {
     /// Destroy a workspace by ID.
     /// Fails if it's the last workspace.
     /// Wayland surfaces survive — only their workspace membership is cleaned up.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn destroy_workspace(&mut self, id: usize) -> Result<(), String> {
         if self.workspace_manager.len() <= 1 {
             return Err("cannot destroy the last workspace".into());
@@ -3831,7 +4373,7 @@ impl LookingGlass {
     }
 
     /// Returns the number of workspaces.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn workspace_count(&self) -> usize {
         self.workspace_manager.len()
     }
@@ -3894,8 +4436,12 @@ impl LookingGlass {
             }
         }
         match linux_key {
-            keys::CTRL_L | keys::CTRL_R => { self.ctrl_pressed = pressed; }
-            keys::SHIFT_L | keys::SHIFT_R => { self.shift_pressed = pressed; }
+            keys::CTRL_L | keys::CTRL_R => {
+                self.ctrl_pressed = pressed;
+            }
+            keys::SHIFT_L | keys::SHIFT_R => {
+                self.shift_pressed = pressed;
+            }
             keys::ALT_L | keys::ALT_R => {
                 self.alt_pressed = pressed;
                 if !pressed && self.alt_tab_active {
@@ -3923,14 +4469,30 @@ impl LookingGlass {
             return;
         }
 
-        tracing::debug!(?linux_key, pressed, ctrl = self.ctrl_pressed, shift = self.shift_pressed, alt = self.alt_pressed, meta = self.meta_pressed, "KEY EVENT");
+        tracing::debug!(
+            ?linux_key,
+            pressed,
+            ctrl = self.ctrl_pressed,
+            shift = self.shift_pressed,
+            alt = self.alt_pressed,
+            meta = self.meta_pressed,
+            "KEY EVENT"
+        );
 
         // If context menu is visible, route keyboard navigation to it
         if self.context_menu.visible && pressed {
             use crate::keys;
             match linux_key {
-                keys::UP => { self.context_menu.select_prev(); self.swallow_release = Some(linux_key); return; }
-                keys::DOWN => { self.context_menu.select_next(); self.swallow_release = Some(linux_key); return; }
+                keys::UP => {
+                    self.context_menu.select_prev();
+                    self.swallow_release = Some(linux_key);
+                    return;
+                }
+                keys::DOWN => {
+                    self.context_menu.select_next();
+                    self.swallow_release = Some(linux_key);
+                    return;
+                }
                 keys::ENTER => {
                     if let Some(action) = self.context_menu.confirm_selection() {
                         self.execute_menu_action(action);
@@ -3945,9 +4507,18 @@ impl LookingGlass {
         if pressed {
             use crate::keys;
             match linux_key {
-                keys::F1 => { self.activate_workspace(0); return; }
-                keys::F2 => { self.activate_workspace(1); return; }
-                keys::F3 => { self.activate_workspace(2); return; }
+                keys::F1 => {
+                    self.activate_workspace(0);
+                    return;
+                }
+                keys::F2 => {
+                    self.activate_workspace(1);
+                    return;
+                }
+                keys::F3 => {
+                    self.activate_workspace(2);
+                    return;
+                }
                 _ => {}
             }
 
@@ -3995,11 +4566,8 @@ impl LookingGlass {
                 if self.spatial_mode {
                     // Leaving spatial: remember the pose, then let the
                     // render loop pin the ortho camera.
-                    self.spatial_cam_pose = Some((
-                        self.camera.position,
-                        self.camera.yaw,
-                        self.camera.pitch,
-                    ));
+                    self.spatial_cam_pose =
+                        Some((self.camera.position, self.camera.yaw, self.camera.pitch));
                     self.spatial_mode = false;
                 } else {
                     // Re-entering spatial: restore the saved pose so the
@@ -4024,28 +4592,24 @@ impl LookingGlass {
             ToggleFocus => {
                 self.toggle_focus_mode();
             }
-            ToggleOverview => {
-                match self.focus_manager.camera_mode {
-                    CameraMode::Overview | CameraMode::WorkspaceOverview => {
-                        self.focus_manager.exit_overview(&mut self.camera);
-                        info!("overview mode off");
-                    }
-                    _ => {
-                        self.enter_overview();
-                    }
+            ToggleOverview => match self.focus_manager.camera_mode {
+                CameraMode::Overview | CameraMode::WorkspaceOverview => {
+                    self.focus_manager.exit_overview(&mut self.camera);
+                    info!("overview mode off");
                 }
-            }
-            ToggleWorkspaceOverview => {
-                match self.focus_manager.camera_mode {
-                    CameraMode::WorkspaceOverview => {
-                        self.focus_manager.exit_overview(&mut self.camera);
-                        info!("workspace overview off");
-                    }
-                    _ => {
-                        self.enter_workspace_overview();
-                    }
+                _ => {
+                    self.enter_overview();
                 }
-            }
+            },
+            ToggleWorkspaceOverview => match self.focus_manager.camera_mode {
+                CameraMode::WorkspaceOverview => {
+                    self.focus_manager.exit_overview(&mut self.camera);
+                    info!("workspace overview off");
+                }
+                _ => {
+                    self.enter_workspace_overview();
+                }
+            },
             WorkspaceNext => {
                 self.next_workspace();
             }
@@ -4151,7 +4715,10 @@ impl LookingGlass {
         }
 
         use crate::focus::CameraMode;
-        let in_workspace_overview = matches!(self.focus_manager.camera_mode, CameraMode::WorkspaceOverview);
+        let in_workspace_overview = matches!(
+            self.focus_manager.camera_mode,
+            CameraMode::WorkspaceOverview
+        );
         let in_overview = matches!(self.focus_manager.camera_mode, CameraMode::Overview);
         let in_focus = matches!(self.focus_manager.camera_mode, CameraMode::Focus(_));
 
@@ -4184,20 +4751,34 @@ impl LookingGlass {
     /// Open context menu on the focused visual (triggered by Menu key).
     pub fn open_context_menu_on_focused(&mut self) {
         if let Some(vid) = self.scene.focused_id {
-            let (x, y) = (self.window_size.0 as f64 * 0.5, self.window_size.1 as f64 * 0.5);
+            let (x, y) = (
+                self.window_size.0 as f64 * 0.5,
+                self.window_size.1 as f64 * 0.5,
+            );
             let ws_count = self.workspace_manager.len();
             self.context_menu.show(x, y, vid, ws_count);
             self.context_menu.set_maximize_label(self.is_maximized(vid));
-            let m = crate::context_menu::MenuMetrics::for_framebuffer(self.window_size.0, self.window_size.1);
-            info!(menu_width = m.menu_width, item_height = m.item_height, glyph_scale = m.glyph_scale,
-                  fb_w = self.window_size.0, fb_h = self.window_size.1, "context menu metrics");
+            let m = crate::context_menu::MenuMetrics::for_framebuffer(
+                self.window_size.0,
+                self.window_size.1,
+            );
+            info!(
+                menu_width = m.menu_width,
+                item_height = m.item_height,
+                glyph_scale = m.glyph_scale,
+                fb_w = self.window_size.0,
+                fb_h = self.window_size.1,
+                "context menu metrics"
+            );
             info!(?vid, "context menu opened via keyboard");
         }
     }
 
     /// Close the focused application.
     pub fn close_focused_app(&mut self) {
-        let Some(vid) = self.scene.focused_id else { return };
+        let Some(vid) = self.scene.focused_id else {
+            return;
+        };
         if let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() {
             for t in &self.toplevels {
                 if t.toplevel.wl_surface() == &wl_surface {
@@ -4223,9 +4804,10 @@ impl LookingGlass {
         if self.launcher.applications.is_empty() {
             self.launcher.discover();
         }
-        let match_idx = self.launcher.applications.iter().position(|e| {
-            crate::closed::app_id_matches_entry(&entry.app_id, &e.app_id, &e.name)
-        });
+        let match_idx =
+            self.launcher.applications.iter().position(|e| {
+                crate::closed::app_id_matches_entry(&entry.app_id, &e.app_id, &e.name)
+            });
         let Some(idx) = match_idx else {
             info!(app_id = %entry.app_id, "no desktop file matches closed window, cannot reopen");
             return false;
@@ -4259,9 +4841,11 @@ impl LookingGlass {
         let this: &LookingGlass = self;
         let current = this.scene.focused_id;
         let candidate = if forward {
-            this.focus_history.next_after(current, &move |v| ws_ids.contains(&v))
+            this.focus_history
+                .next_after(current, &move |v| ws_ids.contains(&v))
         } else {
-            this.focus_history.previous_before(current, &move |v| ws_ids.contains(&v))
+            this.focus_history
+                .previous_before(current, &move |v| ws_ids.contains(&v))
         };
         match candidate {
             Some(next) => {
@@ -4306,7 +4890,7 @@ impl LookingGlass {
 
     /// Recover from destroyed focus — if the focused visual no longer exists,
     /// clear focus state cleanly.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn recover_from_destroyed_focus(&mut self) {
         if let Some(vid) = self.scene.focused_id {
             if !self.scene.visuals.iter().any(|v| v.id == vid) {
@@ -4318,7 +4902,7 @@ impl LookingGlass {
     }
 
     /// Cancel any active drag or grab interaction.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn cancel_interaction(&mut self) {
         if self.interaction.is_dragging() {
             self.interaction.handle_pointer_up();
@@ -4346,7 +4930,7 @@ impl LookingGlass {
     }
 
     /// Run full recovery: cancel interaction → exit focus → exit overview → reset camera.
-#[allow(dead_code)] // reserved API surface; not yet wired
+    #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn recover(&mut self) {
         use crate::focus::CameraMode;
         info!("full recovery sequence");
@@ -4359,7 +4943,10 @@ impl LookingGlass {
         }
 
         if matches!(self.focus_manager.camera_mode, CameraMode::Overview)
-            || matches!(self.focus_manager.camera_mode, CameraMode::WorkspaceOverview)
+            || matches!(
+                self.focus_manager.camera_mode,
+                CameraMode::WorkspaceOverview
+            )
         {
             self.focus_manager.exit_overview(&mut self.camera);
             info!("recovery: exited overview");
@@ -4385,10 +4972,7 @@ impl CompositorHandler for LookingGlass {
         &mut self.compositor_state
     }
 
-    fn client_compositor_state<'a>(
-        &self,
-        client: &'a Client,
-    ) -> &'a CompositorClientState {
+    fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
         let state: &ClientState = client.get_data().unwrap();
         &state.compositor_state
     }
@@ -4461,18 +5045,28 @@ impl XdgShellHandler for LookingGlass {
         _token: u32,
     ) {
         // Update stored positioner state for this popup
-        if let Some(info) = self.popups.iter_mut().find(|p| p.popup.wl_surface() == surface.wl_surface()) {
+        if let Some(info) = self
+            .popups
+            .iter_mut()
+            .find(|p| p.popup.wl_surface() == surface.wl_surface())
+        {
             info.positioner = positioner;
         }
         // Accept reposition requests by sending a configure
         let _ = surface.send_configure();
     }
 
-    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>) {
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
         // Client-initiated fullscreen (I7): same coordinator as the
         // compositor key/menu path. The Fullscreen state bit + size are
         // sent by begin_fullscreen, not here.
-        let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
+        let vid = self
+            .find_toplevel(surface.wl_surface())
+            .and_then(|t| t.visual_id);
         match vid {
             Some(vid) => self.begin_fullscreen(vid, crate::fullscreen::FullscreenSource::Client),
             None => {
@@ -4482,7 +5076,9 @@ impl XdgShellHandler for LookingGlass {
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
+        let vid = self
+            .find_toplevel(surface.wl_surface())
+            .and_then(|t| t.visual_id);
         match vid {
             Some(vid) => self.begin_unfullscreen(vid, crate::fullscreen::FullscreenSource::Client),
             None => {
@@ -4496,7 +5092,9 @@ impl XdgShellHandler for LookingGlass {
         // compositor-side flow as Meta+Down — hide the visual, keep the
         // surface mapped, focus the next window. No state bit exists for
         // minimized (xdg-shell), so no configure is sent.
-        let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
+        let vid = self
+            .find_toplevel(surface.wl_surface())
+            .and_then(|t| t.visual_id);
         if let Some(vid) = vid {
             self.begin_minimize(vid, crate::maximize::MinimizeSource::Client);
         } else {
@@ -4505,7 +5103,9 @@ impl XdgShellHandler for LookingGlass {
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
+        let vid = self
+            .find_toplevel(surface.wl_surface())
+            .and_then(|t| t.visual_id);
         match vid {
             Some(vid) => self.begin_maximize(vid, crate::maximize::MaximizeSource::Client),
             None => {
@@ -4515,7 +5115,9 @@ impl XdgShellHandler for LookingGlass {
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        let vid = self.find_toplevel(surface.wl_surface()).and_then(|t| t.visual_id);
+        let vid = self
+            .find_toplevel(surface.wl_surface())
+            .and_then(|t| t.visual_id);
         match vid {
             Some(vid) => self.begin_unmaximize(vid, crate::maximize::MaximizeSource::Client),
             None => {
@@ -4537,7 +5139,9 @@ impl XdgShellHandler for LookingGlass {
         // Client pacing (I3b): the completed transaction frees the surface
         // for the next configure when the session's desired size moved on.
         if let Configure::Toplevel(_) = &configure {
-            let vid = self.toplevels.iter()
+            let vid = self
+                .toplevels
+                .iter()
                 .find(|t| t.toplevel.wl_surface() == &surface)
                 .and_then(|t| t.visual_id);
             if let Some(vid) = vid {
@@ -4632,8 +5236,8 @@ impl XdgShellHandler for LookingGlass {
                 }
             }
             if let Some(vid) = info.visual_id {
-                let was_focused = self.scene.focused_id == Some(vid)
-                    || self.scene.selected_id == Some(vid);
+                let was_focused =
+                    self.scene.focused_id == Some(vid) || self.scene.selected_id == Some(vid);
                 // Drop any outstanding geometry request for the dead surface (I3a).
                 self.client_resizes.abort(vid);
                 // Drop any outstanding maximize intent for the dead surface (I4).
@@ -4642,7 +5246,8 @@ impl XdgShellHandler for LookingGlass {
                 // reopened with its transform and workspace (I1).
                 let transform = self.scene.get_mut(vid).map(|v| v.transform.clone());
                 if let Some(transform) = transform {
-                    let ws_idx = self.workspace_for_visual(vid)
+                    let ws_idx = self
+                        .workspace_for_visual(vid)
                         .unwrap_or_else(|| self.workspace_manager.active_id());
                     self.closed_windows.record(crate::closed::ClosedWindow {
                         app_id: info.app_id.clone(),
@@ -4669,11 +5274,7 @@ impl XdgShellHandler for LookingGlass {
 
     fn popup_destroyed(&mut self, surface: smithay::wayland::shell::xdg::PopupSurface) {
         let wl_surface = surface.wl_surface();
-        let Some(idx) = self
-            .popups
-            .iter()
-            .position(|p| p.wl_surface == *wl_surface)
-        else {
+        let Some(idx) = self.popups.iter().position(|p| p.wl_surface == *wl_surface) else {
             return;
         };
         let info = self.popups.remove(idx);
@@ -4713,7 +5314,9 @@ fn find_parent_toplevel_vid(
 /// Clean up any popup info entries whose visual_id matches the given vid.
 fn cleanup_popups_by_vid(state: &mut LookingGlass, vid: VisualId) {
     // Find popups that reference this vid as parent or have this vid
-    let popup_ids: Vec<VisualId> = state.popups.iter()
+    let popup_ids: Vec<VisualId> = state
+        .popups
+        .iter()
         .filter(|p| p.visual_id == Some(vid) || p.parent_toplevel_vid == Some(vid))
         .filter_map(|p| p.visual_id)
         .collect();
@@ -4722,9 +5325,9 @@ fn cleanup_popups_by_vid(state: &mut LookingGlass, vid: VisualId) {
         remove_popup_visual(state, pvid);
     }
     // Remove from tracking list
-    state.popups.retain(|p| {
-        p.visual_id != Some(vid) && p.parent_toplevel_vid != Some(vid)
-    });
+    state
+        .popups
+        .retain(|p| p.visual_id != Some(vid) && p.parent_toplevel_vid != Some(vid));
 }
 
 /// Drop a popup's presentation state (visual, surface map, workspace
@@ -4824,7 +5427,12 @@ impl ShmHandler for LookingGlass {
 
 impl SelectionHandler for LookingGlass {
     type SelectionUserData = ();
-    fn new_selection(&mut self, ty: SelectionTarget, source: Option<smithay::wayland::selection::SelectionSource>, _seat: Seat<Self>) {
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<smithay::wayland::selection::SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
         // G-B1: smithay's wl_data_device.set_selection arm already
         // stores the CLIENT source in the seat data (device.rs:144) —
         // wrapping the mime types into a compositor-side selection
@@ -4835,11 +5443,10 @@ impl SelectionHandler for LookingGlass {
         // and logs the negotiated mime set. The owner is the
         // keyboard-focused client: smithay DENIES set_selection from
         // any other client (device.rs SetSelection guard).
-        let owner = source.as_ref().and_then(|_| KBD_FOCUS_CLIENT.lock().unwrap().clone());
-        let mime_types: Vec<String> = source
+        let owner = source
             .as_ref()
-            .map(|s| s.mime_types())
-            .unwrap_or_default();
+            .and_then(|_| KBD_FOCUS_CLIENT.lock().unwrap().clone());
+        let mime_types: Vec<String> = source.as_ref().map(|s| s.mime_types()).unwrap_or_default();
         info!(?ty, ?owner, mimes = ?mime_types, "selection source changed");
         match ty {
             SelectionTarget::Clipboard => {
@@ -4879,7 +5486,12 @@ impl SelectionHandler for LookingGlass {
 }
 
 impl ClientDndGrabHandler for LookingGlass {
-    fn started(&mut self, source: Option<WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
+    fn started(
+        &mut self,
+        source: Option<WlDataSource>,
+        icon: Option<WlSurface>,
+        _seat: Seat<Self>,
+    ) {
         // A client began a wl_data_device drag (G-B2): the compositor
         // must stop manipulating windows for the remainder of the
         // gesture and feed pointer motion/release to the seat pointer
@@ -4890,8 +5502,11 @@ impl ClientDndGrabHandler for LookingGlass {
             self.interaction.handle_pointer_up();
         }
         self.dnd_active = true;
-        info!(has_source = source.is_some(), has_icon = icon.is_some(),
-              "dnd: client drag started");
+        info!(
+            has_source = source.is_some(),
+            has_icon = icon.is_some(),
+            "dnd: client drag started"
+        );
         self.schedule_render();
     }
 
@@ -4958,7 +5573,11 @@ fn load_system_xkb_config() -> smithay::input::keyboard::XkbConfig<'static> {
                     model: Box::leak(model.into_boxed_str()),
                     layout: Box::leak(layout.into_boxed_str()),
                     variant: Box::leak(variant.into_boxed_str()),
-                    options: if options.is_empty() { None } else { Some(options) },
+                    options: if options.is_empty() {
+                        None
+                    } else {
+                        Some(options)
+                    },
                 };
             }
         }
@@ -4985,7 +5604,12 @@ delegate_dmabuf!(LookingGlass);
 mod damage_tests {
     use super::*;
 
-    fn rect(x: i32, y: i32, w: i32, h: i32) -> smithay::utils::Rectangle<i32, smithay::utils::Buffer> {
+    fn rect(
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> smithay::utils::Rectangle<i32, smithay::utils::Buffer> {
         smithay::utils::Rectangle::new(
             smithay::utils::Point::new(x, y),
             smithay::utils::Size::new(w, h),

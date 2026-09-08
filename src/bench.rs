@@ -71,7 +71,11 @@ fn bench_scene_traversal() -> BenchmarkResult {
         times.push(elapsed);
     }
 
-    compute_stats(&format!("scene_traversal_{}_visuals", n), iterations, &times)
+    compute_stats(
+        &format!("scene_traversal_{}_visuals", n),
+        iterations,
+        &times,
+    )
 }
 
 /// Measure scheduler overhead.

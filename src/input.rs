@@ -77,11 +77,21 @@ impl Camera {
         self.position.y = self.position.y.clamp(-MAX_DISTANCE, MAX_DISTANCE);
         self.position.z = self.position.z.clamp(-MAX_DISTANCE, MAX_DISTANCE);
         // NaN/Inf protection
-        if !self.position.x.is_finite() { self.position.x = 0.0; }
-        if !self.position.y.is_finite() { self.position.y = 0.0; }
-        if !self.position.z.is_finite() { self.position.z = 800.0; }
-        if !self.yaw.is_finite() { self.yaw = 0.0; }
-        if !self.pitch.is_finite() { self.pitch = 0.0; }
+        if !self.position.x.is_finite() {
+            self.position.x = 0.0;
+        }
+        if !self.position.y.is_finite() {
+            self.position.y = 0.0;
+        }
+        if !self.position.z.is_finite() {
+            self.position.z = 800.0;
+        }
+        if !self.yaw.is_finite() {
+            self.yaw = 0.0;
+        }
+        if !self.pitch.is_finite() {
+            self.pitch = 0.0;
+        }
     }
 
     /// Orbit the camera around its current focus point.
@@ -90,8 +100,8 @@ impl Camera {
     pub fn handle_orbit(&mut self, dx: f64, dy: f64) {
         let focus = self.position + self.look_dir() * distance_to_focus(self);
         self.yaw += dx as f32 * self.sensitivity * 5.0;
-        self.pitch = (self.pitch - dy as f32 * self.sensitivity * 5.0)
-            .clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        self.pitch =
+            (self.pitch - dy as f32 * self.sensitivity * 5.0).clamp(-PITCH_LIMIT, PITCH_LIMIT);
         // Reposition camera to maintain focus distance
         let dist = distance_to_focus(self);
         self.position = focus - self.look_dir() * dist;
@@ -133,16 +143,40 @@ impl Camera {
         let right = self.right();
 
         match key {
-            25 => { info!("W pressed, camera forward"); self.position += fwd * step; }
-            39 => { info!("S pressed, camera backward"); self.position -= fwd * step; }
-            38 => { info!("A pressed, camera strafe left"); self.position -= right * step; }
-            40 => { info!("D pressed, camera strafe right"); self.position += right * step; }
-            24 => { self.position.y -= step; }
-            26 => { self.position.y += step; }
-            113 => { self.yaw -= Rad(0.05).0; }
-            114 => { self.yaw += Rad(0.05).0; }
-            111 => { self.pitch = (self.pitch + Rad(0.05).0).clamp(Rad(-1.5).0, Rad(1.5).0); }
-            116 => { self.pitch = (self.pitch - Rad(0.05).0).clamp(Rad(-1.5).0, Rad(1.5).0); }
+            25 => {
+                info!("W pressed, camera forward");
+                self.position += fwd * step;
+            }
+            39 => {
+                info!("S pressed, camera backward");
+                self.position -= fwd * step;
+            }
+            38 => {
+                info!("A pressed, camera strafe left");
+                self.position -= right * step;
+            }
+            40 => {
+                info!("D pressed, camera strafe right");
+                self.position += right * step;
+            }
+            24 => {
+                self.position.y -= step;
+            }
+            26 => {
+                self.position.y += step;
+            }
+            113 => {
+                self.yaw -= Rad(0.05).0;
+            }
+            114 => {
+                self.yaw += Rad(0.05).0;
+            }
+            111 => {
+                self.pitch = (self.pitch + Rad(0.05).0).clamp(Rad(-1.5).0, Rad(1.5).0);
+            }
+            116 => {
+                self.pitch = (self.pitch - Rad(0.05).0).clamp(Rad(-1.5).0, Rad(1.5).0);
+            }
             _ => {}
         }
     }
@@ -150,8 +184,7 @@ impl Camera {
     #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn handle_mouse_move(&mut self, dx: f64, dy: f64) {
         self.yaw += dx as f32 * self.sensitivity;
-        self.pitch = (self.pitch - dy as f32 * self.sensitivity)
-            .clamp(Rad(-1.5).0, Rad(1.5).0);
+        self.pitch = (self.pitch - dy as f32 * self.sensitivity).clamp(Rad(-1.5).0, Rad(1.5).0);
     }
 
     #[allow(dead_code)] // reserved API surface; not yet wired
@@ -196,26 +229,30 @@ impl Camera {
         let mut min = Vector3::new(f32::MAX, f32::MAX, f32::MAX);
         let mut max = Vector3::new(f32::MIN, f32::MIN, f32::MIN);
         for v in scene.iter() {
-            if v.window_state == crate::scene::WindowState::Minimized { continue; }
+            if v.window_state == crate::scene::WindowState::Minimized {
+                continue;
+            }
             let p = v.transform.position;
             // Build model matrix to get rotated corners
-            let m = Matrix4::from_translation(p)
-                * Matrix4::from(v.transform.rotation);
+            let m = Matrix4::from_translation(p) * Matrix4::from(v.transform.rotation);
             let half_w = v.total_width() * 0.5;
             let half_h = v.total_height() * 0.5;
             // Local-space corners, transformed by model matrix without scale
             let local = [
                 Vector3::new(-half_w, -half_h, 0.0),
-                Vector3::new( half_w, -half_h, 0.0),
-                Vector3::new(-half_w,  half_h, 0.0),
-                Vector3::new( half_w,  half_h, 0.0),
+                Vector3::new(half_w, -half_h, 0.0),
+                Vector3::new(-half_w, half_h, 0.0),
+                Vector3::new(half_w, half_h, 0.0),
             ];
             for lc in &local {
                 let world = m * Vector4::new(lc.x, lc.y, lc.z, 1.0);
                 let wc = Vector3::new(world.x, world.y, world.z) / world.w;
-                min.x = min.x.min(wc.x); max.x = max.x.max(wc.x);
-                min.y = min.y.min(wc.y); max.y = max.y.max(wc.y);
-                min.z = min.z.min(wc.z); max.z = max.z.max(wc.z);
+                min.x = min.x.min(wc.x);
+                max.x = max.x.max(wc.x);
+                min.y = min.y.min(wc.y);
+                max.y = max.y.max(wc.y);
+                min.z = min.z.min(wc.z);
+                max.z = max.z.max(wc.z);
             }
         }
         let center = (min + max) * 0.5;
@@ -339,7 +376,12 @@ mod tests {
         let d1 = distance_to_focus(&cam);
         // Distance should remain approximately the same
         let diff = (d1 - d0).abs();
-        assert!(diff < d0 * 0.5, "orbit should roughly preserve focus distance: {} vs {}", d0, d1);
+        assert!(
+            diff < d0 * 0.5,
+            "orbit should roughly preserve focus distance: {} vs {}",
+            d0,
+            d1
+        );
     }
 
     #[test]
@@ -351,7 +393,11 @@ mod tests {
         }
         // Should not go behind minimum distance
         let d = distance_to_focus(&cam);
-        assert!(d >= crate::input::MIN_DISTANCE * 0.9, "zoom should not go below min distance: {}", d);
+        assert!(
+            d >= crate::input::MIN_DISTANCE * 0.9,
+            "zoom should not go below min distance: {}",
+            d
+        );
         // Should not go to infinity
         assert!(cam.position.z.is_finite());
     }
@@ -373,7 +419,10 @@ mod tests {
         let cam = Camera::new();
         let dir = cam.look_dir();
         let len = (dir.x * dir.x + dir.y * dir.y + dir.z * dir.z).sqrt();
-        assert!((len - 1.0).abs() < 0.01, "look direction should be normalized: {}", len);
+        assert!(
+            (len - 1.0).abs() < 0.01,
+            "look direction should be normalized: {}",
+            len
+        );
     }
 }
-

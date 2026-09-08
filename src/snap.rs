@@ -59,7 +59,10 @@ pub fn snap_position(
     for &(apos, aw, ah) in anchors {
         let left = pos_after_snap(moving_pos, moving_w, moving_h, apos, aw, ah, config);
         if let Some(candidate) = left {
-            if best.as_ref().is_none_or(|b| candidate.strength < b.strength) {
+            if best
+                .as_ref()
+                .is_none_or(|b| candidate.strength < b.strength)
+            {
                 best = Some(candidate);
             }
         }
@@ -67,7 +70,10 @@ pub fn snap_position(
 
     // Check workspace origin
     if let Some(candidate) = snap_to_origin(moving_pos, moving_w, moving_h, config) {
-        if best.as_ref().is_none_or(|b| candidate.strength < b.strength) {
+        if best
+            .as_ref()
+            .is_none_or(|b| candidate.strength < b.strength)
+        {
             best = Some(candidate);
         }
     }
@@ -205,12 +211,22 @@ mod tests {
         // Anchor at (0,0) size 100x50, right edge = 50
         // Distance = |70 - 50| = 20, within 60
         let anchors = [(vec(0.0, 0.0), 100.0, 50.0)];
-        let result = snap_position(vec(120.0, 0.0), 100.0, 50.0, &anchors, &SnapConfig { threshold: 60.0 });
+        let result = snap_position(
+            vec(120.0, 0.0),
+            100.0,
+            50.0,
+            &anchors,
+            &SnapConfig { threshold: 60.0 },
+        );
         assert!(result.is_some(), "should snap left edge within threshold");
         if let Some(snap) = result {
             // Snapped left edge = anchor right = 50
             // New center = 50 + 50 = 100
-            assert!((snap.position.x - 100.0).abs() < 0.01, "snapped x should be 100, got {}", snap.position.x);
+            assert!(
+                (snap.position.x - 100.0).abs() < 0.01,
+                "snapped x should be 100, got {}",
+                snap.position.x
+            );
         }
     }
 
@@ -245,12 +261,25 @@ mod tests {
         // Distance = 50 > 30 -> no snap
         // Make it closer:
         let anchors = [(vec(0.0, 0.0), 100.0, 50.0)];
-        let result = snap_position(vec(0.0, 50.0), 100.0, 50.0, &anchors, &SnapConfig { threshold: 60.0 });
-        assert!(result.is_some(), "top edge should snap with larger threshold");
+        let result = snap_position(
+            vec(0.0, 50.0),
+            100.0,
+            50.0,
+            &anchors,
+            &SnapConfig { threshold: 60.0 },
+        );
+        assert!(
+            result.is_some(),
+            "top edge should snap with larger threshold"
+        );
         if let Some(snap) = result {
             // Moving top = anchor bottom = 25
             // New center = 25 + 25 = 50
-            assert!((snap.position.y - 50.0).abs() < 0.01, "snapped y should be 50, got {}", snap.position.y);
+            assert!(
+                (snap.position.y - 50.0).abs() < 0.01,
+                "snapped y should be 50, got {}",
+                snap.position.y
+            );
         }
     }
 
@@ -282,12 +311,25 @@ mod tests {
         // Distance = 50 > 30
         // Make closer:
         let anchors = [(vec(0.0, 0.0), 100.0, 50.0)];
-        let result = snap_position(vec(0.0, -50.0), 100.0, 50.0, &anchors, &SnapConfig { threshold: 60.0 });
-        assert!(result.is_some(), "bottom edge should snap with larger threshold");
+        let result = snap_position(
+            vec(0.0, -50.0),
+            100.0,
+            50.0,
+            &anchors,
+            &SnapConfig { threshold: 60.0 },
+        );
+        assert!(
+            result.is_some(),
+            "bottom edge should snap with larger threshold"
+        );
         if let Some(snap) = result {
             // Moving bottom = anchor top = -25
             // New center = -25 - 25 = -50
-            assert!((snap.position.y - (-50.0)).abs() < 0.01, "snapped y should be -50, got {}", snap.position.y);
+            assert!(
+                (snap.position.y - (-50.0)).abs() < 0.01,
+                "snapped y should be -50, got {}",
+                snap.position.y
+            );
         }
     }
 
@@ -297,7 +339,13 @@ mod tests {
         // Anchor bottom = 0 + 25 = 25
         // Y overlap fails, so no snap even though X edges are close
         let anchors = [(vec(0.0, 0.0), 100.0, 50.0)];
-        let result = snap_position(vec(110.0, 200.0), 100.0, 50.0, &anchors, &SnapConfig { threshold: 100.0 });
+        let result = snap_position(
+            vec(110.0, 200.0),
+            100.0,
+            50.0,
+            &anchors,
+            &SnapConfig { threshold: 100.0 },
+        );
         // Y gap is large -> no overlap -> no snap
         assert!(result.is_none() || result.unwrap().kind == SnapKind::Origin);
     }
