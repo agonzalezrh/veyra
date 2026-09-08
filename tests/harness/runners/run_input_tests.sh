@@ -553,7 +553,16 @@ JSON_DUMP=1
 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
     --duration 12000 > "$TMP_DIR/t16i.json" 2>/dev/null &
 T16I_PID=$!
-sleep 1.5
+# Wait for THIS client's window to actually map before driving it (the
+# suite shares one compositor log, so scope by the client's app_id): an
+# F12 (or the focus click) racing an unmapped window makes the configure
+# sequence miss the client's event window entirely.
+BASE_MAPPED=$(strip_ansi "$TMP_DIR/veyra.log" | grep -ac "surface mapped" || true)
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+    NOW_MAPPED=$(strip_ansi "$TMP_DIR/veyra.log" | grep -ac "surface mapped" || true)
+    [ "$NOW_MAPPED" -gt "$BASE_MAPPED" ] && break
+    sleep 0.5
+done
 DISPLAY=:99 xdotool mousemove $CX $CY click 1
 sleep 0.3
 DISPLAY=:99 xdotool key F12

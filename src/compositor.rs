@@ -290,6 +290,9 @@ pub struct LookingGlass {
     last_wayland_focus: Option<WlSurface>,
     /// Render scheduling (dirty/animating state instead of fixed 16ms timer).
     pub scheduler: RenderScheduler,
+    /// P2 #9: per-GL-context render caches (DrawGl programs/VAOs, font
+    /// atlas) — owned here so they reset exactly when the context does.
+    pub render_caches: renderer::RenderCaches,
     /// R6: wake handle pinging the event loop — dirty state renders
     /// immediately instead of waiting for the pacing timer.
     pub render_ping: Option<smithay::reexports::calloop::ping::Ping>,
@@ -490,6 +493,7 @@ impl LookingGlass {
             render_ping: None,
             pacing_timer: None,
             pacing_active: false,
+            render_caches: Default::default(),
             focus_manager: FocusManager::new(),
             interaction: InteractionController::new(),
             input_sinks: HashMap::new(),
@@ -1560,6 +1564,8 @@ impl LookingGlass {
         // Bind the EGL surface before rendering (makes rendering context current)
         if let Err(e) = back.begin_frame() {
             error!(?e, "begin_frame failed");
+            // P2 #9: the GPU caches die with the context.
+            self.render_caches = Default::default();
             self.scheduler.clear();
             self.perf
                 .record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
@@ -1578,6 +1584,7 @@ impl LookingGlass {
             &mut self.perf,
             ws_visible,
             &overlays,
+            &mut self.render_caches,
         ) {
             Err(SwapBuffersError::ContextLost(e)) => {
                 error!(?e, "Context lost");
@@ -1587,6 +1594,8 @@ impl LookingGlass {
         };
         if context_lost {
             self.backend = None;
+            // P2 #9: the GPU caches die with the context.
+            self.render_caches = Default::default();
             self.scheduler.clear();
             self.perf
                 .record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
@@ -1607,6 +1616,8 @@ impl LookingGlass {
             Err(SwapBuffersError::ContextLost(e)) => {
                 error!(?e, "Context lost on finish_frame");
                 self.backend = None;
+                // P2 #9: the GPU caches die with the context.
+                self.render_caches = Default::default();
                 self.scheduler.clear();
                 self.perf
                     .record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);

@@ -1,5 +1,3 @@
-use std::sync::Mutex;
-
 use cgmath::Matrix;
 use cgmath::Matrix4;
 use smithay::backend::renderer::gles::ffi;
@@ -41,12 +39,15 @@ pub fn upload_texture_sub_region(
     });
 }
 
-/// Global DrawGl cache, created once per GL context lifetime.
-/// Reset on context loss.
-static DRAW_GL: Mutex<Option<DrawGl>> = Mutex::new(None);
-
-/// Font atlas texture for bitmap text rendering.
-static FONT_ATLAS: Mutex<Option<FontAtlas>> = Mutex::new(None);
+/// Per-GL-context render caches (P2 #9): the shader programs/VAOs and
+/// the font atlas are owned by the state that owns the GL context and
+/// reset together with it on context loss — a fresh context can no
+/// longer observe stale object IDs from a previous one.
+#[derive(Default)]
+pub struct RenderCaches {
+    draw: Option<DrawGl>,
+    font_atlas: Option<FontAtlas>,
+}
 
 struct FontAtlas {
     tex_id: u32,
@@ -66,6 +67,7 @@ struct FontAtlas {
 unsafe fn draw_text(
     gl: &ffi::Gles2,
     draw: &DrawGl,
+    atlas: &FontAtlas,
     text: &str,
     x_ndc: f32,
     y_ndc: f32,
@@ -75,11 +77,7 @@ unsafe fn draw_text(
     color_g: f32,
     color_b: f32,
 ) {
-    let (font_tex_id, gw, gh, cols) = {
-        let atlas_guard = FONT_ATLAS.lock().unwrap();
-        let Some(ref font) = *atlas_guard else { return };
-        (font.tex_id, font.gw, font.gh, font.cols)
-    };
+    let (font_tex_id, gw, gh, cols) = (atlas.tex_id, atlas.gw, atlas.gh, atlas.cols);
     let total_rows = atlas_rows(cols);
     let atlas_w = (cols * gw) as f32;
     let atlas_h = (total_rows * gh) as f32;
@@ -191,9 +189,11 @@ unsafe fn draw_text(
 ///
 /// # Safety
 /// Requires a current GL context.
+#[allow(clippy::too_many_arguments)] // wide GL/routing signatures are inherent
 unsafe fn draw_text_in_window(
     gl: &ffi::Gles2,
     draw: &DrawGl,
+    atlas: &FontAtlas,
     text: &str,
     mats: (&Matrix4<f32>, &Matrix4<f32>),
     win: (f32, f32),
@@ -203,11 +203,7 @@ unsafe fn draw_text_in_window(
     let (model, pv) = mats;
     let (gw, gh) = win;
     let (x_px, y_center_px, char_h_px) = run;
-    let (font_tex_id, gw_atlas, gh_atlas, cols) = {
-        let atlas_guard = FONT_ATLAS.lock().unwrap();
-        let Some(ref font) = *atlas_guard else { return };
-        (font.tex_id, font.gw, font.gh, font.cols)
-    };
+    let (font_tex_id, gw_atlas, gh_atlas, cols) = (atlas.tex_id, atlas.gw, atlas.gh, atlas.cols);
     let total_rows = atlas_rows(cols);
     let atlas_w = (cols * gw_atlas) as f32;
     let atlas_h = (total_rows * gh_atlas) as f32;
@@ -442,12 +438,7 @@ pub const fn atlas_rows(cols: u32) -> u32 {
     (font_glyph_count() as u32).div_ceil(cols)
 }
 
-unsafe fn ensure_font_atlas(gl: &ffi::Gles2) {
-    let mut guard = FONT_ATLAS.lock().unwrap();
-    if guard.is_some() {
-        return;
-    }
-
+unsafe fn new_font_atlas(gl: &ffi::Gles2) -> FontAtlas {
     const GW: u32 = 5;
     const GH: u32 = 7;
     const COLS: u32 = 16;
@@ -528,12 +519,12 @@ unsafe fn ensure_font_atlas(gl: &ffi::Gles2) {
         ffi::CLAMP_TO_EDGE as i32,
     );
 
-    *guard = Some(FontAtlas {
+    FontAtlas {
         tex_id: tex,
         gw: GW,
         gh: GH,
         cols: COLS,
-    });
+    }
 }
 
 const QUAD_VS: &str = "\
@@ -811,14 +802,6 @@ impl DrawGl {
     }
 }
 
-/// Get or create the cached DrawGl.
-fn get_draw_gl(gl: &ffi::Gles2) -> Option<std::sync::MutexGuard<'static, Option<DrawGl>>> {
-    let mut guard = DRAW_GL.lock().unwrap();
-    if guard.is_none() {
-        *guard = Some(DrawGl::new(gl));
-    }
-    Some(guard)
-}
 #[allow(clippy::too_many_arguments)] // wide GL/routing signatures are inherent
 fn draw_textured_quad(
     gl: &ffi::Gles2,
@@ -881,6 +864,7 @@ pub struct Overlays<'a> {
 /// finish_frame) is owned by the caller — LookingGlass::render — so
 /// each frame is made current and submitted exactly once, and
 /// presentation errors propagate to it.
+#[allow(clippy::too_many_arguments)] // wide GL/routing signatures are inherent
 pub fn render_scene(
     backend: &mut dyn PresentationBackend,
     scene: &Scene,
@@ -889,6 +873,7 @@ pub fn render_scene(
     perf: &mut PerfStats,
     visible_ids: Option<&[crate::scene::VisualId]>,
     overlays: &Overlays,
+    caches: &mut RenderCaches,
 ) -> Result<(), SwapBuffersError> {
     use crate::perf::PipelineStage;
 
@@ -917,16 +902,23 @@ pub fn render_scene(
         }
     };
 
-    // Initialize DrawGl once per GL context lifetime
+    // Initialize the per-context caches inside the current GL context
+    // (P2 #9): DrawGl programs/VAOs and the font atlas live and die
+    // with the context that created them.
+    let RenderCaches { draw, font_atlas } = &mut *caches;
     let _ = renderer.with_context(|gl| {
         rebind_surface(gl);
-        get_draw_gl(gl);
+        if draw.is_none() {
+            *draw = Some(DrawGl::new(gl));
+        }
+        if font_atlas.is_none() {
+            *font_atlas = Some(unsafe { new_font_atlas(gl) });
+        }
     });
-    let draw_guard = DRAW_GL.lock().unwrap();
-    let draw = match draw_guard.as_ref() {
-        Some(d) => d,
-        None => {
-            error!("DrawGl not initialized");
+    let (draw, atlas) = match (draw.as_ref(), font_atlas.as_ref()) {
+        (Some(d), Some(a)) => (d, a),
+        _ => {
+            error!("render caches not initialized");
             return Ok(());
         }
     };
@@ -1024,6 +1016,7 @@ pub fn render_scene(
                 draw_text_in_window(
                     gl,
                     draw,
+                    atlas,
                     &title,
                     (&model, &pv),
                     (gw, gh),
@@ -1044,6 +1037,7 @@ pub fn render_scene(
                 draw_text_in_window(
                     gl,
                     draw,
+                    atlas,
                     &glyph.to_string(),
                     (&model, &pv),
                     (gw, gh),
@@ -1067,7 +1061,6 @@ pub fn render_scene(
             gl.Disable(ffi::DEPTH_TEST);
             gl.Enable(ffi::BLEND);
             gl.BlendFunc(ffi::SRC_ALPHA, ffi::ONE_MINUS_SRC_ALPHA);
-            ensure_font_atlas(gl);
 
             let stride = 4 * std::mem::size_of::<f32>() as i32;
             let solid_rect =
@@ -1153,6 +1146,7 @@ pub fn render_scene(
                 draw_text(
                     gl,
                     draw,
+                    atlas,
                     &it.label,
                     text_x,
                     text_y,
@@ -1192,8 +1186,8 @@ pub fn render_scene(
                 // Convert screen pixel coords to NDC [-1, 1]
                 let ndc_w = menu_width / w * 2.0;
 
-                // Ensure font atlas is initialized for the labels below
-                ensure_font_atlas(gl);
+                // (The font atlas was initialized with the per-context
+                // caches at the top of render_scene.)
 
                 // Draw px-space rects through the solid overlay program.
                 // (px, py) is the top-left corner in screen pixels.
@@ -1289,7 +1283,19 @@ pub fn render_scene(
                     let ch = (7.0f32 * scale / h) * 2.0; // 7*scale px char height in NDC
                     let cw = (5.0f32 * scale / w) * 2.0; // 5*scale px char width in NDC
                     let text_y = item_iy_c - ch / 2.0; // draw_text y = glyph bottom → vertically centered
-                    draw_text(gl, draw, &_item.label, text_x, text_y, cw, ch, tr, tg, tb);
+                    draw_text(
+                        gl,
+                        draw,
+                        atlas,
+                        &_item.label,
+                        text_x,
+                        text_y,
+                        cw,
+                        ch,
+                        tr,
+                        tg,
+                        tb,
+                    );
                 }
 
                 // Restore GL state for subsequent main-render passes
@@ -1349,5 +1355,27 @@ mod tests {
         const ROWS: u32 = atlas_rows(16);
         assert_eq!(ROWS, atlas_rows(cols));
         assert_eq!(ROWS * 7, 49); // 7 rows x 7 px
+    }
+
+    /// P2 #9 regression guard: the render caches are context-owned —
+    /// LookingGlass::render must reset them on every context-loss path
+    /// (begin, draw, submit) so a fresh context can never observe stale
+    /// object IDs from a previous one.
+    #[test]
+    fn context_loss_resets_render_caches() {
+        let src = include_str!("compositor.rs");
+        // render(): the context-loss paths must clear the caches.
+        let count = src
+            .matches("self.render_caches = Default::default();")
+            .count();
+        assert!(
+            count >= 3,
+            "expected resets on all three context-loss paths (begin/draw/submit), found {count}"
+        );
+        // The statics must be gone — ownership lives in RenderCaches.
+        assert!(
+            !src.contains("static DRAW_GL") && !src.contains("static FONT_ATLAS"),
+            "global GL caches must not return"
+        );
     }
 }
