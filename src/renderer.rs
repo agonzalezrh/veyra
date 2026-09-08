@@ -1057,7 +1057,7 @@ pub fn render_scene(
             };
 
             let bar_y = h - tb.bar_h;
-            eprintln!("TB_DRAW w={} h={} bar_h={} items={} bar_y={}", w, h, tb.bar_h, tb.items.len(), bar_y);
+            tracing::debug!(w, h, bar_h = tb.bar_h, items = tb.items.len(), bar_y, "taskbar draw");
             // Bar background + top hairline.
             solid_rect(0.0, bar_y, w, tb.bar_h, 0.10, 0.11, 0.12, 0.97);
             solid_rect(0.0, bar_y, w, 1.0, 0.28, 0.30, 0.32, 0.9);
@@ -1095,7 +1095,10 @@ pub fn render_scene(
                 draw_text(gl, draw, &it.label, text_x, text_y, cw, ch, text_color.0, text_color.1, text_color.2);
             }
 
-            eprintln!("TB_ERR gl={:x}", gl.GetError());
+            let gl_err = gl.GetError();
+            if gl_err != 0 {
+                tracing::warn!(code = format!("{gl_err:x}"), "GL error after taskbar draw");
+            }
             gl.Enable(ffi::DEPTH_TEST);
             gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
         });

@@ -54,8 +54,7 @@ use smithay::wayland::shm::ShmState;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::Mutex;
-use std::time::SystemTime;
+use std::sync::{Mutex, OnceLock};
 
 use cgmath::Matrix4;
 
@@ -346,12 +345,17 @@ pub struct LookingGlass {
 #[derive(Clone, Copy, PartialEq)]
 enum ContentRouting { Routed, TitleBarHit, NoTarget }
 
-/// Monotonic milliseconds timestamp for input events.
+/// Monotonic milliseconds timestamp for input events (R10).
+///
+/// Anchored to process start via `Instant` — wall-clock sources
+/// (`SystemTime`) jump backwards on NTP syncs or manual clock changes,
+/// which corrupts Wayland event and frame-callback timestamps. The u32
+/// millisecond representation wraps every ~49.7 days by Wayland
+/// definition; clients compare timestamps with wrapping arithmetic.
 fn now_ms() -> u32 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u32
+    static PROCESS_START: OnceLock<std::time::Instant> = OnceLock::new();
+    let start = PROCESS_START.get_or_init(std::time::Instant::now);
+    std::time::Instant::now().duration_since(*start).as_millis() as u32
 }
 
 impl LookingGlass {
@@ -4780,5 +4784,22 @@ mod damage_tests {
     fn all_invalid_damage_degenerates_to_full_upload() {
         let d = vec![rect(700, 0, 100, 100)];
         assert!(LookingGlass::sanitize_damage(d, Some((696, 432))).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod r10_tests {
+    /// R10: timestamps come from a monotonic source — repeated calls
+    /// never move backwards, and the anchor is process start (not the
+    /// wall clock, which NTP can move).
+    #[test]
+    fn now_ms_is_monotonic() {
+        let a = super::now_ms();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let b = super::now_ms();
+        assert!(b >= a, "timestamp moved backwards: {a} -> {b}");
+        // u32 wrapping representation is the Wayland contract; the
+        // value must fit its type by construction.
+        let _c: u32 = super::now_ms();
     }
 }
