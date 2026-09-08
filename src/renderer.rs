@@ -874,6 +874,10 @@ pub struct Overlays<'a> {
     pub taskbar: Option<&'a crate::shell::TaskbarLayout>,
 }
 
+/// R1 contract: DRAW-ONLY. The frame lifecycle (begin_frame /
+/// finish_frame) is owned by the caller — LookingGlass::render — so
+/// each frame is made current and submitted exactly once, and
+/// presentation errors propagate to it.
 pub fn render_scene(
     backend: &mut dyn PresentationBackend,
     scene: &Scene,
@@ -886,10 +890,6 @@ pub fn render_scene(
     use crate::perf::PipelineStage;
 
     let (w, h) = backend.size();
-
-    let t_bind = std::time::Instant::now();
-    backend.begin_frame()?;
-    perf.record_stage(PipelineStage::RenderBind, t_bind.elapsed().as_nanos() as u64);
 
     // Stash raw pointers to EGL context and surface so we can rebind the
     // window surface inside with_context() closures. with_context() internally
@@ -1201,18 +1201,35 @@ pub fn render_scene(
         }
     }
 
-    let t_submit = std::time::Instant::now();
-    let r = backend.finish_frame();
-    perf.record_stage(PipelineStage::RenderSubmit, t_submit.elapsed().as_nanos() as u64);
-
-    if let Err(SwapBuffersError::ContextLost(e)) = r {
-        error!(?e, "Context lost");
-    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    /// R1 regression guard: `render_scene` is DRAW-ONLY — the frame
+    /// lifecycle (begin_frame/finish_frame) belongs to
+    /// LookingGlass::render, which calls each exactly once per frame.
+    /// A second begin/submit here would re-make the surface, queue an
+    /// unrendered DRM buffer, and double-swap on winit.
+    #[test]
+    fn render_scene_is_draw_only_no_frame_lifecycle() {
+        let src = include_str!("renderer.rs");
+        let start = src
+            .find("pub fn render_scene")
+            .expect("render_scene must exist");
+        let end = src[start..]
+            .find("#[cfg(test)]")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let body = &src[start..end];
+        for banned in ["begin_frame", "finish_frame"] {
+            assert!(
+                !body.contains(banned),
+                "render_scene must not call {banned} — the frame lifecycle is owned by LookingGlass::render (R1)"
+            );
+        }
+    }
+
     use super::*;
 
     /// The atlas geometry invariant: the TEXTURE height (built from

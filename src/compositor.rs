@@ -1302,12 +1302,27 @@ impl LookingGlass {
             self.perf.record_frame();
             return;
         }
-        if let Err(e) = back.finish_frame() {
-            error!(?e, "finish_frame failed");
-        } else {
-            self.perf.record_presented();
-            if !updates.is_empty() {
-                self.perf.record_damage();
+        // R1: presentation errors must reach the frame owner. A lost
+        // context drops the backend (recreated on demand) exactly like
+        // the begin path above; temporary failures are logged and the
+        // frame is not counted as presented.
+        match back.finish_frame() {
+            Ok(()) => {
+                self.perf.record_presented();
+                if !updates.is_empty() {
+                    self.perf.record_damage();
+                }
+            }
+            Err(SwapBuffersError::ContextLost(e)) => {
+                error!(?e, "Context lost on finish_frame");
+                self.backend = None;
+                self.scheduler.clear();
+                self.perf.record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
+                self.perf.record_frame();
+                return;
+            }
+            Err(e) => {
+                error!(?e, "finish_frame failed");
             }
         }
 
