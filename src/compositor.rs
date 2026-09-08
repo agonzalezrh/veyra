@@ -1492,6 +1492,70 @@ impl LookingGlass {
     /// Route a pointer event to the selected visual's InputSink.
     /// Focus follows click: sets focused visual to the selected one.
     /// Title bar hits are NOT routed to content — caller should start a drag.
+    /// R7: release any active pointer constraint AND deactivate its
+    /// protocol object. veyra's spatial routing can move pointer focus
+    /// without a protocol-level wl_pointer leave, so smithay's
+    /// automatic deactivate-on-leave does not always fire — without
+    /// this, clients would keep believing they are locked/confined.
+    pub fn unlock_pointer(&mut self) {
+        let surfaces: Vec<WlSurface> = self
+            .pointer_constraints
+            .locked_surface
+            .iter()
+            .chain(self.pointer_constraints.confined_surface.iter())
+            .cloned()
+            .collect();
+        if !surfaces.is_empty() {
+            if let Some(ph) = self.pointer_handle.clone() {
+                for surface in &surfaces {
+                    smithay::wayland::pointer_constraints::with_pointer_constraint(
+                        surface,
+                        &ph,
+                        |c| {
+                            if let Some(c) = c {
+                                c.deactivate();
+                            }
+                        },
+                    );
+                }
+            }
+            self.pointer_constraints.clear_locked();
+            self.pointer_constraints.clear_confined();
+            info!("pointer constraint released (deactivated)");
+        }
+    }
+
+    /// R7: activate pending constraints once pointer focus ENTERS the
+    /// owning surface. Constraints requested without pointer focus stay
+    /// inactive — an unfocused client must not affect global pointer
+    /// behavior (new_constraint only activates when already focused).
+    pub fn activate_constraints_for_focus(&mut self, surface: &WlSurface) {
+        let Some(ph) = self.pointer_handle.clone() else { return };
+        smithay::wayland::pointer_constraints::with_pointer_constraint(
+            surface,
+            &ph,
+            |constraint| {
+                let Some(c) = constraint else { return };
+                if c.is_active() {
+                    return;
+                }
+                match &*c {
+                    smithay::wayland::pointer_constraints::PointerConstraint::Locked(_) => {
+                        c.activate();
+                        self.pointer_constraints.pointer_locked = true;
+                        self.pointer_constraints.locked_surface = Some(surface.clone());
+                        info!("pointer locked (focus entered surface)");
+                    }
+                    smithay::wayland::pointer_constraints::PointerConstraint::Confined(_) => {
+                        c.activate();
+                        self.pointer_constraints.confined_surface = Some(surface.clone());
+                        info!("pointer confined (focus entered surface)");
+                    }
+                }
+            },
+        );
+    }
+
     /// Authoritative keyboard focus setter.
     /// Updates scene focus, Wayland keyboard focus, data device focus, FocusManager, and SpatialChrome consistently.
     /// Unlocks pointer if focus changes to a different surface than the locked one.
@@ -1503,7 +1567,7 @@ impl LookingGlass {
                 locked_surface.as_ref().map_or(false, |ls| ls == s)
             });
             if !is_same_surface {
-                self.pointer_constraints.unlock();
+                self.unlock_pointer();
             }
         }
 
@@ -3230,6 +3294,70 @@ impl LookingGlass {
             }
             return;
         }
+        // R7: when confined, motion is routed to the confined surface
+        // with the position CLAMPED into the confinement area (client
+        // region ∩ surface content). Without enforcement the protocol
+        // was accepted but had no effect.
+        if let Some(surface) = self.pointer_constraints.confined_surface.clone() {
+            if let Some(ph) = self.pointer_handle.clone() {
+                let origin = self
+                    .wayland_surfaces
+                    .iter()
+                    .find(|(_, s)| **s == surface)
+                    .and_then(|(vid, _)| self.surface_global_origin(*vid));
+                let vid = self
+                    .wayland_surfaces
+                    .iter()
+                    .find(|(_, s)| **s == surface)
+                    .map(|(vid, _)| *vid);
+                let size = vid.and_then(|vid| {
+                    self.scene.visuals.iter().find(|v| v.id == vid).map(|v| {
+                        (v.total_width() as f64, v.total_height() as f64)
+                    })
+                });
+                if let (Some(o), Some((cw, ch))) = (origin, size) {
+                    let region_rects = self
+                        .pointer_handle
+                        .as_ref()
+                        .and_then(|ph| {
+                            smithay::wayland::pointer_constraints::with_pointer_constraint(
+                                &surface,
+                                ph,
+                                |c| {
+                                    c.and_then(|c| match &*c {
+                                        smithay::wayland::pointer_constraints::PointerConstraint::Confined(confined) => {
+                                            confined.region().map(|attrs| attrs.rects.clone())
+                                        }
+                                        _ => None,
+                                    })
+                                },
+                            )
+                        })
+                        .unwrap_or_default();
+                    let (cx, cy) = crate::pointer_constraints::constrain_to_region(
+                        (x, y),
+                        (o.x, o.y),
+                        (cw, ch),
+                        &region_rects,
+                    );
+                    let serial = self.next_serial();
+                    let time = now_ms();
+                    let mot_ev = MotionEvent {
+                        location: smithay::utils::Point::new(cx, cy),
+                        serial,
+                        time,
+                    };
+                    let rel_ev = smithay::input::pointer::RelativeMotionEvent {
+                        delta: (dx, dy).into(),
+                        delta_unaccel: (dx, dy).into(),
+                        utime: time as u64 * 1000,
+                    };
+                    ph.motion(self, Some((surface.clone(), o)), &mot_ev);
+                    ph.relative_motion(self, Some((surface, o)), &rel_ev);
+                }
+            }
+            return;
+        }
         // Navigation buttons (right=mouse 3, middle=mouse 2)
         if self.nav_button == 3 {
             self.workspace_manager.active_mut().auto_orbit = false;
@@ -3412,7 +3540,10 @@ impl LookingGlass {
             time: now_ms(),
         };
         let origin = self.surface_global_origin(vid);
-        ph.motion(self, origin.map(|o| (wl_surface, o)), &mot_ev);
+        ph.motion(self, origin.map(|o| (wl_surface.clone(), o)), &mot_ev);
+        // R7: constraints requested while unfocused activate now that
+        // pointer focus has entered this surface.
+        self.activate_constraints_for_focus(&wl_surface);
     }
 
     /// Center the camera on the currently selected visual.
@@ -3565,10 +3696,9 @@ impl LookingGlass {
     /// Uses set_keyboard_focus() to ensure Wayland keyboard focus stays in sync.
     /// Returns true if the switch occurred.
     pub fn switch_workspace(&mut self, idx: usize) -> bool {
-        // Unlock pointer on workspace switch
-        if self.pointer_constraints.pointer_locked {
-            self.pointer_constraints.unlock();
-        }
+        // Unlock pointer on workspace switch (R7: deactivates the
+        // protocol object too, and also releases confinement).
+        self.unlock_pointer();
         // Terminate any in-progress drag: the dragged visual may not belong
         // to the target workspace, leaving stale drag state behind.
         if self.interaction.is_dragging() {
@@ -3968,9 +4098,13 @@ impl LookingGlass {
 
     /// Handle the Escape key with deterministic priority.
     fn handle_escape(&mut self) {
-        // If pointer is locked, unlock it first
-        if self.pointer_constraints.pointer_locked {
-            self.pointer_constraints.unlock();
+        // If a pointer constraint is active, release it first (R7:
+        // Escape must deactivate the protocol object — locked OR
+        // confined).
+        if self.pointer_constraints.pointer_locked
+            || self.pointer_constraints.confined_surface.is_some()
+        {
+            self.unlock_pointer();
             return;
         }
         // An active client DnD grab is cancelled first: the spatial
@@ -4431,6 +4565,13 @@ impl XdgShellHandler for LookingGlass {
         {
             let mut info = self.toplevels.remove(idx);
             info.lifecycle = SurfaceLifecycle::Destroyed;
+            // R7: a destroyed surface must not leave stale constraint
+            // state — release and deactivate anything it owned.
+            if self.pointer_constraints.locked_surface.as_ref() == Some(wl_surface)
+                || self.pointer_constraints.confined_surface.as_ref() == Some(wl_surface)
+            {
+                self.unlock_pointer();
+            }
             // G-B2: if the dying surface participates in the active DnD
             // (drag origin or current target), abort the grab so no
             // stale drag state outlives the client.
