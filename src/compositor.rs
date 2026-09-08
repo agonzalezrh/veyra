@@ -1867,10 +1867,21 @@ impl LookingGlass {
         let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
         let pv = self.proj_view();
 
+        // R12: the title-bar fraction of the full quad comes from the
+        // visual's single conversion API (was recomputed inline here).
         let data = self.scene.visuals.iter().find(|v| v.id == vid).map(|v| {
-            (v.id, v.total_width(), v.total_height(), v.decoration.title_bar_height, v.geometry.size)
+            (
+                v.id,
+                v.total_width(),
+                v.total_height(),
+                v.title_bar_fraction(),
+                v.geometry.size,
+            )
         });
-        let Some((vid, gw, gh, title_h, geom_size)) = data else { return ContentRouting::NoTarget };
+        let Some((vid, gw, gh, title_frac_f, geom_size)) = data else {
+            return ContentRouting::NoTarget;
+        };
+        let title_frac = title_frac_f as f64;
         // J2: UV mapping against the WORLD transform so parented
         // visuals (popups) route clicks where they are drawn.
         let transform = self.scene.world_transform(vid);
@@ -1882,7 +1893,6 @@ impl LookingGlass {
             // a button dispatches through the same handlers the context
             // menu uses — no second semantics. Buttons deliberately do
             // NOT take keyboard focus (GNOME convention).
-            let title_frac_f = title_h / (1.0 + title_h);
             if kind == PointerEventKind::Down {
                 if let Some(button) =
                     crate::chrome::hit_button(gw, gh, title_frac_f, u, v)
@@ -1921,7 +1931,8 @@ impl LookingGlass {
             // down (I3b). An 8 logical-px band along the decorated border.
             if kind == PointerEventKind::Down && self.resize_session.is_none() {
                 let band_u = 8.0 / geom_size.w.max(1) as f64;
-                let band_v = 8.0 / (geom_size.h.max(1) as f64 * (1.0 + title_h as f64));
+                // Full-quad height IS total_height (content + bar).
+                let band_v = 8.0 / gh as f64;
                 let zone = crate::resize::hit_test_resize_zone(u, v, band_u, band_v);
                 info!(u, v, band_u, band_v, zone = ?zone, "resize zone check");
                 if let Some(edges) = zone {
@@ -1938,7 +1949,6 @@ impl LookingGlass {
                     }
                 }
             }
-            let title_frac = (title_h / (1.0 + title_h)) as f64;
             if v < title_frac {
                 return ContentRouting::TitleBarHit;
             }
@@ -3464,7 +3474,8 @@ impl LookingGlass {
         let t = self.scene.world_transform(vid);
         let gw = v.total_width();
         let gh = v.total_height();
-        let title_frac = v.decoration.title_bar_height / (1.0 + v.decoration.title_bar_height);
+        // R12: fraction from the visual's single conversion API.
+        let title_frac = v.title_bar_fraction();
         let corner_local = cgmath::Vector3::new(
             v.transform.scale.x * (-gw / 2.0),
             v.transform.scale.y * (gh / 2.0 - gh * title_frac),
@@ -3507,11 +3518,13 @@ impl LookingGlass {
         let (u, uv) = input_router::screen_to_visual_uv(
             &pv, ndc_x, ndc_y, &transform, total_w, total_h,
         )?;
-        let title_frac = 0.06f64 / 1.06f64;
+        // R12: use the visual's own chrome height (was hardcoded
+        // 0.06/1.06, wrong for custom title heights).
+        let (_cu, content_v) = v.content_uv(u, uv);
+        let title_frac = v.title_bar_fraction() as f64;
         if uv < title_frac {
             return None; // title bar — not content
         }
-        let content_v = ((uv - title_frac) / (1.0 - title_frac)).clamp(0.0, 1.0);
         let px = u.clamp(0.0, 1.0) * v.geometry.size.w as f64;
         let py = content_v * v.geometry.size.h as f64;
         Some((vid, wl_surface, (px, py).into()))

@@ -247,19 +247,31 @@ impl Visual {
         self.geometry.size.h as f32 * self.transform.scale.y * self.decoration.title_bar_height
     }
 
+    /// R12: the title bar's fraction of the FULL quad height.
+    ///
+    /// `decoration.title_bar_height` is a fraction of the CONTENT
+    /// height; the full quad is content * (1 + h), so the bar occupies
+    /// h / (1 + h) of the full quad. Every full-quad↔content conversion
+    /// (drawing, hit testing, surface origin, input UV) must derive its
+    /// fraction from here — some sites previously used the raw
+    /// content-relative fraction and one hardcoded 0.06/1.06, which
+    /// disagreed as soon as a custom chrome height was set.
+    pub fn title_bar_fraction(&self) -> f32 {
+        self.decoration.title_bar_height / (1.0 + self.decoration.title_bar_height)
+    }
+
     /// Returns true if a hit in local UV coords [0,1] is in the title bar.
     /// UV is the full visual UV (including decoration).
     pub fn hit_title_bar(&self, _u: f64, v: f64) -> bool {
-        let h = self.decoration.title_bar_height as f64;
-        v < h
+        v < self.title_bar_fraction() as f64
     }
 
     /// Convert full-visual UV to content-only UV.
     /// Content UV is [0,1] within the content area only.
     pub fn content_uv(&self, u: f64, v: f64) -> (f64, f64) {
-        let h = self.decoration.title_bar_height as f64;
+        let t = self.title_bar_fraction() as f64;
         let cu = u;
-        let cv = (v - h) / (1.0 - h);
+        let cv = (v - t) / (1.0 - t);
         (cu.clamp(0.0, 1.0), cv.clamp(0.0, 1.0))
     }
 
@@ -1782,3 +1794,52 @@ pub fn pick_replacement_from(
         .rev()
         .find(|id| workspace_ids.contains(id) && is_active(*id))
 }
+
+    // ── R12: decoration conversion consistency ─────────────────────
+
+    /// The single conversion API: default and custom chrome heights at
+    /// the boundaries — hit testing and content UV must agree with the
+    /// same fraction everywhere.
+    #[test]
+    fn title_bar_fraction_boundaries() {
+        for h in [0.06f32, 0.5, 0.0, 0.25] {
+            let mut v = Visual::new_test(300, 200);
+            v.decoration.title_bar_height = h;
+            let t = v.title_bar_fraction();
+            assert!((t - h / (1.0 + h)).abs() < 1e-6);
+
+            // Hit boundary: just inside the bar vs just below it.
+            // A zero-height bar (h = 0) has no inside — skip.
+            if t > 0.0 {
+                assert!(v.hit_title_bar(0.5, (t as f64) * 0.5));
+                assert!(!v.hit_title_bar(0.5, (t as f64) * 1.5));
+            }
+
+            // Content UV boundary: bar bottom maps to 0, quad bottom to 1.
+            let (_, top) = v.content_uv(0.5, t as f64);
+            assert!(top.abs() < 1e-6, "h={h} top={top}");
+            let (_, bottom) = v.content_uv(0.5, 1.0);
+            assert!((bottom - 1.0).abs() < 1e-6, "h={h} bottom={bottom}");
+        }
+    }
+
+    /// Hit testing and content conversion use the SAME fraction: any
+    /// v below the bar boundary is a bar hit and maps to content v <= 0;
+    /// any v above maps to positive content v.
+    #[test]
+    fn hit_test_and_content_uv_agree() {
+        let mut v = Visual::new_test(300, 200);
+        v.decoration.title_bar_height = 0.4; // non-default, fraction 2/7
+        let t = v.title_bar_fraction() as f64;
+        for i in 0..20 {
+            let probe = (i as f64) / 19.0;
+            let is_bar = v.hit_title_bar(0.5, probe);
+            let (_, cv) = v.content_uv(0.5, probe);
+            if probe < t {
+                assert!(is_bar && cv <= f64::EPSILON, "probe {probe}");
+            } else {
+                assert!(!is_bar, "probe {probe}");
+                assert!(cv > 0.0 || (probe - t).abs() < 1e-9, "probe {probe} cv {cv}");
+            }
+        }
+       }
