@@ -149,6 +149,9 @@ fn main() {
     // shell plane from the real framebuffer.
     state.window_size = (initial_size.w as f32, initial_size.h as f32);
     tracing::info!(window_size = ?state.window_size, "render size");
+    // R11: the advertised output mode follows the actual backend size
+    // from the start — clients see the real monitor, not a fixed mode.
+    state.sync_output_mode(initial_size.w as i32, initial_size.h as i32, 60000);
 
     // Handle --native flag: construct DrmGraphicsBackend instead
     if use_native {
@@ -157,6 +160,13 @@ fn main() {
             Ok(drm_backend) => {
                 state = LookingGlass::new(&display_handle, Box::new(drm_backend), config.clone());
                 tracing::info!("Native backend initialized successfully");
+                // R11: a native state is fresh — adopt the KMS mode as
+                // both the framebuffer size and the advertised output
+                // mode (the winit initial size no longer applies).
+                let (w, h) = state.backend.as_ref().unwrap().size();
+                state.window_size = (w as f32, h as f32);
+                state.sync_output_mode(w as i32, h as i32, 60000);
+                tracing::info!(window_size = ?state.window_size, "render size");
             }
             Err(e) => {
                 tracing::error!(?e, "Failed to initialize native backend, falling back to winit");
@@ -269,6 +279,8 @@ fn main() {
                 // Same greppable shape as the startup log so consumers
                 // (harness) always see the CURRENT render size.
                 tracing::info!(window_size = ?state.window_size, "render size");
+                // R11: the advertised output mode follows the resize.
+                state.sync_output_mode(size.w as i32, size.h as i32, 60000);
                 state.schedule_render();
             }
             WinitEvent::Input(event) => {

@@ -428,6 +428,8 @@ impl LookingGlass {
             },
         );
         let _output_global = output.create_global::<Self>(display_handle);
+        // R11: the handle is compositor state — without it the output's
+        // advertised mode could never follow the actual backend size.
         output.change_current_state(
             Some(Mode { size: (1280, 720).into(), refresh: 60000 }),
             None,
@@ -459,7 +461,7 @@ impl LookingGlass {
             workspace_manager: WorkspaceManager::new(config.workspace.count),
             producers: Vec::new(),
             perf: PerfStats::new(),
-            output: None,
+            output: Some(output),
             window_size: (1280.0, 720.0),
             last_mouse: (0.0, 0.0),
             last_dx: 0.0,
@@ -1223,6 +1225,22 @@ impl LookingGlass {
                 self.pacing_active = true;
             }
         }
+    }
+
+    /// R11: keep the advertised wl_output mode in step with the actual
+    /// backend framebuffer size. Called at startup (from the selected
+    /// backend) and on every resize; smithay propagates mode events to
+    /// connected clients automatically.
+    pub fn sync_output_mode(&mut self, w: i32, h: i32, refresh: i32) {
+        let Some(output) = self.output.clone() else { return };
+        let mode = Mode { size: (w, h).into(), refresh };
+        let current = output.current_mode().map(|m| m.size);
+        if current == Some((w, h).into()) {
+            return;
+        }
+        output.change_current_state(Some(mode), None, None, None);
+        output.set_preferred(mode);
+        info!(w, h, refresh, "output mode synced with backend size");
     }
 
     /// Schedule a render and record the request in perf stats.
