@@ -547,7 +547,15 @@ impl LookingGlass {
     }
 
     /// Save current workspace state to disk (multi-workspace).
-    pub fn save_state(&self) {
+    pub fn save_state(&mut self) {
+        // R3: the live camera belongs to the ACTIVE workspace — without
+        // this sync the workspace's recorded camera is whatever was
+        // last captured at workspace SWITCH, so a camera move followed
+        // by shutdown restores a stale view.
+        {
+            let ws = self.workspace_manager.active_mut();
+            ws.camera = self.camera.clone();
+        }
         // Collect workspace data
         let n = self.workspace_manager.len();
         let mut ws_visuals: Vec<Vec<VisualId>> = Vec::with_capacity(n);
@@ -566,7 +574,6 @@ impl LookingGlass {
 
         let state = crate::persist::WorkspaceState::capture_multi(
             &self.scene,
-            &self.camera,
             &ws_visuals,
             &ws_cameras,
             &ws_layouts,
@@ -850,8 +857,11 @@ impl LookingGlass {
                                         info!(app_id = %app_id, workspace = pr.workspace, "pending reopen applied");
                                     }
                                 }
-                                let restored = self.saved_state.as_ref().and_then(|s| {
-                                    s.find_visual(app_id).map(|(_, vs)| {
+                                // R3: consuming match (duplicate app_ids
+                                // restore in capture order); returns the
+                                // saved workspace index for membership.
+                                let restored = self.saved_state.as_mut().and_then(|s| {
+                                    s.take_visual(app_id).map(|(ws_idx, vs)| {
                                         visual.transform.position.x = vs.x;
                                         visual.transform.position.y = vs.y;
                                         visual.transform.position.z = vs.z;
@@ -865,6 +875,7 @@ impl LookingGlass {
                                         if vs.detached {
                                             self.scene.detached_set.push(visual.id);
                                         }
+                                        ws_idx
                                     })
                                 });
                                 if restored.is_none() && reopened.is_none() {
@@ -899,6 +910,17 @@ impl LookingGlass {
                                 // report). Camera-only, zoom-out-only.
                                 if !self.spatial_mode {
                                     self.auto_fit_camera();
+                                }
+                                // R3: a restored window returns to its SAVED
+                                // workspace, not the active one.
+                                if let Some(ws_idx) = restored {
+                                    if ws_idx < self.workspace_manager.len() && ws_idx != self.workspace_manager.active_id() {
+                                        if let Some(ws) = self.workspace_manager.get_mut(ws_idx) {
+                                            ws.add(visual_id);
+                                        }
+                                        self.workspace_manager.active_mut().remove(visual_id);
+                                        info!(?visual_id, workspace = ws_idx, "restored window placed in saved workspace");
+                                    }
                                 }
                                 // Reopen targets a specific workspace: move the
                                 // visual there if it differs from the active one.

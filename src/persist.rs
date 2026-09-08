@@ -87,7 +87,12 @@ impl WorkspaceState {
             .visuals
             .iter()
             .filter_map(|v| {
-                let app_id = v.decoration.title.clone();
+                // R3: the identity is the Wayland app_id (stable launch
+                // key) — `decoration.title` was never populated, which
+                // silently dropped every visual from saved state. Only
+                // Wayland toplevels carry an app_id and are restorable;
+                // producer visuals are re-created by their producers.
+                let app_id = v.chrome.app_id.clone();
                 if app_id.is_empty() { return None; }
                 Some(VisualState {
                     app_id,
@@ -132,7 +137,6 @@ impl WorkspaceState {
     /// Capture multi-workspace state from the full scene and workspace manager.
     pub fn capture_multi(
         scene: &Scene,
-        camera: &Camera,
         workspace_visuals: &[Vec<VisualId>],
         workspace_cameras: &[Camera],
         workspace_layouts: &[LayoutMode],
@@ -152,7 +156,8 @@ impl WorkspaceState {
                 .iter()
                 .filter(|v| ws_visuals.contains(&v.id))
                 .filter_map(|v| {
-                    let app_id = v.decoration.title.clone();
+                    // R3: identity is chrome.app_id (see capture above).
+                    let app_id = v.chrome.app_id.clone();
                     if app_id.is_empty() { return None; }
                     Some(VisualState {
                         app_id,
@@ -217,6 +222,21 @@ impl WorkspaceState {
     pub fn find_visual(&self, app_id: &str) -> Option<(usize, &VisualState)> {
         for (i, ws) in self.workspaces.iter().enumerate() {
             if let Some(vs) = ws.visuals.iter().find(|vs| vs.app_id == app_id) {
+                return Some((i, vs));
+            }
+        }
+        None
+    }
+
+    /// R3: consuming variant of [`find_visual`] — removes the matched
+    /// entry so duplicate app_ids restore in capture order (the Nth
+    /// window of an app takes the Nth saved transform) instead of every
+    /// instance matching the first entry. Returns the workspace index
+    /// the visual was saved in, so membership is restored faithfully.
+    pub fn take_visual(&mut self, app_id: &str) -> Option<(usize, VisualState)> {
+        for (i, ws) in self.workspaces.iter_mut().enumerate() {
+            if let Some(pos) = ws.visuals.iter().position(|vs| vs.app_id == app_id) {
+                let vs = ws.visuals.remove(pos);
                 return Some((i, vs));
             }
         }
@@ -517,5 +537,77 @@ mod tests {
         assert_eq!(string_to_layout_mode("flat"), LayoutMode::Flat);
         assert_eq!(string_to_layout_mode("grid:3"), LayoutMode::Grid { columns: 3 });
         assert_eq!(string_to_layout_mode("unknown"), LayoutMode::Freeform);
+    }
+
+    /// R3: capture keys identity off chrome.app_id — the display title
+    /// may change at any time and decoration.title was never populated
+    /// (every visual used to be silently dropped from saved state).
+    #[test]
+    fn capture_uses_chrome_app_id_not_title() {
+        let mut scene = crate::scene::Scene::default();
+        let mut v = crate::scene::Visual::new(
+            crate::scene::VisualContent::Test,
+            smithay::utils::Rectangle::new(
+                smithay::utils::Point::new(0, 0),
+                smithay::utils::Size::new(320, 200),
+            ),
+        );
+        v.chrome.app_id = "foot".into();
+        v.chrome.title = "user renamed this window".into();
+        scene.add(v);
+
+        let state = WorkspaceState::capture_multi(
+            &scene,
+            &[vec![scene.visuals[0].id]],
+            &[crate::input::Camera::new()],
+            &[crate::layout::LayoutMode::Freeform],
+            &[Vec::new()],
+        );
+        assert_eq!(state.workspaces[0].visuals.len(), 1, "visual must be captured");
+        assert_eq!(state.workspaces[0].visuals[0].app_id, "foot");
+    }
+
+    /// R3: visuals without an app_id (producer content, recreated by
+    /// the producers themselves) are not persisted.
+    #[test]
+    fn capture_skips_visuals_without_app_id() {
+        let mut scene = crate::scene::Scene::default();
+        let v = crate::scene::Visual::new(
+            crate::scene::VisualContent::Test,
+            smithay::utils::Rectangle::new(
+                smithay::utils::Point::new(0, 0),
+                smithay::utils::Size::new(320, 200),
+            ),
+        );
+        scene.add(v);
+        let state = WorkspaceState::capture_multi(
+            &scene,
+            &[vec![scene.visuals[0].id]],
+            &[crate::input::Camera::new()],
+            &[crate::layout::LayoutMode::Freeform],
+            &[Vec::new()],
+        );
+        assert!(state.workspaces[0].visuals.is_empty());
+    }
+
+    /// R3: duplicate app_ids restore in capture order — the consuming
+    /// take hands out the Nth saved transform to the Nth window.
+    #[test]
+    fn take_visual_consumes_duplicates_in_order() {
+        let mut state = make_v2_state();
+        // The same app saved in two workspaces (two instances).
+        state.workspaces[0].visuals[0].x = 10.0;
+        state.workspaces[1].visuals[0].app_id = "foot".into();
+        state.workspaces[1].visuals[0].x = 20.0;
+
+        let first = state.take_visual("foot").expect("first entry");
+        let second = state.take_visual("foot").expect("second entry");
+        let third = state.take_visual("foot");
+        assert_eq!(first.0, 0, "first take comes from workspace 0");
+        assert_eq!(first.1.x, 10.0);
+        assert_eq!(second.0, 1, "second take comes from workspace 1");
+        assert_eq!(second.1.x, 20.0);
+        assert!(third.is_none(), "entries are consumed exactly once");
+        assert!(state.find_visual("foot").is_none(), "find no longer matches consumed entries");
     }
 }
