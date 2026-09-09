@@ -56,11 +56,10 @@ a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 | # | Area | Description | Difficulty |
 |---|------|-------------|------------|
 | 6 | IME/Text Input | `zwp_input_method_v1` / `zwp_text_input_v3` not implemented | High |
-| 8 | Presentation Feedback | `wp_presentation` not implemented | Medium |
-| 9 | Output Change Events | Output mode set once, never updated | Low |
+| 9 | Output Change Events | ~~Mode set once~~ R11 mode sync + G-D1 config scale verified; runtime scale *changes* (config reload) have no trigger yet | Low |
 | 11 | Subsurface support | Not explicitly handled | Low |
 | 12 | Serial Validation | Popup serial validation may not catch all edge cases | Medium |
-| 17 | X11 clipboard harness client | The X-side selection bridge (G-C4) is verified for lifecycle + compile-path; automated clipboard round-trip needs a wp_primary_selection-capable harness client (clip_tester covers wl_data_device only) | Medium |
+| 17 | X11 selection data transfer | G-C4/G-D5 bridge: Wayland→X fully verified (xterm pastes compositor clipboard, t27i visual); X→Wayland publish verified (offers + mimes reach clients). The final X→Wayland data FETCH from the X selection owner stalls inside smithay's XWM transfer machinery (receive requested via zwp_primary_selection_offer.receive; no data arrives). Investigate smithay's XWM PendingTransfer flow for fetch-from-X-owner. | Medium |
 | ~~15~~ | ~~Duplicate Button Press~~ | ✅ **G-C2 (Verified clean)**: client-kit pointer events now log the wl serial; input-suite t26i asserts exactly one press/release per physical click with distinct serials over repeated runs. No duplication at HEAD — earlier observations are not reproducible; the t26i regression guard keeps watch. | ~~Medium~~ |
 | ~~16~~ | ~~Stuck META Modifier~~ | ✅ **G-C2 (Fixed)**: root cause was NOT duplicated input — `route_keyboard` dropped modifier releases when no visual held keyboard focus (focus vanished mid-press: window close, workspace switch, drag start), latching smithay's XKB state so every later client enter reported `logo:true`. Modifiers are seat state: they now always reach the keyboard handle (`feed_keyboard_event`). The previously-SKIPped tcfoot foot-copy flow now runs and passes both directions. | ~~Medium~~ |
 
@@ -70,12 +69,12 @@ a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 |---|------|-------------|------------|
 | ~~13~~ | ~~XWayland~~ | ✅ **G-C4 (Implemented)**: Xwayland spawned at startup (clean degradation when missing); X11Wm drives the X side; windows associate via xwayland-shell-v1 and commit through the same pipeline as native toplevels (chrome, placement, focus-on-map, taskbar). Selections bridge both directions. Known limitations: override-redirect windows unmanaged; X11 move/resize grabs not wired to spatial interaction. | ~~High~~ |
 | 14 | Multi-monitor | Single output only | High |
-| 15 | Data Control | `zwlr_data_control_manager_v1` not implemented | Medium |
-| 16 | Foreign Toplevel | `ext_foreign_toplevel_list_v1` not implemented | Medium |
+| 15 | Data Control | ~~not implemented~~ ✅ G-D2 (zwlr + ext advertised and wired) | ~~Medium~~ |
+| 16 | Foreign Toplevel | ~~not implemented~~ ✅ G-D3 (ext_foreign_toplevel_list_v1, publish/update/withdraw wired) | ~~Medium~~ |
 
-## Recommended Fix Order for G-D
+## Recommended Fix Order for G-E
 
-1. **Output change events** (P3, #9) — for hotplug support
-2. **Data Control + Foreign Toplevel** (P4) — clipboard managers and dock/taskbar integrations
-3. **Presentation Feedback** (P3, #8) — media/visibility timing
-4. **X11 clipboard harness client** (P3, #17) — verify the selection bridge end-to-end
+1. **X11 selection data transfer** (P3, #17) — complete the X→Wayland clipboard loop
+2. **Output change events, runtime half** (P3, #9) — config-reload hook for scale changes
+3. **Subsurface support** (P3, #11) — Chromium/Qt menus
+4. **IME/Text Input** (P3, #6) — CJK input for real desktop use

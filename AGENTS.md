@@ -666,6 +666,22 @@ Priority order from audit:
 
 **Status: ✅ Complete (480 unit tests; protocol 97/0/0; input 93/0/0)**
 
+### G-D — Desktop Integration Protocols (G-D1–G-D5)
+- G-D1: appearance.output_scale drives wl_output scale + preferred
+  fractional scale; client-kit logs outmode events; t22 config-driven
+  scale end-to-end on its own veyra instance
+- G-D2: zwlr_data_control_manager_v1 + ext_data_control_manager_v1
+- G-D3: ext_foreign_toplevel_list_v1 (publish at map, live
+  title/app_id updates, withdraw on destroy; X11 windows included)
+- G-D4: wp_presentation feedback (CLOCK_MONOTONIC, output refresh)
+- G-D5: clip_tester --primary (raw protocol); t27i X11 selection bridge
+  with real xterm — Wayland→X fully verified, X→Wayland publish
+  verified, data fetch from X owner tracked as BUG_LIST #17
+- CRITICAL: frame callbacks now complete for ALL mapped surfaces —
+  X11 windows previously froze after one frame (blank xterm/xclock)
+
+**Status: ✅ Complete (483 unit tests; protocol 104/0/0; input 95/0/1)**
+
 ---
 
 # 25. Commit discipline
