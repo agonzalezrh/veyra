@@ -352,6 +352,13 @@ pub struct LookingGlass {
     /// G-D3: foreign toplevel handles per visual.
     pub foreign_toplevels:
         HashMap<VisualId, smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle>,
+    /// #11: subsurface visuals by their wl_surface.
+    pub subsurface_visuals: HashMap<WlSurface, VisualId>,
+    /// #11: subsurface → parent surface link, recorded at map time.
+    /// smithay's get_parent cannot be trusted at destroy dispatch time
+    /// (the client's objects are being torn down), so veyra keeps its
+    /// own link for cleanup.
+    pub subsurface_parents: HashMap<WlSurface, WlSurface>,
     /// G-D4: wp_presentation global state.
     pub presentation_state: smithay::wayland::presentation::PresentationState,
     /// G-D4: monotonic presentation sequence counter.
@@ -633,6 +640,8 @@ impl LookingGlass {
             ext_data_control_state,
             foreign_toplevel_state,
             foreign_toplevels: HashMap::new(),
+            subsurface_visuals: HashMap::new(),
+            subsurface_parents: HashMap::new(),
             presentation_state,
             presentation_seq: 0,
             app_switcher: ApplicationSwitcher::new(),
@@ -822,6 +831,132 @@ impl LookingGlass {
     /// and a visibly stuck window (the upload fails each frame). Damage
     /// that exceeds the buffer is clamped or dropped; with no known size
     /// the import becomes a full upload (damage empty).
+    /// #11: subsurface commit — the subsurface renders as a visual
+    /// PARENTED to its parent surface's visual (J2 parent-local
+    /// transforms: it follows the parent's move/rotate/scale with zero
+    /// extra bookkeeping). Position comes from the double-buffered
+    /// SubsurfaceCachedState.location; the top-left corner is
+    /// converted to the visual's center convention. Synchronized
+    /// (sync) subsurfaces apply with the parent commit per protocol —
+    /// smithay's state machine handles the double-buffered merge.
+    fn handle_subsurface_commit(&mut self, surface: &WlSurface) {
+        let parent_surface = smithay::wayland::compositor::get_parent(surface);
+        let parent_vid = parent_surface
+            .as_ref()
+            .and_then(|p| self.find_vid_for_surface(p));
+        let Some(parent_vid) = parent_vid else {
+            // No parent visual (parent not mapped): subsurfaces wait
+            // for a commit after the parent exists.
+            return;
+        };
+
+        let (wl_buffer, _damage): (
+            Option<_>,
+            Vec<smithay::utils::Rectangle<i32, smithay::utils::Buffer>>,
+        ) = with_states(surface, |states| {
+            let mut cached = states.cached_state.get::<SurfaceAttributes>();
+            let attrs = cached.current();
+            let buf = match &attrs.buffer {
+                Some(BufferAssignment::NewBuffer(b)) => Some(b.clone()),
+                _ => None,
+            };
+            (buf, Vec::new())
+        });
+        let Some(wl_buffer) = wl_buffer else { return };
+
+        let Some(backend) = self.backend.as_mut() else {
+            return;
+        };
+        let renderer = backend.renderer();
+        let import = with_states(surface, |states| {
+            renderer.import_buffer(&wl_buffer, Some(states), &[])
+        });
+        if let Some(Ok(texture)) = import {
+            use smithay::backend::renderer::Texture;
+            let tex_size = texture.size();
+            // G-C3 logical geometry for the subsurface buffer.
+            let (vp_dst, vp_src, buf_scale) = with_states(surface, |states| {
+                let scale = {
+                    let mut c = states.cached_state.get::<SurfaceAttributes>();
+                    c.current().buffer_scale
+                };
+                let mut vp = states
+                    .cached_state
+                    .get::<smithay::wayland::viewporter::ViewportCachedState>();
+                let vp = vp.current();
+                (
+                    vp.dst.map(|s| (s.w, s.h)),
+                    vp.src.map(|r| ((r.loc.x, r.loc.y), (r.size.w, r.size.h))),
+                    scale,
+                )
+            });
+            let (logical_wh, src_uv) =
+                logical_geometry_from_buffer((tex_size.w, tex_size.h), buf_scale, vp_dst, vp_src);
+            let logical_size = smithay::utils::Size::new(logical_wh.0, logical_wh.1);
+            let src_uv = src_uv.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+
+            let location = with_states(surface, |states| {
+                let mut sub = states
+                    .cached_state
+                    .get::<smithay::wayland::compositor::SubsurfaceCachedState>();
+                sub.current().location
+            });
+
+            let existing_vid = self.subsurface_visuals.get(surface).copied();
+            if let Some(vid) = existing_vid {
+                if let Some(visual) = self.scene.get_mut(vid) {
+                    if let Some(dst) = visual.texture_mut() {
+                        *dst = texture;
+                    }
+                    visual.geometry = smithay::utils::Rectangle::new(
+                        smithay::utils::Point::new(0, 0),
+                        logical_size,
+                    );
+                    visual.src_uv = src_uv;
+                    // J2: parent-local center offset from the top-left
+                    // location.
+                    visual.transform.position = cgmath::Vector3::new(
+                        location.x as f32 + logical_size.w as f32 * 0.5,
+                        -(location.y as f32 + logical_size.h as f32 * 0.5),
+                        10.0,
+                    );
+                }
+            } else {
+                let mut visual = Visual::new(
+                    VisualContent::WaylandSurface(texture),
+                    smithay::utils::Rectangle::new(smithay::utils::Point::new(0, 0), logical_size),
+                );
+                visual.src_uv = src_uv;
+                visual.parent = Some(parent_vid);
+                visual.transform.position = cgmath::Vector3::new(
+                    location.x as f32 + logical_size.w as f32 * 0.5,
+                    -(location.y as f32 + logical_size.h as f32 * 0.5),
+                    10.0,
+                );
+                let vid = visual.id;
+                info!(
+                    ?vid,
+                    ?parent_vid,
+                    ?location,
+                    w = logical_size.w,
+                    h = logical_size.h,
+                    "subsurface mapped"
+                );
+                self.subsurface_visuals.insert(surface.clone(), vid);
+                if let Some(parent) = &parent_surface {
+                    self.subsurface_parents
+                        .insert(surface.clone(), parent.clone());
+                }
+                self.wayland_surfaces.insert(vid, surface.clone());
+                self.scene.add(visual);
+                // Subsurfaces are presentation children: same workspace
+                // membership as the parent, never taskbar/focus items.
+                self.workspace_manager.active_mut().add(vid);
+            }
+            self.schedule_render();
+        }
+    }
+
     fn sanitize_damage(
         damage: Vec<smithay::utils::Rectangle<i32, smithay::utils::Buffer>>,
         last_size: Option<(i32, i32)>,
@@ -840,6 +975,15 @@ impl LookingGlass {
 
     #[allow(dead_code)] // reserved API surface; not yet wired
     pub(crate) fn handle_commit(&mut self, surface: &WlSurface) {
+        // #11: subsurfaces (DnD icons, client-side decorations, Qt/Chromium
+        // menus) — render as visuals parented to their parent surface.
+        let is_subsurface = smithay::wayland::compositor::get_role(surface)
+            == Some(smithay::wayland::compositor::SUBSURFACE_ROLE);
+        if is_subsurface {
+            self.handle_subsurface_commit(surface);
+            return;
+        }
+
         // Determine if this is a toplevel or popup commit
         let is_popup = self.popups.iter().any(|p| p.wl_surface == *surface);
 
@@ -2615,6 +2759,38 @@ impl LookingGlass {
         }
     }
 
+    /// #11: remove a subsurface's visual (parent destroy / subsurface
+    /// death). The wl_surface keeps its compositor-global lifetime;
+    /// only the workspace-local presentation state goes away.
+    pub fn remove_subsurface_visual(&mut self, surface: &WlSurface) {
+        self.subsurface_parents.remove(surface);
+        if let Some(vid) = self.subsurface_visuals.remove(surface) {
+            info!(?vid, "subsurface removed");
+            self.scene.remove(vid);
+            self.wayland_surfaces.remove(&vid);
+            for i in 0..self.workspace_manager.len() {
+                if let Some(ws) = self.workspace_manager.get_mut(i) {
+                    ws.remove(vid);
+                }
+            }
+            self.schedule_render();
+        }
+    }
+
+    /// #11: remove all subsurface visuals parented to `parent_surface`
+    /// (called when the parent's visual is destroyed).
+    pub fn remove_subsurfaces_of(&mut self, parent_surface: &WlSurface) {
+        let children: Vec<WlSurface> = self
+            .subsurface_parents
+            .iter()
+            .filter(|(_, p)| *p == parent_surface)
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in children {
+            self.remove_subsurface_visual(&s);
+        }
+    }
+
     /// G-C4: find the visual id backing an X11 window, if mapped.
     pub fn x11_visual_for(&self, window: &smithay::xwayland::xwm::X11Surface) -> Option<VisualId> {
         let wid = window.window_id();
@@ -2653,6 +2829,10 @@ impl LookingGlass {
     /// destroy, minimize). The X window itself stays alive where the
     /// protocol allows remapping.
     pub fn destroy_x11_visual(&mut self, vid: VisualId) {
+        // #11: child subsurfaces die with the parent
+        if let Some(surface) = self.wayland_surfaces.get(&vid).cloned() {
+            self.remove_subsurfaces_of(&surface);
+        }
         self.unregister_foreign_toplevel(vid);
         self.scene.remove(vid);
         self.wayland_surfaces.remove(&vid);
@@ -5932,6 +6112,10 @@ fn remove_popup_visual(state: &mut LookingGlass, pvid: VisualId) {
 fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
     // Clean up child popups first
     cleanup_popups_by_vid(state, vid);
+    // #11: child subsurfaces die with the parent
+    if let Some(surface) = state.wayland_surfaces.get(&vid).cloned() {
+        state.remove_subsurfaces_of(&surface);
+    }
     // G-D3: withdraw from foreign-toplevel clients
     state.unregister_foreign_toplevel(vid);
     // Drop any outstanding client geometry request (I3a)

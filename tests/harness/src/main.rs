@@ -41,7 +41,10 @@ use smithay_client_toolkit::{
 };
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+    protocol::{
+        wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_subcompositor, wl_subsurface,
+        wl_surface,
+    },
     Connection, QueueHandle,
 };
 use xkeysym::Keysym;
@@ -119,6 +122,10 @@ struct Opts {
     /// scale× dimensions while the logical size stays fixed. The
     /// compositor must adopt the logical size (buffer / scale).
     scale: i32,
+    /// #11: after the first commit, create a 100x60 wl_subsurface at
+    /// offset (50, 50) with a distinct color — verifies subsurface
+    /// mapping on the compositor side.
+    subsurface: bool,
 }
 
 fn parse_size(s: &str) -> (u32, u32) {
@@ -150,6 +157,7 @@ fn parse_args() -> Opts {
         fullscreen_after: None,
         unfullscreen_after: None,
         scale: 1,
+        subsurface: false,
     };
     let mut i = 1;
     while i < args.len() {
@@ -180,6 +188,7 @@ fn parse_args() -> Opts {
             "--fullscreen-after" => opts.fullscreen_after = next(&mut i).parse().ok(),
             "--unfullscreen-after" => opts.unfullscreen_after = next(&mut i).parse().ok(),
             "--scale" => opts.scale = next(&mut i).parse().unwrap_or(1),
+            "--subsurface" => opts.subsurface = true,
             other => {
                 eprintln!("unknown option: {}", other);
                 std::process::exit(2);
@@ -211,6 +220,11 @@ struct TestClient {
     first_configure: bool,
     configures: u32,
     commits: u32,
+    /// #11: the client's own subsurface (created once with --subsurface).
+    subcompositor: Option<wl_subcompositor::WlSubcompositor>,
+    sub_surface: Option<wl_surface::WlSurface>,
+    subsurface: Option<(wl_subsurface::WlSubsurface, wl_surface::WlSurface)>,
+    sub_pool: Option<SlotPool>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
     got_keys: String,
@@ -309,6 +323,38 @@ impl TestClient {
             ("bh", bh.into()),
             ("scale", (scale as u32).into()),
         ]);
+        // #11: after the first commit, create a 100x60 subsurface at
+        // offset (50, 50) with a distinct color. Synchronized by
+        // default: it applies with this parent commit per protocol.
+        if self.opts.subsurface && self.subsurface.is_none() {
+            if let (Some(subcomp), Some(sub_surface)) =
+                (self.subcompositor.as_ref(), self.sub_surface.clone())
+            {
+                let sub = subcomp.get_subsurface(&sub_surface, self.window.wl_surface(), qh, ());
+                sub.set_position(50, 50);
+                let pool = self.sub_pool.get_or_insert_with(|| {
+                    SlotPool::new(100 * 60 * 4, &self.shm).expect("sub pool")
+                });
+                let (sbuf, scanvas) = pool
+                    .create_buffer(100, 60, 100 * 4, wl_shm::Format::Argb8888)
+                    .expect("sub buffer");
+                for chunk in scanvas.as_chunks_mut::<4>().0 {
+                    chunk[0] = 0xE0;
+                    chunk[1] = 0x60;
+                    chunk[2] = 0x10;
+                    chunk[3] = 0xFF;
+                }
+                sbuf.attach_to(&sub_surface).expect("sub attach");
+                sub_surface.damage_buffer(0, 0, 100, 60);
+                sub_surface.commit();
+                log_kv(&[
+                    ("ev", "subsurface_created".into()),
+                    ("w", 100.into()),
+                    ("h", 60.into()),
+                ]);
+                self.subsurface = Some((sub, sub_surface));
+            }
+        }
         // Client-requested maximize transitions (I4). Requests are sent
         // right after a commit; the compositor answers with a configure
         // carrying the Maximized state bit (and a size for well-behaved
@@ -737,6 +783,31 @@ delegate_xdg_shell!(TestClient);
 delegate_xdg_window!(TestClient);
 delegate_registry!(TestClient);
 
+// #11: wl_subcompositor / wl_subsurface carry no client-side events.
+impl wayland_client::Dispatch<wl_subcompositor::WlSubcompositor, ()> for TestClient {
+    fn event(
+        _: &mut Self,
+        _: &wl_subcompositor::WlSubcompositor,
+        _: wl_subcompositor::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl wayland_client::Dispatch<wl_subsurface::WlSubsurface, ()> for TestClient {
+    fn event(
+        _: &mut Self,
+        _: &wl_subsurface::WlSubsurface,
+        _: wl_subsurface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
 impl ProvidesRegistryState for TestClient {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
@@ -871,6 +942,17 @@ fn main() {
     }
     window.commit();
 
+    // #11: bind the subcompositor and create the sub surface up front
+    // when --subsurface is requested.
+    let (subcompositor_opt, sub_surface) = if opts.subsurface {
+        let sc: wl_subcompositor::WlSubcompositor =
+            globals.bind(&qh, 1..=1, ()).expect("bind wl_subcompositor");
+        let sub_surface = compositor.create_surface(&qh);
+        (Some(sc), Some(sub_surface))
+    } else {
+        (None, None)
+    };
+
     let mut state = TestClient {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
@@ -887,6 +969,10 @@ fn main() {
         first_configure: true,
         configures: 0,
         commits: 0,
+        subcompositor: subcompositor_opt,
+        sub_surface,
+        subsurface: None,
+        sub_pool: None,
         keyboard: None,
         pointer: None,
         got_keys: String::new(),

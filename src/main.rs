@@ -64,9 +64,9 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::calloop::Interest;
 use smithay::reexports::calloop::Mode;
 use smithay::reexports::calloop::PostAction;
-use tracing::info;
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 /// Nested (winit) startup: window clamp, state construction, and the
@@ -101,17 +101,16 @@ fn watch_config_for_reload(
     if !path.exists() {
         return Err(format!("config file not present: {}", path.display()));
     }
-    let fd = unsafe {
-        libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC)
-    };
+    let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
     if fd < 0 {
         return Err("inotify_init1 failed".into());
     }
-    let watch = path.to_str().ok_or("config path not utf-8")?.to_owned();
+    let watch = std::ffi::CString::new(path.to_str().ok_or("config path not utf-8")?.to_owned())
+        .map_err(|_| "config path contains NUL".to_owned())?;
     let wd = unsafe {
         libc::inotify_add_watch(
             fd,
-            watch.as_ptr() as *const libc::c_char,
+            watch.as_ptr(),
             libc::IN_MODIFY | libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO,
         )
     };
@@ -131,11 +130,7 @@ fn watch_config_for_reload(
                 let mut buf = [0u8; 4096];
                 loop {
                     let n = unsafe {
-                        libc::read(
-                            fd_for_cb,
-                            buf.as_mut_ptr() as *mut libc::c_void,
-                            buf.len(),
-                        )
+                        libc::read(fd_for_cb, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
                     };
                     if n <= 0 {
                         break;

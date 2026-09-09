@@ -743,6 +743,9 @@ EOF
 VEYRA_CONFIG_PATH="$VEYRA_CFG" start_veyra_nested wayland-harness "$TMP_DIR/veyra-scale.log" \
     || { bad "t22: scaled veyra started"; exit 1; }
 ok "t22: scaled veyra started on $VEYRA_SOCKET"
+# From here on the LIVE instance is the scaled one; later tests must
+# assert against its log, not the killed first instance's.
+CURRENT_VEYRA_LOG="$TMP_DIR/veyra-scale.log"
 # The wl_output mode follows the ACTUAL backend window size (R11) —
 # read it from the scaled instance's log instead of assuming.
 T22_PAIR=$(strip_ansi "$TMP_DIR/veyra-scale.log" | grep -aF "render size" | tail -1 | sed -E 's/.*\(([^)]*)\).*/\1/')
@@ -788,6 +791,34 @@ assert_json "$TMP_DIR/t23.json" \
 assert_json "$TMP_DIR/t23.json" \
     "any(e['ev']=='outmode' and e['scale']==1 for e in events)" \
     "t23: ALREADY-BOUND client observed the runtime scale change to 1"
+
+# ── t24: subsurfaces (#11) ───────────────────────────────────────────
+# A client creates a 100x60 wl_subsurface at offset (50,50) over its
+# toplevel (the DnD-icon / CSD / Qt-menu pattern). The compositor must
+# map it as a visual PARENTED to the toplevel's visual, and remove it
+# when the parent goes away.
+say "t24_subsurfaces"
+VEYRA_LOG="${CURRENT_VEYRA_LOG:-$TMP_DIR/veyra.log}"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe \
+    --subsurface --duration 4000 > "$TMP_DIR/t24.json" 2>"$TMP_DIR/t24.err" &
+T24_PID=$!
+wait_process_exit $T24_PID 12
+assert_json "$TMP_DIR/t24.json" \
+    "any(e['ev']=='subsurface_created' for e in events)" \
+    "t24: client created the subsurface"
+assert_log "$VEYRA_LOG" "subsurface mapped" "t24: veyra mapped the subsurface as a parented visual"
+SUB_W=$(strip_ansi "$VEYRA_LOG" | grep -a "subsurface mapped" | tail -1 | grep -oE "w=[0-9]+" | grep -oE "[0-9]+")
+SUB_H=$(strip_ansi "$VEYRA_LOG" | grep -a "subsurface mapped" | tail -1 | grep -oE "h=[0-9]+" | grep -oE "[0-9]+")
+if [ "$SUB_W" = "100" ] && [ "$SUB_H" = "60" ]; then
+    ok "t24: subsurface geometry 100x60 from the committed buffer"
+else
+    bad "t24: subsurface geometry wrong (got ${SUB_W}x${SUB_H})"
+fi
+if wait_for_log "$VEYRA_LOG" "subsurface removed" 6; then
+    ok "t24: subsurface visual removed with the parent"
+else
+    bad "t24: subsurface visual not removed"
+fi
 
 say "protocol tests done"
 echo "-------------------------------------"
