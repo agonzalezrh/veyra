@@ -63,8 +63,8 @@ a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 | 10 | Buffer Scale | Only Scale::Integer(1) advertised | Low |
 | 11 | Subsurface support | Not explicitly handled | Low |
 | 12 | Serial Validation | Popup serial validation may not catch all edge cases | Medium |
-| 15 | Duplicate Button Press | wl_data_device test client received the same wl_pointer.button(press) twice with one serial (observed under Xvfb/winit; masked by latches so far). Verify whether the compositor double-sends button events to clients — real apps would double-handle clicks. Track the originating layer (winit event loop vs ph.button call sites vs client queue dispatch). | Medium |
-| 16 | Stuck META Modifier | After the maximize test sequences (`xdotool keydown super; xdotool key Up; keyup super`), clients observe `logo:true` for the REST of the session — app keybindings like ctrl+shift+v never match. Almost certainly the same duplicated-XTEST-input anomaly as #15 (one unmatched super keydown). Verify duplication at the winit/X layer; consider debouncing modifier presses by serial. | Medium |
+| ~~15~~ | ~~Duplicate Button Press~~ | ✅ **G-C2 (Verified clean)**: client-kit pointer events now log the wl serial; input-suite t26i asserts exactly one press/release per physical click with distinct serials over repeated runs. No duplication at HEAD — earlier observations are not reproducible; the t26i regression guard keeps watch. | ~~Medium~~ |
+| ~~16~~ | ~~Stuck META Modifier~~ | ✅ **G-C2 (Fixed)**: root cause was NOT duplicated input — `route_keyboard` dropped modifier releases when no visual held keyboard focus (focus vanished mid-press: window close, workspace switch, drag start), latching smithay's XKB state so every later client enter reported `logo:true`. Modifiers are seat state: they now always reach the keyboard handle (`feed_keyboard_event`). The previously-SKIPped tcfoot foot-copy flow now runs and passes both directions. | ~~Medium~~ |
 
 ## P4: Feature Gaps
 
@@ -77,7 +77,7 @@ a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 
 ## Recommended Fix Order for G-C
 
-1. **Duplicate Button Press** (P3, #15) — verify/fix double delivery of wl_pointer presses (shared root cause with #16)
+1. ~~**Duplicate Button Press** (P3, #15)~~ — ✅ verified clean (G-C2)
 2. **Fractional scaling** (P3, #5) — for HiDPI
 3. **Output change events** (P3, #9) — for hotplug support
 4. **XWayland** (P4, #13) — required for a useful desktop
