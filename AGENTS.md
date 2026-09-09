@@ -651,8 +651,20 @@ Priority order from audit:
 - G5: Fullscreen protocol
 
 ### G-B — Remaining Issues (G6–G10)
+**Status: ✅ Complete (344 tests)**
 
-To be defined after G-A lands.
+### G-C — Protocol Completeness & Input Integrity (G-C1–G-C4)
+- G-C1: clipboard MIME verified end-to-end (tc1–tc4 + real foot both directions)
+- G-C2: stuck-META root cause fixed (modifier releases are seat state);
+  duplicate-press verified clean with t26i regression guard
+- G-C3: wp_fractional_scale_manager_v1 + wp_viewporter advertised; commit
+  path adopts LOGICAL geometry (viewport dst/src > buffer_scale); viewport
+  src crop via renderer u_src; t20 scale-2 end-to-end
+- G-C4: XWayland — XWM + xwayland-shell-v1; X11 windows are first-class
+  visuals through the native commit pipeline; selections bridge both
+  directions; t21 lifecycle test
+
+**Status: ✅ Complete (480 unit tests; protocol 97/0/0; input 93/0/0)**
 
 ---
 
