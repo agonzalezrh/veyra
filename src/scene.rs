@@ -184,6 +184,10 @@ pub struct Visual {
     pub chrome: SpatialChrome,
     /// Damage tracking — whether content or spatial state changed.
     pub damage: DamageKind,
+    /// Normalized source rectangle ([u0, v0, su, sv]) of the client
+    /// texture that fills the content quad. Identity by default; set
+    /// by wp_viewporter.src cropping (G-C3).
+    pub src_uv: [f32; 4],
 }
 
 impl Visual {
@@ -202,6 +206,7 @@ impl Visual {
             saved_transform: None,
             chrome: SpatialChrome::default(),
             damage: DamageKind::Content,
+            src_uv: [0.0, 0.0, 1.0, 1.0],
         }
     }
 

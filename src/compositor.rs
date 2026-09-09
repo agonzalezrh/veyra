@@ -9,12 +9,14 @@ use smithay::backend::input::{KeyState, Keycode};
 use smithay::delegate_compositor;
 use smithay::delegate_data_device;
 use smithay::delegate_dmabuf;
+use smithay::delegate_fractional_scale;
 use smithay::delegate_output;
 use smithay::delegate_pointer_constraints;
 use smithay::delegate_primary_selection;
 use smithay::delegate_relative_pointer;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
+use smithay::delegate_viewporter;
 use smithay::delegate_xdg_shell;
 use smithay::input::keyboard::{FilterResult, KeyboardHandle, LedState};
 use smithay::input::pointer::{ButtonEvent, CursorImageStatus, MotionEvent, PointerHandle};
@@ -37,6 +39,7 @@ use smithay::wayland::compositor::CompositorClientState;
 use smithay::wayland::compositor::CompositorHandler;
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::compositor::SurfaceAttributes;
+use smithay::wayland::fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
@@ -54,6 +57,7 @@ use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use smithay::wayland::shm::ShmHandler;
 use smithay::wayland::shm::ShmState;
+use smithay::wayland::viewporter::ViewporterState;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -311,6 +315,12 @@ pub struct LookingGlass {
     shift_pressed: bool,
     alt_pressed: bool,
     meta_pressed: bool,
+    /// G-C3: wp_viewporter global state.
+    pub viewporter_state: ViewporterState,
+    /// G-C3: wp_fractional_scale_manager_v1 global state.
+    pub fractional_scale_state: FractionalScaleManagerState,
+    /// G-C3: preferred scale advertised to clients (output scale).
+    pub preferred_scale: f64,
     /// Application switcher (Alt+Tab).
     pub app_switcher: ApplicationSwitcher,
     /// Application focus history: MRU ordering of focused toplevels
@@ -421,6 +431,9 @@ impl LookingGlass {
         let data_device_state = DataDeviceState::new::<Self>(display_handle);
         let mut seat_state = SeatState::new();
         let primary_selection_state = PrimarySelectionState::new::<Self>(display_handle);
+        // G-C3: fractional scaling + viewporter protocol support.
+        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(display_handle);
+        let viewporter_state = ViewporterState::new::<Self>(display_handle);
 
         // Create a seat and pointer/keyboard handles for Wayland input routing
         // Use new_wl_seat to register the wl_seat global (new_seat doesn't register it)
@@ -509,6 +522,9 @@ impl LookingGlass {
             shift_pressed: false,
             alt_pressed: false,
             meta_pressed: false,
+            viewporter_state,
+            fractional_scale_state,
+            preferred_scale: 1.0,
             app_switcher: ApplicationSwitcher::new(),
             focus_history: crate::focus_history::FocusHistory::new(),
             launcher: Launcher::new(),
@@ -784,6 +800,49 @@ impl LookingGlass {
             match result {
                 Some(Ok(texture)) => {
                     use smithay::backend::renderer::Texture;
+                    // G-C3: logical geometry — wp_viewporter dst/src take
+                    // precedence, else buffer dimensions divided by the
+                    // buffer scale. The texture stays in buffer pixels;
+                    // the renderer stretches it over the (logical) quad.
+                    let buf_wh = buf_size.unwrap_or_else(|| {
+                        let s = texture.size();
+                        (s.w, s.h)
+                    });
+                    let (viewport_dst, viewport_src, buffer_scale) =
+                        with_states(surface, |states| {
+                            let scale = {
+                                let mut c = states.cached_state.get::<SurfaceAttributes>();
+                                c.current().buffer_scale
+                            };
+                            let buf_logical = smithay::utils::Size::new(
+                                buf_wh.0 / scale.max(1),
+                                buf_wh.1 / scale.max(1),
+                            );
+                            // Validates the viewport against the committed
+                            // buffer; raises OutOfBuffer/BadSize itself.
+                            let _valid = smithay::wayland::viewporter::ensure_viewport_valid(
+                                states,
+                                buf_logical,
+                            );
+                            let mut vp = states
+                                .cached_state
+                                .get::<smithay::wayland::viewporter::ViewportCachedState>(
+                            );
+                            let vp = vp.current();
+                            (
+                                vp.dst.map(|s| (s.w, s.h)),
+                                vp.src.map(|r| ((r.loc.x, r.loc.y), (r.size.w, r.size.h))),
+                                scale,
+                            )
+                        });
+                    let (logical_wh, src_uv) = logical_geometry_from_buffer(
+                        buf_wh,
+                        buffer_scale,
+                        viewport_dst,
+                        viewport_src,
+                    );
+                    let logical_size = smithay::utils::Size::new(logical_wh.0, logical_wh.1);
+                    let src_uv = src_uv.unwrap_or([0.0, 0.0, 1.0, 1.0]);
                     if is_first_map {
                         let tex_size = texture.size();
 
@@ -820,8 +879,9 @@ impl LookingGlass {
                                         }
                                         visual.geometry = smithay::utils::Rectangle::new(
                                             smithay::utils::Point::new(0, 0),
-                                            smithay::utils::Size::new(tex_size.w, tex_size.h),
+                                            logical_size,
                                         );
+                                        visual.src_uv = src_uv;
                                         // Recompute position from updated positioner.
                                         // J2: parent-local, same as the map path
                                         // (parent linkage was set at first map).
@@ -862,9 +922,10 @@ impl LookingGlass {
                                     VisualContent::WaylandSurface(texture),
                                     smithay::utils::Rectangle::new(
                                         smithay::utils::Point::new(0, 0),
-                                        smithay::utils::Size::new(tex_size.w, tex_size.h),
+                                        logical_size,
                                     ),
                                 );
+                                visual.src_uv = src_uv;
                                 if let Some((_p_pos, p_total_w, p_total_h, pvid)) = parent_info {
                                     let popup_w = popup_geometry.size.w as f32;
                                     let popup_h = popup_geometry.size.h as f32;
@@ -929,7 +990,7 @@ impl LookingGlass {
                                 .position(|t| t.toplevel.wl_surface() == surface)
                                 .unwrap();
                             self.toplevels[idx].lifecycle = SurfaceLifecycle::Mapped;
-                            self.toplevels[idx].size = Some((tex_size.w, tex_size.h));
+                            self.toplevels[idx].size = Some((logical_size.w, logical_size.h));
 
                             if is_remap {
                                 if let Some(vid) = existing_vid {
@@ -939,8 +1000,9 @@ impl LookingGlass {
                                         }
                                         visual.geometry = smithay::utils::Rectangle::new(
                                             smithay::utils::Point::new(0, 0),
-                                            smithay::utils::Size::new(tex_size.w, tex_size.h),
+                                            logical_size,
                                         );
+                                        visual.src_uv = src_uv;
                                         self.workspace_manager.active_mut().add(vid);
                                         info!(?vid, app_id = %self.toplevels[idx].app_id, "surface remapped");
                                     }
@@ -954,9 +1016,10 @@ impl LookingGlass {
                                     VisualContent::WaylandSurface(texture),
                                     smithay::utils::Rectangle::new(
                                         smithay::utils::Point::new(0, 0),
-                                        smithay::utils::Size::new(tex_size.w, tex_size.h),
+                                        logical_size,
                                     ),
                                 );
+                                visual.src_uv = src_uv;
                                 use cgmath::Deg;
                                 use cgmath::Rotation3;
                                 visual.chrome.title = self.toplevels[idx].title.clone();
@@ -1106,20 +1169,18 @@ impl LookingGlass {
                             }
                         }
                     } else if let Some(vid) = existing_vid {
-                        use smithay::backend::renderer::Texture;
-                        let tex_size = texture.size();
                         // Resolve any outstanding geometry request (I3a).
                         // A mismatched buffer means the client overrode us —
                         // committed geometry always wins.
                         let outcome = self
                             .client_resizes
-                            .note_commit(vid, (tex_size.w, tex_size.h));
+                            .note_commit(vid, (logical_size.w, logical_size.h));
                         match outcome {
                             crate::client_resize::CommitOutcome::Fulfilled => {
                                 info!(
                                     ?vid,
-                                    w = tex_size.w,
-                                    h = tex_size.h,
+                                    w = logical_size.w,
+                                    h = logical_size.h,
                                     "client resize fulfilled"
                                 );
                                 // Client pacing (I3b): continue with the
@@ -1129,14 +1190,14 @@ impl LookingGlass {
                             crate::client_resize::CommitOutcome::ClientOverride => {
                                 info!(
                                     ?vid,
-                                    w = tex_size.w,
-                                    h = tex_size.h,
+                                    w = logical_size.w,
+                                    h = logical_size.h,
                                     "client overrode requested size; adopting committed geometry"
                                 );
                             }
                             crate::client_resize::CommitOutcome::NotResizing => {}
                         }
-                        let committed = (tex_size.w, tex_size.h);
+                        let committed = (logical_size.w, logical_size.h);
                         // I4: a committed buffer completes any outstanding
                         // maximize/unmaximize transition for this surface.
                         self.complete_maximize_intent(vid, committed);
@@ -1148,23 +1209,22 @@ impl LookingGlass {
                             if let Some(dst) = visual.texture_mut() {
                                 *dst = texture;
                             }
-                            // Adopt committed buffer dimensions: the client
+                            // Adopt committed LOGICAL dimensions: the client
                             // decides geometry. Transform (position/rotation/
                             // scale) is spatial state and is never touched.
-                            if visual.geometry.size.w != tex_size.w
-                                || visual.geometry.size.h != tex_size.h
-                            {
+                            if visual.geometry.size != logical_size {
                                 visual.geometry = smithay::utils::Rectangle::new(
                                     smithay::utils::Point::new(0, 0),
-                                    smithay::utils::Size::new(tex_size.w, tex_size.h),
+                                    logical_size,
                                 );
                                 info!(
                                     ?vid,
-                                    w = tex_size.w,
-                                    h = tex_size.h,
+                                    w = logical_size.w,
+                                    h = logical_size.h,
                                     "visual geometry adopted from client buffer"
                                 );
                             }
+                            visual.src_uv = src_uv;
                             visual.damage = DamageKind::Content;
                         }
                     }
@@ -5058,6 +5118,50 @@ impl CompositorHandler for LookingGlass {
 
 delegate_compositor!(LookingGlass);
 
+impl FractionalScaleHandler for LookingGlass {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        // The preferred scale is what the output advertises; surfaces
+        // created before the scale changed already got it via
+        // new_fractional_scale on bind. Single output: constant 1.0.
+        with_states(&surface, |states| {
+            smithay::wayland::fractional_scale::with_fractional_scale(states, |fs| {
+                fs.set_preferred_scale(self.preferred_scale);
+            });
+        });
+    }
+}
+
+delegate_fractional_scale!(LookingGlass);
+delegate_viewporter!(LookingGlass);
+
+/// G-C3: pure math behind the commit-path geometry — logical surface
+/// size and the normalized viewport src rect for a committed buffer.
+///
+/// Precedence: wp_viewporter destination size, then wp_viewporter
+/// source-rect size (rounded per protocol), then the buffer dimensions
+/// divided by the integer wl_surface buffer scale.
+fn logical_geometry_from_buffer(
+    buf: (i32, i32),
+    buffer_scale: i32,
+    viewport_dst: Option<(i32, i32)>,
+    viewport_src: Option<((f64, f64), (f64, f64))>,
+) -> ((i32, i32), Option<[f32; 4]>) {
+    let scale = buffer_scale.max(1);
+    let logical = viewport_dst.unwrap_or_else(|| match viewport_src {
+        Some((_, size)) => (size.0.round() as i32, size.1.round() as i32),
+        None => (buf.0 / scale, buf.1 / scale),
+    });
+    let src_uv = viewport_src.map(|(loc, size)| {
+        [
+            (loc.0 / buf.0.max(1) as f64) as f32,
+            (loc.1 / buf.1.max(1) as f64) as f32,
+            (size.0 / buf.0.max(1) as f64) as f32,
+            (size.1 / buf.1.max(1) as f64) as f32,
+        ]
+    });
+    (logical, src_uv)
+}
+
 impl XdgShellHandler for LookingGlass {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
@@ -5774,5 +5878,60 @@ mod r10_tests {
         // u32 wrapping representation is the Wayland contract; the
         // value must fit its type by construction.
         let _c: u32 = super::now_ms();
+    }
+}
+
+#[cfg(test)]
+mod gc3_logical_geometry_tests {
+    use super::logical_geometry_from_buffer as g;
+
+    #[test]
+    fn scale1_buffer_is_identity() {
+        let (size, src) = g((800, 600), 1, None, None);
+        assert_eq!(size, (800, 600));
+        assert_eq!(src, None);
+    }
+
+    #[test]
+    fn buffer_scale_2_halves_logical_size() {
+        let (size, src) = g((1600, 1200), 2, None, None);
+        assert_eq!(size, (800, 600));
+        assert_eq!(src, None);
+    }
+
+    #[test]
+    fn zero_scale_treated_as_one() {
+        let (size, _) = g((800, 600), 0, None, None);
+        assert_eq!(size, (800, 600));
+    }
+
+    #[test]
+    fn viewport_dst_wins_over_buffer_scale() {
+        let (size, _) = g((1600, 1200), 2, Some((640, 480)), None);
+        assert_eq!(size, (640, 480));
+    }
+
+    #[test]
+    fn viewport_src_size_used_when_no_dst() {
+        let src = Some(((10.0, 20.0), (320.0, 240.0)));
+        let (size, uv) = g((640, 480), 1, None, src);
+        assert_eq!(size, (320, 240));
+        let uv = uv.expect("src rect produces normalized uv");
+        assert_eq!(uv, [10.0 / 640.0, 20.0 / 480.0, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn viewport_dst_and_src_both_set_uses_dst_with_src_uv() {
+        let src = Some(((0.0, 0.0), (100.0, 50.0)));
+        let (size, uv) = g((1000, 500), 1, Some((200, 100)), src);
+        assert_eq!(size, (200, 100));
+        let uv = uv.expect("src rect still crops the texture");
+        assert_eq!(uv, [0.0, 0.0, 0.1, 0.1]);
+    }
+
+    #[test]
+    fn no_viewport_has_identity_uv() {
+        let (_, src) = g((800, 600), 1, None, None);
+        assert!(src.is_none(), "no viewport means identity (None) uv rect");
     }
 }

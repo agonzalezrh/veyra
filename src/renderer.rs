@@ -90,6 +90,7 @@ unsafe fn draw_text(
     gl.Uniform1f(draw.u_focused, 0.0);
     gl.Uniform1f(draw.u_title_h, 0.0);
     gl.Uniform1f(draw.u_edge, 0.0);
+    gl.Uniform4f(draw.u_src, 0.0, 0.0, 1.0, 1.0);
     // Glyph color comes from u_tint (the atlas ink is white; rgb carried
     // in .rgb, shape in .a). This finally applies the requested color.
     gl.Uniform4f(draw.u_tint, color_r, color_g, color_b, 1.0);
@@ -223,6 +224,7 @@ unsafe fn draw_text_in_window(
     gl.Uniform1f(draw.u_focused, 0.0);
     gl.Uniform1f(draw.u_title_h, 0.0);
     gl.Uniform1f(draw.u_edge, 0.0);
+    gl.Uniform4f(draw.u_src, 0.0, 0.0, 1.0, 1.0);
     gl.Uniform4f(draw.u_tint, color.0, color.1, color.2, 1.0);
     gl.ActiveTexture(ffi::TEXTURE0);
     gl.BindTexture(ffi::TEXTURE_2D, font_tex_id);
@@ -548,6 +550,7 @@ uniform float u_title_h;
 uniform float u_edge;
 uniform vec4 u_tint;
 uniform vec4 u_border;
+uniform vec4 u_src;
 void main() {
     vec2 uv = v_uv;
     // Fixed-pixel chrome: thickness passed per-axis in UV units so the
@@ -590,20 +593,23 @@ void main() {
                 gl_FragColor = vec4(0.09, 0.15, 0.16, 0.9);
             }
         }
-    } else {
-        vec2 content_uv = vec2(uv.x, (uv.y - th) / (1.0 - th));
-        if (any(edge)) {
-            if (u_selected > 0.5) {
-                gl_FragColor = vec4(0.62, 0.50, 0.10, 1.0);
-            } else if (u_focused > 0.5) {
-                gl_FragColor = vec4(0.24, 0.52, 0.24, 1.0);
-            } else {
-                gl_FragColor = vec4(0.16, 0.26, 0.27, 1.0);
-            }
         } else {
-            gl_FragColor = texture2D(u_tex, content_uv) * u_tint;
+            vec2 content_uv = vec2(uv.x, (uv.y - th) / (1.0 - th));
+            // G-C3: wp_viewporter.src crop — normalized source window
+            // over the client texture (identity when no viewport is set).
+            vec2 suv = content_uv * u_src.zw + u_src.xy;
+            if (any(edge)) {
+                if (u_selected > 0.5) {
+                    gl_FragColor = vec4(0.62, 0.50, 0.10, 1.0);
+                } else if (u_focused > 0.5) {
+                    gl_FragColor = vec4(0.24, 0.52, 0.24, 1.0);
+                } else {
+                    gl_FragColor = vec4(0.16, 0.26, 0.27, 1.0);
+                }
+            } else {
+                gl_FragColor = texture2D(u_tex, suv) * u_tint;
+            }
         }
-    }
 }
 ";
 
@@ -620,6 +626,7 @@ struct DrawGl {
     u_edge: i32,
     u_tint: i32,
     u_border: i32,
+    u_src: i32,
     /// Solid-color overlay program (no texture, no window chrome semantics).
     solid_prog: u32,
     solid_a_pos: u32,
@@ -689,6 +696,7 @@ impl DrawGl {
         let u_edge = unsafe { gl.GetUniformLocation(program, c"u_edge".as_ptr()) };
         let u_tint = unsafe { gl.GetUniformLocation(program, c"u_tint".as_ptr()) };
         let u_border = unsafe { gl.GetUniformLocation(program, c"u_border".as_ptr()) };
+        let u_src = unsafe { gl.GetUniformLocation(program, c"u_src".as_ptr()) };
         let mut vbo = 0;
         unsafe { gl.GenBuffers(1, &mut vbo) };
         let verts: [f32; 16] = [
@@ -763,6 +771,7 @@ impl DrawGl {
             u_edge,
             u_tint,
             u_border,
+            u_src,
             solid_prog,
             solid_a_pos,
             solid_a_uv,
@@ -813,6 +822,7 @@ fn draw_textured_quad(
     title_h: f32,
     gw: f32,
     gh: f32,
+    src_uv: [f32; 4],
 ) {
     unsafe {
         gl.UseProgram(draw.program);
@@ -822,6 +832,7 @@ fn draw_textured_quad(
         gl.Uniform1f(draw.u_title_h, title_h);
         gl.Uniform1f(draw.u_edge, 1.0);
         gl.Uniform4f(draw.u_tint, 1.0, 1.0, 1.0, 1.0);
+        gl.Uniform4f(draw.u_src, src_uv[0], src_uv[1], src_uv[2], src_uv[3]);
         // ~1.5px chrome ring regardless of window size (2.5px read as
         // a heavy frame in physical testing).
         let ring_u = 1.5 / gw.max(1.0);
@@ -994,6 +1005,7 @@ pub fn render_scene(
                 title_h,
                 gw,
                 gh,
+                visual.src_uv,
             );
 
             // J3 chrome: title text + window buttons ride the SAME model

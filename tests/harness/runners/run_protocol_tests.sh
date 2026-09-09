@@ -645,7 +645,41 @@ sleep 1
 assert_json "$TMP_DIR/tc4_paste.json" \
     "any(e['ev']=='clip_cleared' for e in events)" \
     "tc4: selection cleared when the source client died"
-wait_process_exit $TC4_PASTE_PID 12
+
+# ── t20: buffer scale (G-C3) ─────────────────────────────────────────
+# A scale-2 client commits 1600x1200 buffers for an 800x600 logical
+# window; veyra must adopt the LOGICAL size (buffer / buffer_scale),
+# not the raw buffer dimensions. Also verifies the fractional-scale
+# and viewporter globals are advertised on the wire.
+say "t20_buffer_scale"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe \
+    --scale 2 --resize-to 800x600 --after-commits 2 --duration 4000 \
+    > "$TMP_DIR/t20.json" 2>"$TMP_DIR/t20.err" &
+T20_PID=$!
+wait_process_exit $T20_PID 12
+assert_json "$TMP_DIR/t20.json" \
+    "any(e['ev']=='commit' and e['bw']==1600 and e['bh']==1200 and e['scale']==2 and e['w']==800 for e in events)" \
+    "t20: client committed 1600x1200 buffers for an 800x600 logical window at scale 2"
+if strip_ansi "$TMP_DIR/veyra.log" | grep -aE "geometry adopted from client buffer.*w=800 h=600|geometry adopted from client buffer w=800 h=600" | grep -aq .; then
+    ok "t20: veyra adopted the LOGICAL 800x600 from the scale-2 buffer"
+else
+    bad "t20: veyra did not adopt logical 800x600 (see veyra.log geometry lines)"
+    strip_ansi "$TMP_DIR/veyra.log" | grep -a "geometry adopted" | tail -3 | sed 's/^/    /'
+fi
+assert_json "$TMP_DIR/t20.json" \
+    "not any(e['ev']=='config' and not e.get('first') and e['w'] is not None for e in events)" \
+    "t20: no sized configure pushed back (no fighting over client geometry)"
+
+# Globals advertised on the wire (client-side WAYLAND_DEBUG registry dump).
+WAYLAND_DEBUG=1 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" \
+    "$BIN/client-kit" probe --duration 800 > "$TMP_DIR/t20_globals.out" 2>&1
+for g in wp_viewporter wp_fractional_scale_manager_v1; do
+    if grep -qF "$g" "$TMP_DIR/t20_globals.out"; then
+        ok "t20: $g global advertised"
+    else
+        bad "t20: $g global NOT advertised"
+    fi
+done
 
 say "protocol tests done"
 echo "-------------------------------------"

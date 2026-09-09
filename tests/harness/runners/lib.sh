@@ -99,6 +99,21 @@ wait_for_log() { # file pattern timeout_s
     return 1
 }
 
+# Like wait_for_log, but only counts matches AFTER line $3 — the suite
+# shares one compositor log, so unscoped greps false-pass on matches
+# left by earlier tests. The line anchor is a raw grep -an number;
+# grep -an re-numbers after strip_ansi (sed preserves line count).
+wait_for_log_after() { # file pattern after_line timeout_s
+    local f="$1" pat="$2" after="$3" t="${4:-10}" n=0
+    while [ $n -lt $((t*2)) ]; do
+        if [ -n "$(strip_ansi "$f" | grep -anF "$pat" | awk -F: "\$1 > $after")" ]; then
+            return 0
+        fi
+        sleep 0.5; n=$((n+1))
+    done
+    return 1
+}
+
 wait_process_exit() { # pid timeout_s
     local pid="$1" t="${2:-10}" n=0
     while [ $n -lt $((t*2)) ]; do
@@ -217,6 +232,16 @@ cleanup_all() {
     pkill -f "weston --backend=headless" 2>/dev/null
     pkill -x veyra 2>/dev/null
     pkill -x Xvfb 2>/dev/null
+    sleep 0.5
+    true
+}
+
+# Kill leftover harness clients mid-suite (between tests). Under load a
+# client can outlive its test's wait_process_exit timeout; its window
+# (possibly MAXIMIZED, covering the screen center) then steals the next
+# test's focus click and key bindings. Callers: click-driven tests.
+quiesce_clients() {
+    pkill -f "client-kit" 2>/dev/null
     sleep 0.5
     true
 }

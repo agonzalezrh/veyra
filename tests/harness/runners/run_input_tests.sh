@@ -548,6 +548,7 @@ fi
 # focus click → F12 (fullscreen) → F12 again (unfullscreen); the client
 # must be configured to the presentation area and back, with the
 # server-side log showing request → fulfilled both ways.
+quiesce_clients
 say "t16i_fullscreen_binding"
 JSON_DUMP=1
 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
@@ -563,16 +564,25 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
     [ "$NOW_MAPPED" -gt "$BASE_MAPPED" ] && break
     sleep 0.5
 done
+# Xvfb has no window manager: X keyboard focus never moves on its own,
+# but it also never recovers if a prior test left it ambiguous. Re-pin
+# it before the key sequence (observed flake: F12 vanishing between
+# XTEST and winit when X focus drifted).
+DISPLAY=:99 xdotool windowfocus "$WID0"
+T16I_MAP_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -an "surface mapped" | tail -1 | cut -d: -f1)
 DISPLAY=:99 xdotool mousemove $CX $CY click 1
 sleep 0.3
 DISPLAY=:99 xdotool key F12
-wait_for_log "$TMP_DIR/veyra.log" "fullscreen fulfilled" 5
+wait_for_log_after "$TMP_DIR/veyra.log" "fullscreen fulfilled" "$T16I_MAP_LINE" 5
 DISPLAY=:99 xdotool key F12
 wait_process_exit $T16I_PID 16
-assert_log "$TMP_DIR/veyra.log" "fullscreen requested" "t16i: F12 triggered compositor fullscreen request"
-FS_UNCALLS=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "unfullscreen fulfilled" | grep -acv "unfullscreen" || true)
-FS_UNFULLFILLED_TOTAL=$(strip_ansi "$TMP_DIR/veyra.log" | grep -ac "unfullscreen fulfilled" || true)
-if [ "$FS_UNFULLFILLED_TOTAL" -ge 1 ]; then
+if strip_ansi "$TMP_DIR/veyra.log" | grep -an "fullscreen requested" | awk -F: "\$1 > $T16I_MAP_LINE" | grep -q .; then
+    ok "t16i: F12 triggered compositor fullscreen request"
+else
+    bad "t16i: F12 triggered compositor fullscreen request (no in-window log match)"
+fi
+FS_UNFULLFILLED_AFTER=$(strip_ansi "$TMP_DIR/veyra.log" | grep -an "unfullscreen fulfilled" | awk -F: "\$1 > $T16I_MAP_LINE" | grep -ac . || true)
+if [ "$FS_UNFULLFILLED_AFTER" -ge 1 ]; then
     ok "t16i: second F12 completed the unfullscreen transaction"
 else
     bad "t16i: second F12 did not unfullscreen"
@@ -587,6 +597,7 @@ assert_json "$TMP_DIR/t16i.json" \
 # refocus replacement=None since it is the only window); F10 restores
 # and refocuses it (MRU [A] again). Asserts the compositor-side focus
 # history log lines for the t18i window.
+quiesce_clients
 say "t18i_mru_minimize_restore"
 JSON_DUMP=1
 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
@@ -702,6 +713,7 @@ fi
 # Window on screen: CX±320 x, CY±255 y (same math as the t8 resize
 # edges). The title strip is the top ~29 px; buttons sit right-aligned
 # inside it: minimize | maximize | close from the right edge.
+quiesce_clients
 say "t20i_title_bar_buttons"
 JSON_DUMP=1
 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
@@ -742,6 +754,7 @@ wait_process_exit $T20I_PID 12
 # recent) at 104..274, item1 (A) at 278..448. Semantics: click ALWAYS
 # activates (never minimizes — the toggle read as erratic in physical
 # testing); minimize comes from F9, restore from the taskbar click.
+quiesce_clients
 say "t21i_taskbar"
 JSON_DUMP=1
 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" maximizer \
@@ -812,6 +825,7 @@ print(int($WIN_W / 2 + x), int($WIN_H / 2 - y))
 "
 }
 
+quiesce_clients
 say "t22i_dnd_happy_path"
 DISPLAY=:99 xdotool key Escape   # pin camera (ResetCamera) for 1:1 ortho
 sleep 0.5
@@ -1042,6 +1056,7 @@ wait_process_exit $T25I_DST_PID 12
 # channel. Direction 2: foot copies a typed word (double-click select +
 # ctrl+shift+c) → the clip client reads the payload AND the exact MIME
 # set a real toolkit advertises.
+quiesce_clients
 say "tcfoot_clipboard_real_client"
 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
     --mode set --mimes "text/plain,text/plain;charset=utf-8" --payload "VEYRA_CLIP_FOOT" --duration 30000 \
@@ -1158,6 +1173,7 @@ fi
 # and one release to the client, with distinct serials. Historical
 # observations showed a duplicated press (same serial twice) under
 # Xvfb/XTEST; assertions previously used any() which masked duplicates.
+quiesce_clients
 say "t26i_pointer_button_integrity"
 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" pointer --duration 6000 > "$TMP_DIR/t26i.json" 2>"$TMP_DIR/t26i.err" &
 T26I_PID=$!

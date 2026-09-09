@@ -115,6 +115,10 @@ struct Opts {
     /// Fullscreen test (I7): after this many commits, send
     /// xdg_toplevel.unset_fullscreen.
     unfullscreen_after: Option<u32>,
+    /// G-C3: wl_surface.set_buffer_scale — buffers are committed at
+    /// scale× dimensions while the logical size stays fixed. The
+    /// compositor must adopt the logical size (buffer / scale).
+    scale: i32,
 }
 
 fn parse_size(s: &str) -> (u32, u32) {
@@ -145,6 +149,7 @@ fn parse_args() -> Opts {
         minimize_after: None,
         fullscreen_after: None,
         unfullscreen_after: None,
+        scale: 1,
     };
     let mut i = 1;
     while i < args.len() {
@@ -174,6 +179,7 @@ fn parse_args() -> Opts {
             "--minimize-after" => opts.minimize_after = next(&mut i).parse().ok(),
             "--fullscreen-after" => opts.fullscreen_after = next(&mut i).parse().ok(),
             "--unfullscreen-after" => opts.unfullscreen_after = next(&mut i).parse().ok(),
+            "--scale" => opts.scale = next(&mut i).parse().unwrap_or(1),
             other => {
                 eprintln!("unknown option: {}", other);
                 std::process::exit(2);
@@ -234,8 +240,13 @@ impl TestClient {
         if width == 0 || height == 0 {
             return;
         }
-        let stride = width as i32 * 4;
-        let need = (width * height * 4) as usize;
+        // G-C3: with --scale N, buffers carry N× pixels while the
+        // logical size stays width×height (wl_surface.set_buffer_scale).
+        let scale = self.opts.scale.max(1);
+        let bw = width * scale as u32;
+        let bh = height * scale as u32;
+        let stride = (bw as i32) * 4;
+        let need = (bw * bh * 4) as usize;
         if self.pool_size < need {
             self.pool = Some(SlotPool::new(need, &self.shm).expect("create pool"));
             self.pool_size = need;
@@ -243,24 +254,14 @@ impl TestClient {
         }
         let pool = self.pool.as_mut().expect("pool");
         let buffer = self.buffer.get_or_insert_with(|| {
-            pool.create_buffer(
-                width as i32,
-                height as i32,
-                stride,
-                wl_shm::Format::Argb8888,
-            )
-            .expect("create buffer")
-            .0
+            pool.create_buffer(bw as i32, bh as i32, stride, wl_shm::Format::Argb8888)
+                .expect("create buffer")
+                .0
         });
-        let stale = self.buffer_size != (width, height);
+        let stale = self.buffer_size != (bw, bh);
         let canvas = if stale {
             let (second, canvas) = pool
-                .create_buffer(
-                    width as i32,
-                    height as i32,
-                    stride,
-                    wl_shm::Format::Argb8888,
-                )
+                .create_buffer(bw as i32, bh as i32, stride, wl_shm::Format::Argb8888)
                 .expect("create replacement buffer");
             *buffer = second;
             canvas
@@ -269,12 +270,7 @@ impl TestClient {
                 Some(c) => c,
                 None => {
                     let (second, canvas) = pool
-                        .create_buffer(
-                            width as i32,
-                            height as i32,
-                            stride,
-                            wl_shm::Format::Argb8888,
-                        )
+                        .create_buffer(bw as i32, bh as i32, stride, wl_shm::Format::Argb8888)
                         .expect("create double-buffer");
                     *buffer = second;
                     canvas
@@ -291,21 +287,27 @@ impl TestClient {
             chunk[3] = 0xFF;
         }
 
+        if scale > 1 {
+            self.window.wl_surface().set_buffer_scale(scale);
+        }
         self.window
             .wl_surface()
-            .damage_buffer(0, 0, width as i32, height as i32);
+            .damage_buffer(0, 0, bw as i32, bh as i32);
         self.window
             .wl_surface()
             .frame(qh, self.window.wl_surface().clone());
         buffer
             .attach_to(self.window.wl_surface())
             .expect("buffer attach");
-        self.buffer_size = (width, height);
+        self.buffer_size = (bw, bh);
         self.window.commit();
         log_kv(&[
             ("ev", "commit".into()),
             ("w", width.into()),
             ("h", height.into()),
+            ("bw", bw.into()),
+            ("bh", bh.into()),
+            ("scale", (scale as u32).into()),
         ]);
         // Client-requested maximize transitions (I4). Requests are sent
         // right after a commit; the compositor answers with a configure
