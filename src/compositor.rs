@@ -1638,6 +1638,44 @@ impl LookingGlass {
         info!(w, h, refresh, "output mode synced with backend size");
     }
 
+    /// G-D1/#9: update the advertised output scale at runtime — changes
+    /// the wl_output scale event for bound clients and re-broadcasts
+    /// the preferred fractional scale to every mapped surface. Called
+    /// from the config-reload path (inotify watch in main.rs).
+    pub fn sync_output_scale(&mut self, scale: f64) {
+        let Some(output) = self.output.clone() else {
+            return;
+        };
+        if self.preferred_scale == scale {
+            return;
+        }
+        output.change_current_state(None, None, Some(scale_from_f64(scale)), None);
+        self.preferred_scale = scale;
+        // wp_fractional_scale clients learn the new preferred scale on
+        // their next bind; already-bound surfaces get the update here.
+        let surfaces: Vec<WlSurface> = self.wayland_surfaces.values().cloned().collect();
+        for surface in surfaces {
+            with_states(&surface, |states| {
+                smithay::wayland::fractional_scale::with_fractional_scale(states, |fs| {
+                    fs.set_preferred_scale(scale);
+                });
+            });
+        }
+        info!(scale, "output scale updated");
+    }
+
+    /// #9: apply runtime config changes (SIGHUP-equivalent: the config
+    /// file is watched with inotify in main.rs). Scope: the output
+    /// scale — workspace/layout/input changes need dedicated migration
+    /// logic per field and are intentionally not picked up live.
+    pub fn apply_config_changes(&mut self, config: Config) {
+        let scale = config.appearance.output_scale;
+        if (scale - self.preferred_scale).abs() > f64::EPSILON {
+            info!(scale, "config reload: output scale changed");
+            self.sync_output_scale(scale);
+        }
+    }
+
     /// Schedule a render and record the request in perf stats.
     pub fn schedule_render(&mut self) {
         self.perf.record_requested();

@@ -64,12 +64,94 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::calloop::Interest;
 use smithay::reexports::calloop::Mode;
 use smithay::reexports::calloop::PostAction;
+use tracing::info;
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 use tracing_subscriber::EnvFilter;
 
 /// Nested (winit) startup: window clamp, state construction, and the
 /// advertised-mode sync. Returns the source to insert into the loop.
+/// #9: runtime config reload — own the inotify fd, watch the config
+/// file for writes, and reload + apply on change. Event-driven: the
+/// watch source only fires when the file actually changes.
+struct InotifyFd(i32);
+
+impl std::os::unix::io::AsRawFd for InotifyFd {
+    fn as_raw_fd(&self) -> i32 {
+        self.0
+    }
+}
+
+impl std::os::unix::io::AsFd for InotifyFd {
+    fn as_fd(&self) -> std::os::unix::io::BorrowedFd<'_> {
+        unsafe { std::os::unix::io::BorrowedFd::borrow_raw(self.0) }
+    }
+}
+
+impl Drop for InotifyFd {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.0) };
+    }
+}
+
+fn watch_config_for_reload(
+    handle: &smithay::reexports::calloop::LoopHandle<'static, LookingGlass>,
+) -> Result<(), String> {
+    let path = crate::config::config_path();
+    if !path.exists() {
+        return Err(format!("config file not present: {}", path.display()));
+    }
+    let fd = unsafe {
+        libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC)
+    };
+    if fd < 0 {
+        return Err("inotify_init1 failed".into());
+    }
+    let watch = path.to_str().ok_or("config path not utf-8")?.to_owned();
+    let wd = unsafe {
+        libc::inotify_add_watch(
+            fd,
+            watch.as_ptr() as *const libc::c_char,
+            libc::IN_MODIFY | libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO,
+        )
+    };
+    if wd < 0 {
+        unsafe { libc::close(fd) };
+        return Err(format!("inotify_add_watch failed: {}", path.display()));
+    }
+    let owned = InotifyFd(fd);
+    let fd_for_cb = fd;
+    handle
+        .insert_source(
+            Generic::new(owned, Interest::READ, Mode::Level),
+            move |_, _, state| {
+                // Drain the event queue (the event contents don't
+                // matter — any write to the config file is a reload
+                // signal), then reload + apply.
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = unsafe {
+                        libc::read(
+                            fd_for_cb,
+                            buf.as_mut_ptr() as *mut libc::c_void,
+                            buf.len(),
+                        )
+                    };
+                    if n <= 0 {
+                        break;
+                    }
+                }
+                let config = crate::config::Config::load();
+                info!(scale = config.appearance.output_scale, "config reloaded");
+                state.apply_config_changes(config);
+                Ok(PostAction::Continue)
+            },
+        )
+        .map_err(|e| format!("failed to register config watch: {e}"))?;
+    info!(path = %path.display(), "config reload watcher active (write to reload)");
+    Ok(())
+}
+
 fn start_winit_state(
     display_handle: &smithay::reexports::wayland_server::DisplayHandle,
     config: &Config,
@@ -269,6 +351,14 @@ fn main() {
     state.loop_handle = Some(handle.clone());
     if let Some((xwayland, xwayland_client)) = crate::xwm::spawn_xwayland(&display_handle) {
         crate::xwm::insert_xwayland_source(&mut state, xwayland, xwayland_client, &handle);
+    }
+
+    // #9: runtime config reload — watch the config file with inotify
+    // (event-driven: an idle compositor wakes for nothing). A write to
+    // the file triggers a reload; the output scale is applied live
+    // (wl_output scale + preferred fractional scale to clients).
+    if let Err(e) = watch_config_for_reload(&handle) {
+        tracing::info!(?e, "config reload watcher unavailable (reload disabled)");
     }
 
     // Wayland display dispatch source

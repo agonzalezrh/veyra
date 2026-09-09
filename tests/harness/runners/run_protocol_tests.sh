@@ -760,6 +760,35 @@ assert_json "$TMP_DIR/t22.json" \
     "any(e['ev']=='outmode' and e['w']==$T22_W and e['h']==$T22_H for e in events)" \
     "t22: wl_output mode reflects the backend size"
 
+# ── t23: runtime scale change via config reload (#9) ─────────────────
+# t22's veyra instance watches its config file with inotify; rewriting
+# it (scale 2 → 1) must reload the config and push the new scale to
+# ALREADY-BOUND clients (wl_output scale event) without a restart.
+say "t23_runtime_scale_change"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --duration 7000 \
+    > "$TMP_DIR/t23.json" 2>"$TMP_DIR/t23.err" &
+T23_PID=$!
+sleep 1.5
+cat > "$VEYRA_CFG" <<EOF
+version = 1
+
+[appearance]
+output_scale = 1.0
+EOF
+sleep 3.5
+wait_process_exit $T23_PID 10
+if grep -aq "config reloaded" "$TMP_DIR/veyra-scale.log"; then
+    ok "t23: config reload fired (inotify watch)"
+else
+    bad "t23: config reload did not fire"
+fi
+assert_json "$TMP_DIR/t23.json" \
+    "any(e['ev']=='outmode' and e['scale']==2 for e in events)" \
+    "t23: client observed the initial scale 2"
+assert_json "$TMP_DIR/t23.json" \
+    "any(e['ev']=='outmode' and e['scale']==1 for e in events)" \
+    "t23: ALREADY-BOUND client observed the runtime scale change to 1"
+
 say "protocol tests done"
 echo "-------------------------------------"
 echo "protocol: $PASS passed, $FAIL failed, $SKIP skipped"

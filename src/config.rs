@@ -384,7 +384,7 @@ struct ConfigFile {
 
 /// Get the path to the config file.
 /// Uses `VEYRA_CONFIG_PATH` env var for testing, otherwise standard path.
-fn config_path() -> PathBuf {
+pub fn config_path() -> PathBuf {
     if let Ok(path) = std::env::var("VEYRA_CONFIG_PATH") {
         return PathBuf::from(path);
     }
