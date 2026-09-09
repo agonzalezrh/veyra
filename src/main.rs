@@ -44,6 +44,7 @@ mod snap;
 mod stress_tests;
 mod window;
 mod workspace;
+mod xwm;
 
 use std::sync::Arc;
 
@@ -262,6 +263,13 @@ fn main() {
         })
         .expect("Failed to init wayland socket source");
     tracing::info!("Listening on wayland socket: {}", socket_name);
+
+    // G-C4: XWayland — spawn the server and register its event source.
+    // Missing Xwayland binary degrades cleanly to native-only.
+    state.loop_handle = Some(handle.clone());
+    if let Some((xwayland, xwayland_client)) = crate::xwm::spawn_xwayland(&display_handle) {
+        crate::xwm::insert_xwayland_source(&mut state, xwayland, xwayland_client, &handle);
+    }
 
     // Wayland display dispatch source
     handle

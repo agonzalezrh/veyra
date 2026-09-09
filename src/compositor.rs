@@ -58,6 +58,7 @@ use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use smithay::wayland::shm::ShmHandler;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::xwayland_shell::XWaylandShellState;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -321,6 +322,23 @@ pub struct LookingGlass {
     pub fractional_scale_state: FractionalScaleManagerState,
     /// G-C3: preferred scale advertised to clients (output scale).
     pub preferred_scale: f64,
+    /// G-C4: xwayland-shell-v1 global state (X11 window association).
+    pub xwayland_shell_state: XWaylandShellState,
+    /// G-C4: the running X11 window manager, once XWayland is ready.
+    pub x11_wm: Option<smithay::xwayland::xwm::X11Wm>,
+    /// G-C4: X11 windows by their associated wl_surface (xwayland shell).
+    pub x11_windows: HashMap<WlSurface, smithay::xwayland::xwm::X11Surface>,
+    /// G-C4: X11 display number (for spawning X clients with DISPLAY).
+    pub x11_display: Option<u32>,
+    /// G-C4: the Wayland client identity of the XWayland server.
+    pub xwayland_client: Option<Client>,
+    /// G-C4: event-loop handle for selection transfers.
+    pub loop_handle: Option<smithay::reexports::calloop::LoopHandle<'static, LookingGlass>>,
+    /// G-C4: selections currently owned by an X client (clipboard, primary).
+    /// SelectionTarget doesn't implement Hash, so ownership is tracked
+    /// per target kind.
+    pub x11_owns_clipboard: bool,
+    pub x11_owns_primary: bool,
     /// Application switcher (Alt+Tab).
     pub app_switcher: ApplicationSwitcher,
     /// Application focus history: MRU ordering of focused toplevels
@@ -419,6 +437,14 @@ fn pacing_timer_callback(
     }
 }
 
+/// G-C4: ownership marker for compositor-side (X11-bridged)
+/// selections. Selections served by a Wayland client (wl_data_source)
+/// never reach `send_selection` with this marker — smithay routes
+/// those directly to the client source; only server-side selections
+/// (X11-bridged) arrive here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionOwner;
+
 impl LookingGlass {
     pub fn new(
         display_handle: &DisplayHandle,
@@ -434,6 +460,8 @@ impl LookingGlass {
         // G-C3: fractional scaling + viewporter protocol support.
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(display_handle);
         let viewporter_state = ViewporterState::new::<Self>(display_handle);
+        // G-C4: xwayland-shell-v1 (X11 window ↔ wl_surface association).
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(display_handle);
 
         // Create a seat and pointer/keyboard handles for Wayland input routing
         // Use new_wl_seat to register the wl_seat global (new_seat doesn't register it)
@@ -525,6 +553,14 @@ impl LookingGlass {
             viewporter_state,
             fractional_scale_state,
             preferred_scale: 1.0,
+            xwayland_shell_state,
+            x11_wm: None,
+            x11_windows: HashMap::new(),
+            x11_display: None,
+            xwayland_client: None,
+            loop_handle: None,
+            x11_owns_clipboard: false,
+            x11_owns_primary: false,
             app_switcher: ApplicationSwitcher::new(),
             focus_history: crate::focus_history::FocusHistory::new(),
             launcher: Launcher::new(),
@@ -729,14 +765,39 @@ impl LookingGlass {
     }
 
     #[allow(dead_code)] // reserved API surface; not yet wired
-    fn handle_commit(&mut self, surface: &WlSurface) {
+    pub(crate) fn handle_commit(&mut self, surface: &WlSurface) {
         // Determine if this is a toplevel or popup commit
         let is_popup = self.popups.iter().any(|p| p.wl_surface == *surface);
 
-        let existing_vid = self.find_surface_visual_id(surface);
+        // G-C4: X11 windows commit through the same pipeline (xwayland
+        // shell association). They are not xdg toplevels; the X11
+        // surface supplies chrome and the X side drives the lifecycle.
+        let x11_window = self.x11_windows.get(surface).cloned();
+        let x11_vid = x11_window.as_ref().and_then(|x11| {
+            let wid = x11.window_id();
+            self.x11_windows
+                .iter()
+                .find(|(_, w)| w.window_id() == wid)
+                .and_then(|(s, _)| {
+                    self.wayland_surfaces
+                        .iter()
+                        .find(|(_, vs)| *vs == s)
+                        .map(|(vid, _)| *vid)
+                })
+        });
+
+        let existing_vid = if x11_window.is_some() {
+            x11_vid
+        } else {
+            self.find_surface_visual_id(surface)
+        };
 
         // Find the lifecycle state for this surface
-        let lifecycle = if is_popup {
+        let lifecycle = if x11_window.is_some() {
+            // Commit-driven lifecycle for X11: mapping state is owned
+            // by the X window (map_window_request/unmapped_window).
+            SurfaceLifecycle::Mapped
+        } else if is_popup {
             self.popups
                 .iter()
                 .find(|p| p.wl_surface == *surface)
@@ -754,7 +815,11 @@ impl LookingGlass {
             return;
         }
 
-        let is_first_map = lifecycle != SurfaceLifecycle::Mapped;
+        let is_first_map = if x11_window.is_some() {
+            x11_vid.is_none()
+        } else {
+            lifecycle != SurfaceLifecycle::Mapped
+        };
         let is_remap = is_first_map && existing_vid.is_some();
 
         // Extract buffer + damage (shared path for toplevels and popups)
@@ -846,7 +911,43 @@ impl LookingGlass {
                     if is_first_map {
                         let tex_size = texture.size();
 
-                        if is_popup {
+                        if let Some(x11) = x11_window.clone() {
+                            // ── X11 window commit (G-C4) ──
+                            let ws_eligible = self.workspace_manager.active().visual_ids.clone();
+                            let pos = layout::place_new_visual(
+                                logical_size.w as f32,
+                                logical_size.h as f32,
+                                &self.scene,
+                                self.visible_bounds(),
+                                &ws_eligible,
+                            );
+                            let mut visual = Visual::new(
+                                VisualContent::WaylandSurface(texture),
+                                smithay::utils::Rectangle::new(
+                                    smithay::utils::Point::new(0, 0),
+                                    logical_size,
+                                ),
+                            );
+                            visual.src_uv = src_uv;
+                            visual.chrome.title = x11.title();
+                            visual.chrome.app_id = x11.class();
+                            visual.transform.position = pos;
+                            let visual_id = visual.id;
+                            info!(
+                                ?visual_id,
+                                app_id = %visual.chrome.app_id,
+                                title = %visual.chrome.title,
+                                "x11 surface mapped"
+                            );
+                            self.wayland_surfaces.insert(visual_id, surface.clone());
+                            self.scene.add(visual);
+                            self.workspace_manager.active_mut().add(visual_id);
+                            // focus-on-map policy (same as native toplevels)
+                            self.set_keyboard_focus(Some(visual_id));
+                            if !self.spatial_mode {
+                                self.auto_fit_camera();
+                            }
+                        } else if is_popup {
                             // ── Popup commit ──
                             let popup_idx = self
                                 .popups
@@ -1867,6 +1968,21 @@ impl LookingGlass {
         for visual in &mut self.scene.visuals {
             visual.chrome.focused = Some(visual.id) == vid;
         }
+
+        // G-C4: reflect keyboard focus in the X11 window state.
+        let x11_pairs: Vec<(VisualId, smithay::xwayland::xwm::X11Surface)> = self
+            .x11_windows
+            .iter()
+            .filter_map(|(surface, x11)| {
+                self.wayland_surfaces
+                    .iter()
+                    .find(|(_, s)| *s == surface)
+                    .map(|(v, _)| (*v, x11.clone()))
+            })
+            .collect();
+        for (xvid, x11) in x11_pairs {
+            let _ = x11.set_activated(vid == Some(xvid));
+        }
     }
 
     /// Update the data device focus to match the keyboard focus.
@@ -2302,6 +2418,66 @@ impl LookingGlass {
     /// Route a keyboard event to the focused visual's InputSink.
     /// key: winit platform key code (X11 keycodes when under X11, offset +8 from evdev).
     /// The offset is subtracted to get raw evdev codes for HID mapping.
+    /// G-C4: find the visual id backing an X11 window, if mapped.
+    pub fn x11_visual_for(&self, window: &smithay::xwayland::xwm::X11Surface) -> Option<VisualId> {
+        let wid = window.window_id();
+        self.x11_windows
+            .iter()
+            .find(|(_, w)| w.window_id() == wid)
+            .and_then(|(surface, _)| self.find_vid_for_surface(surface))
+    }
+
+    /// G-C4: find the visual id for any tracked wl_surface (toplevel,
+    /// popup, or X11-associated).
+    pub fn find_vid_for_surface(&self, surface: &WlSurface) -> Option<VisualId> {
+        if let Some(vid) = self
+            .toplevels
+            .iter()
+            .find(|t| t.toplevel.wl_surface() == surface)
+            .and_then(|t| t.visual_id)
+        {
+            return Some(vid);
+        }
+        if let Some(vid) = self
+            .popups
+            .iter()
+            .find(|p| &p.wl_surface == surface)
+            .and_then(|p| p.visual_id)
+        {
+            return Some(vid);
+        }
+        self.wayland_surfaces
+            .iter()
+            .find(|(_, s)| *s == surface)
+            .map(|(vid, _)| *vid)
+    }
+
+    /// G-C4: remove an X11 window's visual + bookkeeping (map loss,
+    /// destroy, minimize). The X window itself stays alive where the
+    /// protocol allows remapping.
+    pub fn destroy_x11_visual(&mut self, vid: VisualId) {
+        self.scene.remove(vid);
+        self.wayland_surfaces.remove(&vid);
+        self.input_sinks.remove(&vid);
+        for i in 0..self.workspace_manager.len() {
+            if let Some(ws) = self.workspace_manager.get_mut(i) {
+                ws.remove(vid);
+            }
+        }
+        self.focus_history.remove(vid);
+        if self.scene.focused_id == Some(vid) {
+            self.refocus_after_close(Some(vid));
+        }
+        if self.scene.selected_id == Some(vid) {
+            self.scene.selected_id = None;
+            self.scene.focus(self.scene.focused_id);
+        }
+        if self.interaction.is_dragging_visual(vid) {
+            self.interaction.handle_pointer_up();
+        }
+        self.schedule_render();
+    }
+
     /// Feed a key event to smithay's keyboard handle WITHOUT requiring
     /// a focused visual (BUG_LIST #16). smithay updates its XKB
     /// modifier state and broadcasts to whatever client currently holds
@@ -5107,8 +5283,16 @@ impl CompositorHandler for LookingGlass {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        let state: &ClientState = client.get_data().unwrap();
-        &state.compositor_state
+        // G-C4: the XWayland server client carries smithay's own
+        // XWaylandClientData instead of our ClientState — both provide
+        // a CompositorClientState.
+        if let Some(state) = client.get_data::<ClientState>() {
+            return &state.compositor_state;
+        }
+        let data: &'a smithay::xwayland::XWaylandClientData = client
+            .get_data::<smithay::xwayland::XWaylandClientData>()
+            .expect("client data is neither ClientState nor XWaylandClientData");
+        &data.compositor_state
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -5604,7 +5788,7 @@ impl ShmHandler for LookingGlass {
 }
 
 impl SelectionHandler for LookingGlass {
-    type SelectionUserData = ();
+    type SelectionUserData = SelectionOwner;
     fn new_selection(
         &mut self,
         ty: SelectionTarget,
@@ -5629,9 +5813,23 @@ impl SelectionHandler for LookingGlass {
         match ty {
             SelectionTarget::Clipboard => {
                 *SELECTION_OWNER_CLIPBOARD.lock().unwrap() = owner;
+                self.x11_owns_clipboard = false;
             }
             SelectionTarget::Primary => {
                 *SELECTION_OWNER_PRIMARY.lock().unwrap() = owner;
+                self.x11_owns_primary = false;
+            }
+        }
+        // G-C4: a Wayland client now owns the selection — tell the X11
+        // side so X clients see it (and clear the X ownership marker).
+        if let Some(wm) = self.x11_wm.as_mut() {
+            let mimes = if source.is_some() {
+                Some(mime_types)
+            } else {
+                None
+            };
+            if let Err(e) = wm.new_selection(ty, mimes) {
+                warn!(?e, "failed to propagate selection to X11");
             }
         }
     }
@@ -5642,8 +5840,18 @@ impl SelectionHandler for LookingGlass {
         mime_type: String,
         fd: std::os::unix::io::OwnedFd,
         _seat: Seat<Self>,
-        _user_data: &Self::SelectionUserData,
+        user_data: &Self::SelectionUserData,
     ) {
+        // G-C4: an X11-owned selection is served by round-tripping
+        // through the X selection owner.
+        if *user_data == SelectionOwner {
+            if let (Some(wm), Some(lh)) = (self.x11_wm.as_mut(), self.loop_handle.clone()) {
+                if let Err(e) = wm.send_selection(ty, mime_type, fd, lh) {
+                    warn!(?e, "x11 selection transfer to wayland client failed");
+                }
+            }
+            return;
+        }
         // When a client requests clipboard data, forward the request
         // to the currently active selection source via Smithay's free functions.
         if let Some(ref seat) = self.seat {

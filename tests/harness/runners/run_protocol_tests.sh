@@ -681,6 +681,49 @@ for g in wp_viewporter wp_fractional_scale_manager_v1; do
     fi
 done
 
+# ── t21: XWayland (G-C4) ─────────────────────────────────────────────
+# veyra spawns XWayland at startup; an X11 client (xeyes) must map as
+# a first-class scene visual through the xwayland-shell association,
+# and its destruction must clean up the visual.
+say "t21_xwayland"
+if command -v Xwayland >/dev/null 2>&1 && strip_ansi "$TMP_DIR/veyra.log" | grep -aq "XWayland ready"; then
+    ok "t21: XWayland spawned and ready"
+    XDISP=$(strip_ansi "$TMP_DIR/veyra.log" | grep -aoE "display=[0-9]+, \"XWayland ready\"" | tail -1 | grep -oE "[0-9]+" | head -1)
+    XDISP=${XDISP:-0}
+    say "t21: X display :$XDISP"
+    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" DISPLAY=":$XDISP" xeyes > "$TMP_DIR/t21_xeyes.log" 2>&1 &
+    XEYES_PID=$!
+    if wait_for_log_after "$TMP_DIR/veyra.log" "x11 surface mapped" 0 8; then
+        ok "t21: xeyes mapped as an X11 scene visual"
+    else
+        bad "t21: xeyes did not map (see veyra.log x11 lines)"
+        strip_ansi "$TMP_DIR/veyra.log" | grep -a "x11" | tail -5 | sed 's/^/    /'
+    fi
+    if wait_for_log_after "$TMP_DIR/veyra.log" "x11 window associated" 0 5; then
+        ok "t21: xwayland-shell association established"
+    else
+        bad "t21: xwayland-shell association missing"
+    fi
+    kill $XEYES_PID 2>/dev/null; wait $XEYES_PID 2>/dev/null
+    # xeyes unmaps before exiting; XWayland -terminate may then tear
+    # down the X server before DestroyNotify is delivered — accept any
+    # of the three cleanup markers as proof the visual was released.
+    CLEANED=""
+    for pat in "x11 window destroyed; visual removed" "x11 window unmapped; visual removed" "x11 window manager disconnected; x11 visuals removed"; do
+        if wait_for_log_after "$TMP_DIR/veyra.log" "$pat" 0 5; then
+            CLEANED="$pat"
+            break
+        fi
+    done
+    if [ -n "$CLEANED" ]; then
+        ok "t21: xeyes destruction cleaned up the visual ($CLEANED)"
+    else
+        bad "t21: xeyes destruction did not clean up"
+    fi
+else
+    skip "t21: Xwayland binary missing or XWayland failed to start (optional)"
+fi
+
 say "protocol tests done"
 echo "-------------------------------------"
 echo "protocol: $PASS passed, $FAIL failed, $SKIP skipped"
