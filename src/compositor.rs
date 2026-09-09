@@ -445,6 +445,16 @@ fn pacing_timer_callback(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectionOwner;
 
+/// G-D1: map a config scale to smithay's Scale — integral values keep
+/// the wl_output.scale integer path, fractional ones use Fractional.
+fn scale_from_f64(s: f64) -> Scale {
+    if (s - s.round()).abs() < f64::EPSILON {
+        Scale::Integer(s.round() as i32)
+    } else {
+        Scale::Fractional(s)
+    }
+}
+
 impl LookingGlass {
     pub fn new(
         display_handle: &DisplayHandle,
@@ -490,13 +500,16 @@ impl LookingGlass {
         let _output_global = output.create_global::<Self>(display_handle);
         // R11: the handle is compositor state — without it the output's
         // advertised mode could never follow the actual backend size.
+        // G-D1: the advertised SCALE comes from the config (wl_output
+        // scale + wp_fractional_scale preferred scale for clients).
+        let out_scale = config.appearance.output_scale;
         output.change_current_state(
             Some(Mode {
                 size: (1280, 720).into(),
                 refresh: 60000,
             }),
             None,
-            Some(Scale::Integer(1)),
+            Some(scale_from_f64(out_scale)),
             None,
         );
         output.set_preferred(Mode {
@@ -552,7 +565,7 @@ impl LookingGlass {
             meta_pressed: false,
             viewporter_state,
             fractional_scale_state,
-            preferred_scale: 1.0,
+            preferred_scale: out_scale,
             xwayland_shell_state,
             x11_wm: None,
             x11_windows: HashMap::new(),

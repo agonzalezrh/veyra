@@ -141,16 +141,27 @@ impl Default for LayoutConfig {
 pub struct AppearanceConfig {
     #[serde(default = "default_bg_color")]
     pub background_color: [f32; 3],
+    /// G-D1: output scale advertised to clients (wl_output.scale +
+    /// wp_fractional_scale preferred scale). 1.0 = no HiDPI scaling.
+    /// Clients render N× buffers; the compositor adopts logical
+    /// geometry (buffer / scale) per G-C3.
+    #[serde(default = "default_output_scale")]
+    pub output_scale: f64,
 }
 
 fn default_bg_color() -> [f32; 3] {
     [0.15, 0.15, 0.15]
 }
 
+fn default_output_scale() -> f64 {
+    1.0
+}
+
 impl Default for AppearanceConfig {
     fn default() -> Self {
         AppearanceConfig {
             background_color: default_bg_color(),
+            output_scale: default_output_scale(),
         }
     }
 }
@@ -299,6 +310,7 @@ impl Config {
         }
         if let Some(appearance) = overrides.appearance {
             self.appearance.background_color = appearance.background_color;
+            self.appearance.output_scale = appearance.output_scale;
         }
         if let Some(shortcuts) = overrides.shortcuts {
             self.shortcuts.alt_tab = shortcuts.alt_tab;
@@ -338,6 +350,15 @@ impl Config {
                 self.camera.transition_ms
             );
             self.camera.transition_ms = 5000;
+        }
+        if !(self.appearance.output_scale.is_finite()
+            && (0.25..=8.0).contains(&self.appearance.output_scale))
+        {
+            warn!(
+                "appearance.output_scale {} clamped to 1.0",
+                self.appearance.output_scale
+            );
+            self.appearance.output_scale = 1.0;
         }
     }
 }
@@ -470,6 +491,26 @@ sensitivity = 2.0
     fn negative_spacing_clamped_to_zero() {
         let config = with_config("[layout]\nspacing = -10.0\n");
         assert_eq!(config.layout.spacing, 0.0);
+    }
+
+    #[test]
+    fn output_scale_round_trips_from_config() {
+        let config = with_config("[appearance]\noutput_scale = 1.5\n");
+        assert!((config.appearance.output_scale - 1.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn insane_output_scale_clamped_to_one() {
+        let config = with_config("[appearance]\noutput_scale = 999.0\n");
+        assert!((config.appearance.output_scale - 1.0).abs() < 0.001);
+        let config = with_config("[appearance]\noutput_scale = -3.0\n");
+        assert!((config.appearance.output_scale - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn output_scale_default_is_one() {
+        let config = Config::default();
+        assert!((config.appearance.output_scale - 1.0).abs() < 0.001);
     }
 
     #[test]

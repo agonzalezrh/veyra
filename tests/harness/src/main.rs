@@ -408,16 +408,20 @@ impl OutputHandler for TestClient {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        self.log_output(output);
     }
 
     fn update_output(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        // G-D1: log mode + scale so harness tests can assert that
+        // output changes propagate to clients.
+        self.log_output(output);
     }
 
     fn output_destroyed(
@@ -426,6 +430,25 @@ impl OutputHandler for TestClient {
         _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
+    }
+}
+
+impl TestClient {
+    fn log_output(&mut self, output: wl_output::WlOutput) {
+        if let Some(info) = self.output_state.info(&output) {
+            let mode = info
+                .modes
+                .iter()
+                .find(|m| m.current)
+                .map(|m| m.dimensions)
+                .unwrap_or((0, 0));
+            log_kv(&[
+                ("ev", "outmode".into()),
+                ("w", (mode.0).into()),
+                ("h", (mode.1).into()),
+                ("scale", (info.scale_factor).into()),
+            ]);
+        }
     }
 }
 

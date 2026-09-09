@@ -724,6 +724,40 @@ else
     skip "t21: Xwayland binary missing or XWayland failed to start (optional)"
 fi
 
+# ── t22: output change events (G-D1) ─────────────────────────────────
+# A config with appearance.output_scale=2 must reach clients as
+# wl_output scale=2; the wl_output mode must reflect the backend size.
+# Runs on its OWN veyra instance (config-driven scale), at suite end
+# so the shared stack can be torn down first.
+say "t22_output_change_events"
+kill "$VEYRA_PID" 2>/dev/null; wait "$VEYRA_PID" 2>/dev/null
+VEYRA_CFG="$TMP_DIR/veyra-scale.toml"
+cat > "$VEYRA_CFG" <<EOF
+version = 1
+
+[appearance]
+output_scale = 2.0
+EOF
+VEYRA_CONFIG_PATH="$VEYRA_CFG" start_veyra_nested wayland-harness "$TMP_DIR/veyra-scale.log" \
+    || { bad "t22: scaled veyra started"; exit 1; }
+ok "t22: scaled veyra started on $VEYRA_SOCKET"
+# The wl_output mode follows the ACTUAL backend window size (R11) —
+# read it from the scaled instance's log instead of assuming.
+T22_PAIR=$(strip_ansi "$TMP_DIR/veyra-scale.log" | grep -aF "render size" | tail -1 | sed -E 's/.*\(([^)]*)\).*/\1/')
+T22_W=$(python3 -c "print(round(float('$T22_PAIR'.split(',')[0])))" 2>/dev/null || echo 1280)
+T22_H=$(python3 -c "print(round(float('$T22_PAIR'.split(',')[1])))" 2>/dev/null || echo 800)
+say "t22: expecting mode ${T22_W}x${T22_H} scale 2"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --duration 3000 \
+    > "$TMP_DIR/t22.json" 2>"$TMP_DIR/t22.err" &
+T22_PID=$!
+wait_process_exit $T22_PID 10
+assert_json "$TMP_DIR/t22.json" \
+    "any(e['ev']=='outmode' and e['scale']==2 for e in events)" \
+    "t22: wl_output scale=2 from config reaches clients"
+assert_json "$TMP_DIR/t22.json" \
+    "any(e['ev']=='outmode' and e['w']==$T22_W and e['h']==$T22_H for e in events)" \
+    "t22: wl_output mode reflects the backend size"
+
 say "protocol tests done"
 echo "-------------------------------------"
 echo "protocol: $PASS passed, $FAIL failed, $SKIP skipped"
