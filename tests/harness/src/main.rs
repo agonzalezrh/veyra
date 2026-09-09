@@ -664,18 +664,20 @@ impl PointerHandler for TestClient {
                         ("y", event.position.1.into()),
                     ]);
                 }
-                PointerEventKind::Press { button, .. } => {
+                PointerEventKind::Press { button, serial, .. } => {
                     log_kv(&[
                         ("ev", "button".into()),
                         ("button", (button).into()),
                         ("pressed", true.into()),
+                        ("serial", (serial).into()),
                     ]);
                 }
-                PointerEventKind::Release { button, .. } => {
+                PointerEventKind::Release { button, serial, .. } => {
                     log_kv(&[
                         ("ev", "button".into()),
                         ("button", (button).into()),
                         ("pressed", false.into()),
+                        ("serial", (serial).into()),
                     ]);
                 }
                 PointerEventKind::Axis {

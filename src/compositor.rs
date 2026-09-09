@@ -2242,11 +2242,39 @@ impl LookingGlass {
     /// Route a keyboard event to the focused visual's InputSink.
     /// key: winit platform key code (X11 keycodes when under X11, offset +8 from evdev).
     /// The offset is subtracted to get raw evdev codes for HID mapping.
+    /// Feed a key event to smithay's keyboard handle WITHOUT requiring
+    /// a focused visual (BUG_LIST #16). smithay updates its XKB
+    /// modifier state and broadcasts to whatever client currently holds
+    /// keyboard focus; with no focus, only the state is updated.
+    fn feed_keyboard_event(&mut self, key: u32, pressed: bool) {
+        let Some(kh) = self.keyboard_handle.clone() else {
+            return;
+        };
+        let serial = self.next_serial();
+        let time = now_ms();
+        let state = if pressed {
+            KeyState::Pressed
+        } else {
+            KeyState::Released
+        };
+        let _ = kh.input::<(), _>(self, Keycode::new(key), state, serial, time, |_, _, _| {
+            FilterResult::Forward
+        });
+        let _ = self.display_handle.flush_clients();
+    }
+
     fn route_keyboard(&mut self, key: u32, pressed: bool) {
         let Some(vid) = self.scene.focused_id else {
+            tracing::debug!(key, pressed, "keyboard event dropped: no focused visual");
             return;
         };
         if !self.scene.is_active(vid) {
+            tracing::debug!(
+                key,
+                pressed,
+                ?vid,
+                "keyboard event dropped: visual not active"
+            );
             return;
         }
 
@@ -4500,6 +4528,30 @@ impl LookingGlass {
             meta = self.meta_pressed,
             "KEY EVENT"
         );
+
+        // BUG_LIST #16: modifier state is SEAT state, not surface state.
+        // A modifier press fed to smithay while a surface was focused
+        // must have its release reach smithay even when focus vanished
+        // in between (window closed, workspace switch, drag start) —
+        // otherwise smithay's XKB state latches the modifier and every
+        // subsequent client enter reports it stuck (observed:
+        // logo:true for the rest of the session). Modifiers therefore
+        // always go through the keyboard handle; only non-modifier
+        // keys require a focused visual (route_keyboard below).
+        if matches!(
+            linux_key,
+            keys::CTRL_L
+                | keys::CTRL_R
+                | keys::SHIFT_L
+                | keys::SHIFT_R
+                | keys::ALT_L
+                | keys::ALT_R
+                | keys::META_L
+                | keys::META_R
+        ) {
+            self.feed_keyboard_event(linux_key, pressed);
+            return;
+        }
 
         // If context menu is visible, route keyboard navigation to it
         if self.context_menu.visible && pressed {

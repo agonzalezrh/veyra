@@ -1109,11 +1109,11 @@ else
 
     # Direction 2: foot → compositor → clip client.
     XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" \
-        foot --log-level=info --override=mouse.selection-target=clipboard \
+        foot --log-level=info --override=main.selection-target=clipboard \
         --window-size-pixels=640x480 > "$TMP_DIR/tcfoot2.log" 2>&1 &
     TCFOOT2_PID=$!
     sleep 2.5
-    # foot copies via mouse selection with mouse.selection-target=
+    # foot copies via mouse selection with main.selection-target=
     # clipboard (any selection auto-copies to the clipboard). Double-
     # click the typed word: foot2 maps as the sole window (world (0,0)
     # → screen center 640,360); the VLM-calibrated word position is
@@ -1152,6 +1152,33 @@ else
     kill $TCFOOT2_PID 2>/dev/null; wait $TCFOOT2_PID 2>/dev/null
     wait_process_exit $TCFOOT_SET_PID 12
 fi
+
+# ── t26i: pointer button integrity (BUG_LIST #15) ────────────────────
+# One physical click must deliver EXACTLY one wl_pointer.button press
+# and one release to the client, with distinct serials. Historical
+# observations showed a duplicated press (same serial twice) under
+# Xvfb/XTEST; assertions previously used any() which masked duplicates.
+say "t26i_pointer_button_integrity"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" pointer --duration 6000 > "$TMP_DIR/t26i.json" 2>"$TMP_DIR/t26i.err" &
+T26I_PID=$!
+sleep 1.5
+DISPLAY=:99 xdotool mousemove $CX $CY
+sleep 0.3
+DISPLAY=:99 xdotool click 1
+sleep 0.4
+DISPLAY=:99 xdotool click 1
+sleep 0.4
+DISPLAY=:99 xdotool click 1
+wait_process_exit $T26I_PID 10
+assert_json "$TMP_DIR/t26i.json" \
+    "sum(1 for e in events if e['ev']=='button' and e.get('pressed'))==3" \
+    "t26i: exactly one press per physical click (no duplicates)"
+assert_json "$TMP_DIR/t26i.json" \
+    "sum(1 for e in events if e['ev']=='button' and not e.get('pressed'))==3" \
+    "t26i: exactly one release per physical click"
+assert_json "$TMP_DIR/t26i.json" \
+    "len(set(e['serial'] for e in events if e['ev']=='button' and e.get('pressed')))==3" \
+    "t26i: press serials are distinct"
 
 say "input tests done"
 echo "-------------------------------------"
