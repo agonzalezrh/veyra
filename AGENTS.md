@@ -692,6 +692,31 @@ Priority order from audit:
 
 **Status: ✅ G-E1 Complete (483 unit tests; protocol 104/0/0; input 96/0/0)**
 
+### G-E2 — Remaining P3 Gaps (#9, #11, #6)
+- G-E2: ALL remaining P3 items shipped:
+  - **#9 runtime scale change**: config file watched with inotify
+    (event-driven; calloop's signals feature is not enabled — a write
+    triggers Config::load and the output scale applies live: wl_output
+    scale to bound clients + preferred fractional scale to mapped
+    surfaces). CString pitfall fixed (inotify_add_watch requires a
+    NUL-terminated path). Protocol t23: bound client observes scale
+    2 → 1 with no restart.
+  - **#11 subsurfaces**: subsurface commits map as visuals parented to
+    the parent visual (J2 parent-local transforms), SubsurfaceCachedState
+    positioning, G-C3 logical geometry. Cleanup keeps veyra's own
+    sub→parent link (smithay get_parent unreliable in destroy dispatch).
+    client-kit --subsurface + protocol t24 (mapping/geometry/removal).
+    LESSON: t22 replaces the veyra instance — later tests must assert
+    against CURRENT_VEYRA_LOG, not veyra.log (cost a long debug chase).
+  - **#6 IME/text input**: zwp_text_input_v3 + zwp_input_method_v2
+    advertised; grab fully routed by smithay. Input-suite t25 verifies
+    the FULL loop: field enable → IME activate → grab receives injected
+    keys → commit_string("あ"/"漢") → committed_string delivered to the
+    focused field. Known limitation: IME candidate popups tracked but
+    not rendered yet.
+
+**Status: ✅ G-E2 Complete (483 unit tests; protocol 111/0/0; input 103/0/0)**
+
 ---
 
 # 25. Commit discipline

@@ -10,12 +10,14 @@ use smithay::delegate_compositor;
 use smithay::delegate_data_device;
 use smithay::delegate_dmabuf;
 use smithay::delegate_fractional_scale;
+use smithay::delegate_input_method_manager;
 use smithay::delegate_output;
 use smithay::delegate_pointer_constraints;
 use smithay::delegate_primary_selection;
 use smithay::delegate_relative_pointer;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
+use smithay::delegate_text_input_manager;
 use smithay::delegate_viewporter;
 use smithay::delegate_xdg_shell;
 use smithay::input::keyboard::{FilterResult, KeyboardHandle, LedState};
@@ -349,6 +351,12 @@ pub struct LookingGlass {
     /// G-D3: ext_foreign_toplevel_list_v1 (docks/taskbars observing
     /// the compositor's toplevels).
     pub foreign_toplevel_state: smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
+    /// #6: zwp_text_input_v3 manager state.
+    pub text_input_state: smithay::wayland::text_input::TextInputManagerState,
+    /// #6: zwp_input_method_v2 manager state.
+    pub input_method_state: smithay::wayland::input_method::InputMethodManagerState,
+    /// #6: IME popup surfaces (input_popup_surface_v2 role).
+    pub ime_popups: Vec<smithay::wayland::input_method::PopupSurface>,
     /// G-D3: foreign toplevel handles per visual.
     pub foreign_toplevels:
         HashMap<VisualId, smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle>,
@@ -528,6 +536,16 @@ impl LookingGlass {
             smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(
                 display_handle,
             );
+        // #6: IME/text-input protocols. zwp_text_input_v3 lets clients
+        // declare text fields; zwp_input_method_v2 lets an IME (fcitx5)
+        // connect, grab the keyboard, and commit text into the focused
+        // field. The text-input focus follows the keyboard focus.
+        let text_input_state =
+            smithay::wayland::text_input::TextInputManagerState::new::<Self>(display_handle);
+        let input_method_state = smithay::wayland::input_method::InputMethodManagerState::new::<
+            Self,
+            _,
+        >(display_handle, |_| true);
         // G-D4: wp_presentation feedback (CLOCK_MONOTONIC domain, the
         // same clock Wayland timestamps use).
         let presentation_state = smithay::wayland::presentation::PresentationState::new::<Self>(
@@ -639,6 +657,9 @@ impl LookingGlass {
             wlr_data_control_state,
             ext_data_control_state,
             foreign_toplevel_state,
+            text_input_state,
+            input_method_state,
+            ime_popups: Vec::new(),
             foreign_toplevels: HashMap::new(),
             subsurface_visuals: HashMap::new(),
             subsurface_parents: HashMap::new(),
@@ -5698,6 +5719,49 @@ impl FractionalScaleHandler for LookingGlass {
 
 delegate_fractional_scale!(LookingGlass);
 delegate_viewporter!(LookingGlass);
+
+// #6: IME/text-input protocol delegation. The grab machinery (keymap,
+// repeat info, key forwarding) lives entirely in smithay's
+// InputMethodManagerState; veyra only supplies popup lifecycle +
+// parent geometry.
+delegate_text_input_manager!(LookingGlass);
+delegate_input_method_manager!(LookingGlass);
+
+impl smithay::wayland::input_method::InputMethodHandler for LookingGlass {
+    fn new_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
+        info!("ime popup surface created");
+        self.ime_popups.push(surface);
+    }
+
+    fn dismiss_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
+        self.ime_popups
+            .retain(|p| p.wl_surface() != surface.wl_surface());
+    }
+
+    fn popup_repositioned(&mut self, _surface: smithay::wayland::input_method::PopupSurface) {}
+
+    fn parent_geometry(
+        &self,
+        parent: &WlSurface,
+    ) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
+        // The IME popup anchors to the focused text field's window.
+        self.find_vid_for_surface(parent)
+            .and_then(|vid| self.scene.get(vid))
+            .map(|v| {
+                let geo = &v.geometry;
+                smithay::utils::Rectangle::new(
+                    smithay::utils::Point::new(geo.loc.x, geo.loc.y),
+                    geo.size,
+                )
+            })
+            .unwrap_or_else(|| {
+                smithay::utils::Rectangle::new(
+                    smithay::utils::Point::new(0, 0),
+                    smithay::utils::Size::new(1280, 800),
+                )
+            })
+    }
+}
 
 /// G-C3: pure math behind the commit-path geometry — logical surface
 /// size and the normalized viewport src rect for a committed buffer.

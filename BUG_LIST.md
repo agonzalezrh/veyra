@@ -55,9 +55,9 @@ a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 
 | # | Area | Description | Difficulty |
 |---|------|-------------|------------|
-| 6 | IME/Text Input | `zwp_input_method_v1` / `zwp_text_input_v3` not implemented | High |
-| 9 | Output Change Events | ~~Mode set once~~ R11 mode sync + G-D1 config scale verified; runtime scale *changes* (config reload) have no trigger yet | Low |
-| 11 | Subsurface support | Not explicitly handled | Low |
+| ~~6~~ | ~~IME/Text Input~~ | ✅ **G-E2 (Implemented)**: zwp_text_input_v3 + zwp_input_method_v2 advertised; text-input focus follows keyboard focus; IME keyboard grab fully routed (keymap, repeat, keys). End-to-end loop verified by input-suite t25: focused field enable → IME activate → grab receives injected keys → commit_string("あ"/"漢") → committed_string delivered to the focused surface. Known limitation: IME candidate popups (input_popup_surface_v2) are tracked but not yet rendered — text exchange works without them. | ~~High~~ |
+| ~~9~~ | ~~Output Change Events~~ | ✅ **G-E2 (Fixed)**: the config file is watched with inotify (event-driven, zero idle wakeups; calloop's signals feature is not enabled). A write triggers Config::load and applies the output scale live — wl_output scale to bound clients + preferred fractional scale to mapped surfaces. Protocol t23 verifies an already-bound client observes scale 2 → 1 with no restart. | ~~Low~~ |
+| ~~11~~ | ~~Subsurface support~~ | ✅ **G-E2 (Implemented)**: subsurface commits map as visuals PARENTED to the parent visual (J2 parent-local transforms) with SubsurfaceCachedState positioning and the G-C3 logical-geometry path (viewport dst/src > buffer_scale). Cleanup uses veyra's own sub→parent link (smithay's get_parent is unreliable inside destroy dispatch). Protocol t24 verifies mapping, geometry, and removal-with-parent. | ~~Low~~ |
 | 12 | Serial Validation | Popup serial validation may not catch all edge cases | Medium |
 | ~~15~~ | ~~Duplicate Button Press~~ | ✅ **G-C2 (Verified clean)**: client-kit pointer events now log the wl serial; input-suite t26i asserts exactly one press/release per physical click with distinct serials over repeated runs. No duplication at HEAD — earlier observations are not reproducible; the t26i regression guard keeps watch. | ~~Medium~~ |
 | ~~16~~ | ~~Stuck META Modifier~~ | ✅ **G-C2 (Fixed)**: root cause was NOT duplicated input — `route_keyboard` dropped modifier releases when no visual held keyboard focus (focus vanished mid-press: window close, workspace switch, drag start), latching smithay's XKB state so every later client enter reported `logo:true`. Modifiers are seat state: they now always reach the keyboard handle (`feed_keyboard_event`). The previously-SKIPped tcfoot foot-copy flow now runs and passes both directions. | ~~Medium~~ |
@@ -71,11 +71,12 @@ a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 | 15 | Data Control | ~~not implemented~~ ✅ G-D2 (zwlr + ext advertised and wired) | ~~Medium~~ |
 | 16 | Foreign Toplevel | ~~not implemented~~ ✅ G-D3 (ext_foreign_toplevel_list_v1, publish/update/withdraw wired) | ~~Medium~~ |
 
-## Recommended Fix Order for G-E
+## Recommended Fix Order for G-E — COMPLETE
 
-1. **Runtime output scale change** (P3, #9) — config-reload hook
-2. **Subsurface support** (P3, #11) — Chromium/Qt menus
-3. **IME/Text Input** (P3, #6) — CJK input for real desktop use
+All three remaining P3 items shipped in G-E2: #9 (inotify config reload),
+#11 (subsurfaces), #6 (IME text-input loop). Remaining known gaps are
+P4-only: #12 popup serial validation (Medium), #14 multi-monitor (High),
+plus the IME candidate-popup rendering noted under #6.
 
 ## Resolution notes: #17 (X11 selection bridge) — RESOLVED in G-E
 

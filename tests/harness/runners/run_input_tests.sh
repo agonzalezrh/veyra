@@ -1278,6 +1278,46 @@ else
     skip "t27i: xterm or XWayland unavailable (optional bridge verification)"
 fi
 
+# ── t25: IME loop (#6) — zwp_text_input_v3 field + zwp_input_method_v2 ─
+# Full compositor loop: focused text field → IME activates + grabs the
+# keyboard → injected keys arrive at the IME → commit_string("あ"/"漢")
+# → committed text delivered to the focused field.
+say "t25_ime_loop"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" probe --text-input \
+    --duration 9000 > "$TMP_DIR/t25.json" 2>"$TMP_DIR/t25.err" &
+T25_PID=$!
+sleep 1.5
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" ime \
+    --duration 8000 > "$TMP_DIR/t25ime.json" 2>"$TMP_DIR/t25ime.err" &
+IME_PID=$!
+sleep 1.5
+DISPLAY=:99 xdotool mousemove $CX $CY click 1
+sleep 0.5
+DISPLAY=:99 xdotool type ak
+wait_process_exit $IME_PID 14
+wait_process_exit $T25_PID 16
+assert_json "$TMP_DIR/t25ime.json" \
+    "any(e['ev']=='ime_activate' for e in events)" \
+    "t25: IME activated for the focused field"
+assert_json "$TMP_DIR/t25ime.json" \
+    "any(e['ev']=='ime_grabbed' for e in events)" \
+    "t25: IME took the keyboard grab"
+assert_json "$TMP_DIR/t25ime.json" \
+    "any(e['ev']=='ime_key' and e['pressed'] for e in events)" \
+    "t25: injected keys routed through the grab"
+assert_json "$TMP_DIR/t25ime.json" \
+    "any(e['ev']=='ime_committed' and e['text']=='あ' for e in events)" \
+    "t25: IME committed あ for 'a'"
+assert_json "$TMP_DIR/t25.json" \
+    "any(e['ev']=='ti_enter' for e in events)" \
+    "t25: text-input entered the focused surface"
+assert_json "$TMP_DIR/t25.json" \
+    "any(e['ev']=='ti_commit' and e['text']=='あ' for e in events)" \
+    "t25: focused field received committed あ"
+assert_json "$TMP_DIR/t25.json" \
+    "any(e['ev']=='ti_commit' and e['text']=='漢' for e in events)" \
+    "t25: focused field received committed 漢"
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"

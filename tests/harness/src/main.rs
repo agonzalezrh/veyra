@@ -14,6 +14,9 @@ use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
+use smithay_client_toolkit::reexports::protocols::wp::text_input::zv3::client::{
+    zwp_text_input_manager_v3, zwp_text_input_v3,
+};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_keyboard, delegate_output, delegate_pointer, delegate_registry,
@@ -59,6 +62,7 @@ fn log(ev: serde_json::Value) {
 
 mod clip_tester;
 mod dnd_tester;
+mod ime_tester;
 mod popup_tester;
 use clip_tester::{run_clip, Mode as ClipMode};
 use dnd_tester::{run_dnd, Role};
@@ -126,6 +130,9 @@ struct Opts {
     /// offset (50, 50) with a distinct color — verifies subsurface
     /// mapping on the compositor side.
     subsurface: bool,
+    /// #6: enable zwp_text_input_v3 on the window surface after the
+    /// first commit — the client side of the IME loop.
+    text_input: bool,
 }
 
 fn parse_size(s: &str) -> (u32, u32) {
@@ -158,6 +165,7 @@ fn parse_args() -> Opts {
         unfullscreen_after: None,
         scale: 1,
         subsurface: false,
+        text_input: false,
     };
     let mut i = 1;
     while i < args.len() {
@@ -189,6 +197,7 @@ fn parse_args() -> Opts {
             "--unfullscreen-after" => opts.unfullscreen_after = next(&mut i).parse().ok(),
             "--scale" => opts.scale = next(&mut i).parse().unwrap_or(1),
             "--subsurface" => opts.subsurface = true,
+            "--text-input" => opts.text_input = true,
             other => {
                 eprintln!("unknown option: {}", other);
                 std::process::exit(2);
@@ -225,7 +234,11 @@ struct TestClient {
     sub_surface: Option<wl_surface::WlSurface>,
     subsurface: Option<(wl_subsurface::WlSubsurface, wl_surface::WlSurface)>,
     sub_pool: Option<SlotPool>,
+    /// #6: the text input object for --text-input.
+    ti_manager: Option<zwp_text_input_manager_v3::ZwpTextInputManagerV3>,
+    text_input: Option<zwp_text_input_v3::ZwpTextInputV3>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    seat: Option<wl_seat::WlSeat>,
     pointer: Option<wl_pointer::WlPointer>,
     got_keys: String,
     exit: bool,
@@ -323,6 +336,18 @@ impl TestClient {
             ("bh", bh.into()),
             ("scale", (scale as u32).into()),
         ]);
+        // #6: enable text input on this surface — the IME can now
+        // commit text into it once it has keyboard focus.
+        if self.opts.text_input && self.text_input.is_none() {
+            if let (Some(manager), Some(seat)) = (self.ti_manager.as_ref(), self.seat.as_ref()) {
+                // Create the object only; the enabled state is set when
+                // the field gains focus (ti_enter) per protocol.
+                let ti = manager.get_text_input(seat, qh, ());
+                log_kv(&[("ev", "ti_created".into())]);
+                self.text_input = Some(ti);
+            }
+        }
+
         // #11: after the first commit, create a 100x60 subsurface at
         // offset (50, 50) with a distinct color. Synchronized by
         // default: it applies with this parent commit per protocol.
@@ -551,7 +576,11 @@ impl SeatHandler for TestClient {
         &mut self.seat_state
     }
 
-    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        if self.seat.is_none() {
+            self.seat = Some(seat);
+        }
+    }
 
     fn new_capability(
         &mut self,
@@ -566,6 +595,11 @@ impl SeatHandler for TestClient {
                 .get_keyboard(qh, &seat, None)
                 .expect("keyboard capability");
             self.keyboard = Some(keyboard);
+            // sctk 0.19 does not deliver new_seat for the default bind;
+            // the capability callback carries the seat object instead.
+            if self.seat.is_none() {
+                self.seat = Some(seat.clone());
+            }
         }
         if capability == Capability::Pointer && self.pointer.is_none() {
             let pointer = self
@@ -796,6 +830,48 @@ impl wayland_client::Dispatch<wl_subcompositor::WlSubcompositor, ()> for TestCli
     }
 }
 
+impl wayland_client::Dispatch<zwp_text_input_manager_v3::ZwpTextInputManagerV3, ()> for TestClient {
+    fn event(
+        _: &mut Self,
+        _: &zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+        _: zwp_text_input_manager_v3::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl wayland_client::Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for TestClient {
+    fn event(
+        state: &mut Self,
+        _: &zwp_text_input_v3::ZwpTextInputV3,
+        event: zwp_text_input_v3::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_text_input_v3::Event::Enter { .. } => {
+                // Focus gained: (re-)enable the field per protocol —
+                // the enabled state resets on every focus session.
+                if let Some(ti) = state.text_input.as_ref() {
+                    ti.enable();
+                    ti.commit();
+                }
+                log_kv(&[("ev", "ti_enter".into())]);
+            }
+            zwp_text_input_v3::Event::Leave { .. } => {
+                log_kv(&[("ev", "ti_leave".into())]);
+            }
+            zwp_text_input_v3::Event::CommitString { text } => {
+                log_kv(&[("ev", "ti_commit".into()), ("text", text.into())]);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl wayland_client::Dispatch<wl_subsurface::WlSubsurface, ()> for TestClient {
     fn event(
         _: &mut Self,
@@ -897,6 +973,14 @@ fn main() {
         let code = run_dnd(role, mime, payload, duration);
         std::process::exit(code);
     }
+    // Raw input-method tester (#6) has its own connection flow.
+    if cmd == "ime" {
+        let duration = opt_value(&args, "--duration")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8000);
+        let code = ime_tester::run_ime(duration);
+        std::process::exit(code);
+    }
     // Raw clipboard tester (G-B1) has its own connection flow.
     if cmd == "clip" {
         let mode = match opt_value(&args, "--mode").as_deref() {
@@ -942,6 +1026,19 @@ fn main() {
     }
     window.commit();
 
+    // #6: bind the text-input manager up front when --text-input is
+    // requested.
+    let ti_manager_opt: Option<zwp_text_input_manager_v3::ZwpTextInputManagerV3> =
+        if opts.text_input {
+            Some(
+                globals
+                    .bind(&qh, 1..=1, ())
+                    .expect("bind zwp_text_input_manager_v3"),
+            )
+        } else {
+            None
+        };
+
     // #11: bind the subcompositor and create the sub surface up front
     // when --subsurface is requested.
     let (subcompositor_opt, sub_surface) = if opts.subsurface {
@@ -973,7 +1070,10 @@ fn main() {
         sub_surface,
         subsurface: None,
         sub_pool: None,
+        ti_manager: ti_manager_opt,
+        text_input: None,
         keyboard: None,
+        seat: None,
         pointer: None,
         got_keys: String::new(),
         exit: false,
