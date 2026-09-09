@@ -20,20 +20,13 @@ reuses the same 3D `pick_wayland_target` path as normal pointer input.
 Verified by t22i–t25i (happy path, cancel+reuse, target change + moved
 window, source death) in `run_input_tests.sh`.
 
-### 1. Clipboard MIME types (G3 partial)
-**Area**: DataDevice / Selection handler
-**File**: `src/compositor.rs`
-**What's done**: Selection handler wired to Smithay's `set_data_device_selection` and `set_primary_selection`. Data device focus updated on keyboard focus changes.
-**What's missing**: `new_selection` passes an empty `vec![]` for MIME types. Paste-receiving clients see the offer but find no compatible MIME types, causing silent paste failure.
-**Fix**: Collect MIME types from the `source` parameter and pass them instead of empty vec.
-
-### 2. DnD event processing (G4 stub)
-
-**Area**: DataDevice / DnD
-**File**: `src/compositor.rs`
-**What's done**: `ClientDndGrabHandler` and `ServerDndGrabHandler` registered (necessary for protocol acceptance).
-**What's missing**: Neither trait has method implementations. DnD enters/leaves/motions/drops are not processed.
-**Fix**: Implement the DnD grab handler methods (drag enter/motion/leave/drop) + data transfer.
+### ~~1. Clipboard MIME types~~ — ✅ G-B1 (Fixed, G-C1 verified)
+Selection source MIME types are passed through to receiving clients.
+Verified end-to-end by harness tc1–tc4 (`run_protocol_tests.sh`): multi-MIME
+roundtrip with exact offer-set assertion, supported/unsupported request
+handling, clipboard replacement (cancel semantics), and source-death
+clear. Real-client verification with foot in both directions in
+`run_input_tests.sh` (tcfoot).
 
 ### ~~3. DRM presentation~~ — ✅ G-B3 (Fixed, hardware-gated)
 
@@ -82,10 +75,9 @@ a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 | 15 | Data Control | `zwlr_data_control_manager_v1` not implemented | Medium |
 | 16 | Foreign Toplevel | `ext_foreign_toplevel_list_v1` not implemented | Medium |
 
-## Recommended Fix Order for G-B Remaining
+## Recommended Fix Order for G-C
 
-1. **Clipboard MIME types** (P2, #1) — pass actual MIME types instead of empty vec
-2. **DRM presentation** (P2, #3) — page flip implementation for native backend
-3. **Fractional scaling** (P3) — for HiDPI
-4. **Output change events** (P3) — for hotplug support
-5. **Duplicate Button Press** (P3, #15) — verify/fix double delivery of wl_pointer presses
+1. **Duplicate Button Press** (P3, #15) — verify/fix double delivery of wl_pointer presses (shared root cause with #16)
+2. **Fractional scaling** (P3, #5) — for HiDPI
+3. **Output change events** (P3, #9) — for hotplug support
+4. **XWayland** (P4, #13) — required for a useful desktop
