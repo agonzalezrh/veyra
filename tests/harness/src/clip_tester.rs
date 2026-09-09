@@ -14,6 +14,11 @@
 //!       Requesting an unsupported mime yields no send (source never
 //!       sees it) and an empty read → clip_data with len 0.
 //!
+//! G-D5: `--primary` switches the whole flow to the PRIMARY selection
+//! (zwp_primary_selection_device_manager_v1) — used to verify the X11
+//! selection bridge end-to-end (xterm sets PRIMARY; the clip client
+//! pastes it).
+//!
 //! NOTE: smithay denies set_selection from clients without keyboard
 //! focus (device.rs SetSelection handler) — the harness must ensure
 //! the setter window has keyboard focus before setting.
@@ -22,6 +27,15 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::reexports::client::protocol::wl_shm::Format;
+use smithay_client_toolkit::reexports::client::{
+    protocol::{wl_data_offer, wl_data_source, wl_surface},
+    Dispatch,
+};
+use smithay_client_toolkit::reexports::protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_manager_v1;
+use smithay_client_toolkit::reexports::protocols::wp::primary_selection::zv1::client::{
+    zwp_primary_selection_device_v1, zwp_primary_selection_offer_v1,
+    zwp_primary_selection_source_v1,
+};
 use smithay_client_toolkit::reexports::protocols::xdg::shell::client::{
     xdg_surface, xdg_toplevel, xdg_wm_base,
 };
@@ -35,11 +49,8 @@ use smithay_client_toolkit::{
 };
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{
-        wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source, wl_output,
-        wl_registry, wl_seat, wl_surface,
-    },
-    Connection, Dispatch, QueueHandle,
+    protocol::{wl_data_device, wl_data_device_manager, wl_output, wl_registry, wl_seat},
+    Connection, QueueHandle,
 };
 
 const W: i32 = 240;
@@ -60,10 +71,15 @@ pub struct ClipTester {
     mode: Mode,
     mimes: Vec<String>,
     payload: String,
+    /// G-D5: operate on the PRIMARY selection instead of the clipboard.
+    primary: bool,
     shm: Shm,
     registry_state: RegistryState,
     output_state: OutputState,
     ddm: wl_data_device_manager::WlDataDeviceManager,
+    /// G-D5: raw primary selection manager (bound only with --primary).
+    primary_manager:
+        Option<zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1>,
 
     surface: wl_surface::WlSurface,
     _xdg_surface: xdg_surface::XdgSurface,
@@ -73,6 +89,14 @@ pub struct ClipTester {
     configured: bool,
 
     device: Option<wl_data_device::WlDataDevice>,
+    /// G-D5: primary selection device (--primary mode).
+    primary_device: Option<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
+    /// G-D5: primary selection source (set mode) — kept alive for
+    /// send/cancel events.
+    primary_source: Option<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1>,
+    /// G-D5: active primary offer (paste mode) + its mimes.
+    primary_offer: Option<zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1>,
+    primary_offer_mimes: Vec<String>,
     source: Option<wl_data_source::WlDataSource>,
     offers: HashMap<wl_data_offer::WlDataOffer, OfferState>,
     active_offer: Option<wl_data_offer::WlDataOffer>,
@@ -81,7 +105,13 @@ pub struct ClipTester {
     exit: bool,
 }
 
-pub fn run_clip(mode: Mode, mimes: Vec<String>, payload: String, duration_ms: u64) -> i32 {
+pub fn run_clip(
+    mode: Mode,
+    mimes: Vec<String>,
+    payload: String,
+    duration_ms: u64,
+    primary: bool,
+) -> i32 {
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
         Err(_) => {
@@ -121,27 +151,49 @@ pub fn run_clip(mode: Mode, mimes: Vec<String>, payload: String, duration_ms: u6
         Err(_) => return 2,
     };
 
+    // G-D5: bind the primary selection manager when --primary is set.
+    let primary_manager = if primary {
+        match globals.bind(&qh, 1..=1, ()) {
+            Ok(m) => Some(m),
+            Err(_) => {
+                eprintln!("zwp_primary_selection_device_manager_v1 not available");
+                return 2;
+            }
+        }
+    } else {
+        None
+    };
+
     let surface = compositor.create_surface(&qh);
     let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
     let toplevel = xdg_surface.get_toplevel(&qh, ());
-    let (title, app_id) = match mode {
-        Mode::Set => ("client-kit clip-set", "clip-set"),
-        Mode::Paste => ("client-kit clip-paste", "clip-paste"),
+    let (title, app_id) = match (mode, primary) {
+        (Mode::Set, false) => ("client-kit clip-set", "clip-set"),
+        (Mode::Paste, false) => ("client-kit clip-paste", "clip-paste"),
+        (Mode::Set, true) => ("client-kit clip-set-primary", "clip-set-primary"),
+        (Mode::Paste, true) => ("client-kit clip-paste-primary", "clip-paste-primary"),
     };
     toplevel.set_title(title.into());
     toplevel.set_app_id(app_id.into());
     surface.commit();
 
     let device = ddm.get_data_device(&seat, &qh, ());
+    let primary_device = primary_manager.as_ref().map(
+        |m: &zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1| {
+            m.get_device(&seat, &qh, ())
+        },
+    );
 
     let mut tester = ClipTester {
         mode,
         mimes,
         payload,
+        primary,
         shm,
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
         ddm,
+        primary_manager,
         surface,
         _xdg_surface: xdg_surface,
         _toplevel: toplevel,
@@ -149,6 +201,10 @@ pub fn run_clip(mode: Mode, mimes: Vec<String>, payload: String, duration_ms: u6
         _buffer: None,
         configured: false,
         device: Some(device),
+        primary_device,
+        primary_source: None,
+        primary_offer: None,
+        primary_offer_mimes: Vec::new(),
         source: None,
         offers: HashMap::new(),
         active_offer: None,
@@ -250,9 +306,33 @@ impl ClipTester {
 
     /// Set mode: advertise the payload under every configured mime.
     /// Requires keyboard focus (smithay denies otherwise) — the harness
-    /// relies on focus-on-map.
+    /// relies on focus-on-map. G-D5: with --primary the source is a
+    /// zwp_primary_selection_source on the primary device.
     fn set_selection(&mut self, qh: &QueueHandle<Self>) {
         if self.mode != Mode::Set {
+            return;
+        }
+        if self.primary {
+            use smithay_client_toolkit::reexports::protocols::wp::primary_selection::zv1::client::zwp_primary_selection_source_v1;
+            let Some(manager) = self.primary_manager.as_ref() else {
+                return;
+            };
+            let Some(device) = self.primary_device.as_ref() else {
+                return;
+            };
+            let source: zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1 =
+                manager.create_source(qh, ());
+            for m in &self.mimes {
+                source.offer(m.clone());
+            }
+            device.set_selection(Some(&source), 0);
+            self.primary_source = Some(source);
+            self.set_done = true;
+            crate::log_kv(&[
+                ("ev", "clip_set_done".into()),
+                ("selection", "primary".into()),
+                ("mimes", self.mimes.join(",").into()),
+            ]);
             return;
         }
         let Some(device) = self.device.clone() else {
@@ -567,3 +647,163 @@ delegate_compositor!(ClipTester);
 delegate_shm!(ClipTester);
 delegate_output!(ClipTester);
 delegate_registry!(ClipTester);
+
+// ── G-D5: raw primary selection plumbing ─────────────────────────────
+// Same shape as the wl_data_device flow above, on the
+// zwp_primary_selection* protocol objects.
+
+impl Dispatch<zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1, ()>
+    for ClipTester
+{
+    fn event(
+        _: &mut Self,
+        _: &zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+        _: zwp_primary_selection_device_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, ()> for ClipTester {
+    // DataOffer creates a primary selection offer child object.
+    wayland_client::event_created_child!(ClipTester, zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, [
+        zwp_primary_selection_device_v1::EVT_DATA_OFFER_OPCODE => (zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1, ()),
+    ]);
+    fn event(
+        state: &mut Self,
+        _: &zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
+        event: zwp_primary_selection_device_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwp_primary_selection_device_v1::Event as PSEvent;
+        match event {
+            PSEvent::DataOffer { offer } => {
+                state.primary_offer = Some(offer);
+                state.primary_offer_mimes.clear();
+            }
+            PSEvent::Selection { id } => match id {
+                Some(offer) => {
+                    crate::log_kv(&[("ev", "clip_selection".into()), ("has_offer", true.into())]);
+                    state.primary_offer = Some(offer);
+                    state.maybe_receive_primary();
+                }
+                None => {
+                    crate::log_kv(&[("ev", "clip_selection".into()), ("has_offer", false.into())]);
+                    crate::log_kv(&[("ev", "clip_cleared".into())]);
+                    state.primary_offer = None;
+                    state.primary_offer_mimes.clear();
+                }
+            },
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1, ()> for ClipTester {
+    fn event(
+        state: &mut Self,
+        offer: &zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1,
+        event: zwp_primary_selection_offer_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_primary_selection_offer_v1::Event::Offer { mime_type } = event {
+            if state.primary_offer.as_ref() == Some(offer) {
+                state.primary_offer_mimes.push(mime_type.clone());
+            }
+            crate::log_kv(&[("ev", "clip_mime".into()), ("mime", mime_type.into())]);
+            state.maybe_receive_primary();
+        }
+    }
+}
+
+impl Dispatch<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1, ()> for ClipTester {
+    fn event(
+        state: &mut Self,
+        _: &zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
+        event: zwp_primary_selection_source_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwp_primary_selection_source_v1::Event as PSSourceEvent;
+        match event {
+            PSSourceEvent::Send { mime_type, fd } => {
+                let payload = state.payload.clone();
+                let len = payload.len();
+                std::thread::spawn(move || {
+                    use std::io::Write as _;
+                    let mut f = std::fs::File::from(fd);
+                    let _ = f.write_all(payload.as_bytes());
+                    let _ = f.flush();
+                });
+                crate::log_kv(&[
+                    ("ev", "clip_send".into()),
+                    ("mime", mime_type.into()),
+                    ("len", len.into()),
+                ]);
+            }
+            PSSourceEvent::Cancelled => {
+                crate::log_kv(&[("ev", "clip_cancelled".into())]);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl ClipTester {
+    /// G-D5: paste mode — receive the wanted mime from the active
+    /// primary offer once both the offer and its mimes are known.
+    fn maybe_receive_primary(&mut self) {
+        if self.mode != Mode::Paste {
+            return;
+        }
+        let Some(offer) = self.primary_offer.clone() else {
+            return;
+        };
+        let Some(want) = self.mimes.first().cloned() else {
+            return;
+        };
+        if !self.primary_offer_mimes.iter().any(|m| m == &want) {
+            return;
+        }
+        // No once-latch: a selection replacement (e.g. the second click
+        // of a double-click) cancels pending transfers per protocol —
+        // the surviving offer must be received again.
+        let mut fds = [0i32; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            crate::log_kv(&[("ev", "clip_data_error".into()), ("why", "pipe".into())]);
+            return;
+        }
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+        offer.receive(want.clone(), unsafe {
+            std::os::fd::BorrowedFd::borrow_raw(write_fd)
+        });
+        unsafe { libc::close(write_fd) };
+        let mime_owned = want.clone();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = unsafe { libc::read(read_fd, chunk.as_mut_ptr() as _, chunk.len()) };
+                if n <= 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n as usize]);
+            }
+            unsafe { libc::close(read_fd) };
+            let text = String::from_utf8_lossy(&buf).to_string();
+            crate::log_kv(&[
+                ("ev", "clip_data".into()),
+                ("mime", mime_owned.into()),
+                ("len", buf.len().into()),
+                ("payload", text.into()),
+            ]);
+        });
+    }
+}

@@ -44,9 +44,11 @@ use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
 };
+use smithay::wayland::selection::ext_data_control::DataControlState as ExtDataControlState;
 use smithay::wayland::selection::primary_selection::{
     PrimarySelectionHandler, PrimarySelectionState,
 };
+use smithay::wayland::selection::wlr_data_control::DataControlState as WlrDataControlState;
 use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
 use smithay::wayland::shell::xdg::Configure;
 use smithay::wayland::shell::xdg::PositionerState;
@@ -63,6 +65,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use cgmath::Matrix4;
 
@@ -339,6 +342,20 @@ pub struct LookingGlass {
     /// per target kind.
     pub x11_owns_clipboard: bool,
     pub x11_owns_primary: bool,
+    /// G-D2: zwlr_data_control_manager_v1 (wlr clipboard managers).
+    pub wlr_data_control_state: WlrDataControlState,
+    /// G-D2: ext_data_control_manager_v1 (new ext clipboard managers).
+    pub ext_data_control_state: ExtDataControlState,
+    /// G-D3: ext_foreign_toplevel_list_v1 (docks/taskbars observing
+    /// the compositor's toplevels).
+    pub foreign_toplevel_state: smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
+    /// G-D3: foreign toplevel handles per visual.
+    pub foreign_toplevels:
+        HashMap<VisualId, smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle>,
+    /// G-D4: wp_presentation global state.
+    pub presentation_state: smithay::wayland::presentation::PresentationState,
+    /// G-D4: monotonic presentation sequence counter.
+    presentation_seq: u64,
     /// Application switcher (Alt+Tab).
     pub app_switcher: ApplicationSwitcher,
     /// Application focus history: MRU ordering of focused toplevels
@@ -415,6 +432,19 @@ fn now_ms() -> u32 {
     std::time::Instant::now().duration_since(*start).as_millis() as u32
 }
 
+/// G-D4: CLOCK_MONOTONIC time since boot — the wp_presentation
+/// protocol's timestamp domain (its global is created with
+/// CLOCK_MONOTONIC; timestamps must come from the same clock).
+fn monotonic_since_boot() -> (u32, u32) {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: plain clock read with a valid out-pointer.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    (ts.tv_sec as u32, ts.tv_nsec as u32)
+}
+
 /// R6: cadence for continuous work — animation ticks and client
 /// frame-callback completion. Matches the previous fixed timer.
 const RENDER_PACING_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
@@ -472,6 +502,31 @@ impl LookingGlass {
         let viewporter_state = ViewporterState::new::<Self>(display_handle);
         // G-C4: xwayland-shell-v1 (X11 window ↔ wl_surface association).
         let xwayland_shell_state = XWaylandShellState::new::<Self>(display_handle);
+        // G-D2: data-control protocols for clipboard managers. Both
+        // broadcast the same seat selection state as wl_data_device.
+        let wlr_data_control_state =
+            smithay::wayland::selection::wlr_data_control::DataControlState::new::<Self, _>(
+                display_handle,
+                Some(&primary_selection_state),
+                |_| true,
+            );
+        let ext_data_control_state =
+            smithay::wayland::selection::ext_data_control::DataControlState::new::<Self, _>(
+                display_handle,
+                Some(&primary_selection_state),
+                |_| true,
+            );
+        // G-D3: ext_foreign_toplevel_list_v1 for docks/taskbars.
+        let foreign_toplevel_state =
+            smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(
+                display_handle,
+            );
+        // G-D4: wp_presentation feedback (CLOCK_MONOTONIC domain, the
+        // same clock Wayland timestamps use).
+        let presentation_state = smithay::wayland::presentation::PresentationState::new::<Self>(
+            display_handle,
+            libc::CLOCK_MONOTONIC as u32,
+        );
 
         // Create a seat and pointer/keyboard handles for Wayland input routing
         // Use new_wl_seat to register the wl_seat global (new_seat doesn't register it)
@@ -574,6 +629,12 @@ impl LookingGlass {
             loop_handle: None,
             x11_owns_clipboard: false,
             x11_owns_primary: false,
+            wlr_data_control_state,
+            ext_data_control_state,
+            foreign_toplevel_state,
+            foreign_toplevels: HashMap::new(),
+            presentation_state,
+            presentation_seq: 0,
             app_switcher: ApplicationSwitcher::new(),
             focus_history: crate::focus_history::FocusHistory::new(),
             launcher: Launcher::new(),
@@ -944,12 +1005,20 @@ impl LookingGlass {
                             visual.src_uv = src_uv;
                             visual.chrome.title = x11.title();
                             visual.chrome.app_id = x11.class();
+                            let x11_title = visual.chrome.title.clone();
+                            let x11_app_id = visual.chrome.app_id.clone();
+                            let x11_vid = visual.id;
+                            self.register_foreign_toplevel(x11_vid, &x11_title, &x11_app_id);
                             visual.transform.position = pos;
                             let visual_id = visual.id;
+                            let x11_map_pos = visual.transform.position;
                             info!(
                                 ?visual_id,
                                 app_id = %visual.chrome.app_id,
                                 title = %visual.chrome.title,
+                                pos = ?x11_map_pos,
+                                total_w = visual.total_width(),
+                                total_h = visual.total_height(),
                                 "x11 surface mapped"
                             );
                             self.wayland_surfaces.insert(visual_id, surface.clone());
@@ -1138,14 +1207,19 @@ impl LookingGlass {
                                 use cgmath::Rotation3;
                                 visual.chrome.title = self.toplevels[idx].title.clone();
                                 visual.chrome.app_id = self.toplevels[idx].app_id.clone();
-                                let app_id = &self.toplevels[idx].app_id;
+                                let app_id = self.toplevels[idx].app_id.clone();
+                                // G-D3: publish to foreign-toplevel clients at map.
+                                let ftl_title = visual.chrome.title.clone();
+                                let ftl_app_id = visual.chrome.app_id.clone();
+                                let ftl_vid = visual.id;
+                                self.register_foreign_toplevel(ftl_vid, &ftl_title, &ftl_app_id);
                                 // Pending reopen (I1): reattach saved transform
                                 // when the relaunched app's toplevel maps.
                                 let mut reopened: Option<crate::closed::PendingReopen> = None;
                                 if self
                                     .pending_reopen
                                     .as_ref()
-                                    .is_some_and(|pr| pr.app_id == *app_id)
+                                    .is_some_and(|pr| pr.app_id == app_id)
                                 {
                                     reopened = self.pending_reopen.take();
                                     if let Some(pr) = &reopened {
@@ -1157,7 +1231,7 @@ impl LookingGlass {
                                 // restore in capture order); returns the
                                 // saved workspace index for membership.
                                 let restored = self.saved_state.as_mut().and_then(|s| {
-                                    s.take_visual(app_id).map(|(ws_idx, vs)| {
+                                    s.take_visual(&app_id).map(|(ws_idx, vs)| {
                                         visual.transform.position.x = vs.x;
                                         visual.transform.position.y = vs.y;
                                         visual.transform.position.z = vs.z;
@@ -1283,6 +1357,12 @@ impl LookingGlass {
                             }
                         }
                     } else if let Some(vid) = existing_vid {
+                        // G-C4 diagnostics: X11 repaint damage must
+                        // produce commits — silent blank windows are
+                        // traceable from the harness.
+                        if x11_window.is_some() {
+                            tracing::debug!(?vid, "x11 surface repaint commit");
+                        }
                         // Resolve any outstanding geometry request (I3a).
                         // A mismatched buffer means the client overrode us —
                         // committed geometry always wins.
@@ -1814,23 +1894,68 @@ impl LookingGlass {
             }
         }
 
-        // Complete pending frame callbacks for all mapped Wayland surfaces.
-        // Without this, clients that request wl_surface.frame() wait forever
-        // and never render their initial content.
+        // Complete pending frame callbacks for ALL mapped Wayland surfaces
+        // (toplevels, popups, AND X11 windows — Xwayland paces its window
+        // repaints on frame callbacks, so an X11 window whose callbacks
+        // were never answered renders exactly one frame and freezes).
         let time = now_ms();
-        for toplevel in &self.toplevels {
-            if toplevel.lifecycle == SurfaceLifecycle::Mapped
-                || toplevel.lifecycle == SurfaceLifecycle::Configured
-            {
-                let surface = toplevel.toplevel.wl_surface();
-                with_states(surface, |states| {
-                    let mut attrs = states.cached_state.get::<SurfaceAttributes>();
-                    let current = attrs.current();
-                    for cb in &current.frame_callbacks {
-                        cb.done(time);
-                    }
-                    current.frame_callbacks.clear();
-                });
+        let surfaces: Vec<WlSurface> = self.wayland_surfaces.values().cloned().collect();
+        for surface in &surfaces {
+            with_states(surface, |states| {
+                let mut attrs = states.cached_state.get::<SurfaceAttributes>();
+                let current = attrs.current();
+                for cb in &current.frame_callbacks {
+                    cb.done(time);
+                }
+                current.frame_callbacks.clear();
+            });
+        }
+
+        // G-D4: wp_presentation feedback — the full-frame pipeline just
+        // presented every mapped surface's committed content. Feedback
+        // callbacks are taken from the surface's presentation state and
+        // answered with CLOCK_MONOTONIC presentation time.
+        self.presentation_seq = self.presentation_seq.wrapping_add(1);
+        let seq = self.presentation_seq;
+        let refresh_mhz = self
+            .output
+            .as_ref()
+            .and_then(|o| o.current_mode())
+            .map(|m| m.refresh)
+            .unwrap_or(60000);
+        let refresh = if refresh_mhz > 0 {
+            smithay::wayland::presentation::Refresh::fixed(Duration::from_nanos(
+                1_000_000_000u64 / refresh_mhz as u64,
+            ))
+        } else {
+            smithay::wayland::presentation::Refresh::fixed(Duration::from_millis(16))
+        };
+        let (psec, pnsec) = monotonic_since_boot();
+        let ptime = Duration::new(psec as u64, pnsec);
+        let surfaces: Vec<WlSurface> = self.wayland_surfaces.values().cloned().collect();
+        for surface in surfaces {
+            let output = self.output.clone();
+            let feedbacks = with_states(&surface, |states| {
+                std::mem::take(
+                    &mut states
+                        .cached_state
+                        .get::<smithay::wayland::presentation::PresentationFeedbackCachedState>()
+                        .current()
+                        .callbacks,
+                )
+            });
+            for feedback in feedbacks {
+                if let Some(output) = &output {
+                    feedback.presented(
+                        output,
+                        ptime,
+                        refresh,
+                        seq,
+                        smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync,
+                    );
+                } else {
+                    feedback.discarded();
+                }
             }
         }
 
@@ -2428,9 +2553,30 @@ impl LookingGlass {
         ContentRouting::NoTarget
     }
 
-    /// Route a keyboard event to the focused visual's InputSink.
-    /// key: winit platform key code (X11 keycodes when under X11, offset +8 from evdev).
-    /// The offset is subtracted to get raw evdev codes for HID mapping.
+    /// G-D3: publish a toplevel to ext_foreign_toplevel_list clients.
+    pub fn register_foreign_toplevel(&mut self, vid: VisualId, title: &str, app_id: &str) {
+        let handle = self
+            .foreign_toplevel_state
+            .new_toplevel::<Self>(title.to_string(), app_id.to_string());
+        self.foreign_toplevels.insert(vid, handle);
+    }
+
+    /// G-D3: push title/app_id updates to foreign-toplevel clients.
+    pub fn update_foreign_toplevel(&mut self, vid: VisualId, title: &str, app_id: &str) {
+        if let Some(handle) = self.foreign_toplevels.get(&vid) {
+            handle.send_title(title);
+            handle.send_app_id(app_id);
+            handle.send_done();
+        }
+    }
+
+    /// G-D3: withdraw a toplevel from foreign-toplevel clients.
+    pub fn unregister_foreign_toplevel(&mut self, vid: VisualId) {
+        if let Some(handle) = self.foreign_toplevels.remove(&vid) {
+            self.foreign_toplevel_state.remove_toplevel(&handle);
+        }
+    }
+
     /// G-C4: find the visual id backing an X11 window, if mapped.
     pub fn x11_visual_for(&self, window: &smithay::xwayland::xwm::X11Surface) -> Option<VisualId> {
         let wid = window.window_id();
@@ -2469,6 +2615,7 @@ impl LookingGlass {
     /// destroy, minimize). The X window itself stays alive where the
     /// protocol allows remapping.
     pub fn destroy_x11_visual(&mut self, vid: VisualId) {
+        self.unregister_foreign_toplevel(vid);
         self.scene.remove(vid);
         self.wayland_surfaces.remove(&vid);
         self.input_sinks.remove(&vid);
@@ -2512,6 +2659,9 @@ impl LookingGlass {
         let _ = self.display_handle.flush_clients();
     }
 
+    /// Route a keyboard event to the focused visual's InputSink.
+    /// key: winit platform key code (X11 keycodes when under X11, offset +8 from evdev).
+    /// The offset is subtracted to get raw evdev codes for HID mapping.
     fn route_keyboard(&mut self, key: u32, pressed: bool) {
         let Some(vid) = self.scene.focused_id else {
             tracing::debug!(key, pressed, "keyboard event dropped: no focused visual");
@@ -5546,8 +5696,15 @@ impl XdgShellHandler for LookingGlass {
         info!(title = %title, "title changed");
         if let Some(vid) = vid {
             if let Some(visual) = self.scene.get_mut(vid) {
-                visual.chrome.title = title;
+                visual.chrome.title = title.clone();
             }
+            // G-D3: keep foreign-toplevel clients in step.
+            let app_id = self
+                .scene
+                .get(vid)
+                .map(|v| v.chrome.app_id.clone())
+                .unwrap_or_default();
+            self.update_foreign_toplevel(vid, &title, &app_id);
         }
     }
 
@@ -5571,6 +5728,13 @@ impl XdgShellHandler for LookingGlass {
             }
             // Register with the application switcher
             self.app_switcher.register_visual(&app_id, vid);
+            // G-D3: keep foreign-toplevel clients in step.
+            let title = self
+                .scene
+                .get(vid)
+                .map(|v| v.chrome.title.clone())
+                .unwrap_or_default();
+            self.update_foreign_toplevel(vid, &title, &app_id);
         }
     }
 
@@ -5730,6 +5894,8 @@ fn remove_popup_visual(state: &mut LookingGlass, pvid: VisualId) {
 fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
     // Clean up child popups first
     cleanup_popups_by_vid(state, vid);
+    // G-D3: withdraw from foreign-toplevel clients
+    state.unregister_foreign_toplevel(vid);
     // Drop any outstanding client geometry request (I3a)
     state.client_resizes.abort(vid);
     // Drop any outstanding maximize intent (I4)
@@ -5841,8 +6007,9 @@ impl SelectionHandler for LookingGlass {
             } else {
                 None
             };
-            if let Err(e) = wm.new_selection(ty, mimes) {
-                warn!(?e, "failed to propagate selection to X11");
+            match wm.new_selection(ty, mimes) {
+                Ok(()) => info!(?ty, "selection propagated to x11"),
+                Err(e) => warn!(?e, "failed to propagate selection to X11"),
             }
         }
     }
@@ -5995,6 +6162,42 @@ delegate_shm!(LookingGlass);
 delegate_output!(LookingGlass);
 delegate_data_device!(LookingGlass);
 delegate_primary_selection!(LookingGlass);
+
+// G-D2: data-control protocols — clipboard managers observe and set
+// selections through the same seat state as wl_data_device.
+impl smithay::wayland::selection::wlr_data_control::DataControlHandler for LookingGlass {
+    fn data_control_state(
+        &self,
+    ) -> &smithay::wayland::selection::wlr_data_control::DataControlState {
+        &self.wlr_data_control_state
+    }
+}
+
+impl smithay::wayland::selection::ext_data_control::DataControlHandler for LookingGlass {
+    fn data_control_state(
+        &self,
+    ) -> &smithay::wayland::selection::ext_data_control::DataControlState {
+        &self.ext_data_control_state
+    }
+}
+
+smithay::delegate_data_control!(LookingGlass);
+smithay::delegate_ext_data_control!(LookingGlass);
+
+// G-D3: ext_foreign_toplevel_list_v1 — docks/taskbars observe toplevels.
+impl smithay::wayland::foreign_toplevel_list::ForeignToplevelListHandler for LookingGlass {
+    fn foreign_toplevel_list_state(
+        &mut self,
+    ) -> &mut smithay::wayland::foreign_toplevel_list::ForeignToplevelListState {
+        &mut self.foreign_toplevel_state
+    }
+}
+
+smithay::delegate_foreign_toplevel_list!(LookingGlass);
+
+// G-D4: wp_presentation — feedback answers are fired from the render
+// loop after each presented frame.
+smithay::delegate_presentation!(LookingGlass);
 delegate_pointer_constraints!(LookingGlass);
 delegate_relative_pointer!(LookingGlass);
 delegate_dmabuf!(LookingGlass);

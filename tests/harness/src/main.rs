@@ -846,7 +846,8 @@ fn main() {
         let duration = opt_value(&args, "--duration")
             .and_then(|v| v.parse().ok())
             .unwrap_or(10000);
-        let code = run_clip(mode, mimes, payload, duration);
+        let primary = args.iter().any(|a| a == "--primary");
+        let code = run_clip(mode, mimes, payload, duration, primary);
         std::process::exit(code);
     }
     let opts = parse_args();

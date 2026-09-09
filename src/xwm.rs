@@ -43,10 +43,20 @@ pub fn spawn_xwayland(dh: &DisplayHandle) -> Option<(XWayland, Client)> {
     match XWayland::spawn(
         dh,
         None,
-        std::iter::empty::<(&str, &str)>(),
+        // VEYRA_XWAYLAND_DEBUG=1 forwards WAYLAND_DEBUG into the
+        // spawned server (stderr is inherited below) — protocol-level
+        // diagnosis of the Xwayland↔compositor feed.
+        std::env::var_os("VEYRA_XWAYLAND_DEBUG")
+            .map(|_| ("WAYLAND_DEBUG".to_owned(), "1".to_owned())),
         false,
         std::process::Stdio::null(),
-        std::process::Stdio::null(),
+        // Inherit stderr only with VEYRA_XWAYLAND_DEBUG (goes to the
+        // compositor log); null otherwise.
+        if std::env::var_os("VEYRA_XWAYLAND_DEBUG").is_some() {
+            std::process::Stdio::inherit()
+        } else {
+            std::process::Stdio::null()
+        },
         |_| {},
     ) {
         Ok(pair) => {
@@ -284,8 +294,9 @@ impl XwmHandler for LookingGlass {
         debug!("x11 move request ignored (limitation)");
     }
 
-    fn allow_selection_access(&mut self, _xwm: XwmId, _selection: SelectionTarget) -> bool {
+    fn allow_selection_access(&mut self, _xwm: XwmId, selection: SelectionTarget) -> bool {
         // X clients may read the Wayland-side selections.
+        info!(?selection, "x11 client requests selection access");
         true
     }
 
@@ -296,6 +307,7 @@ impl XwmHandler for LookingGlass {
         mime_type: String,
         fd: std::os::unix::io::OwnedFd,
     ) {
+        info!(?selection, ?mime_type, "x11 selection read started");
         // An X client is reading a selection. If the current owner is
         // an X client too, round-trip back through the X selection
         // owner; otherwise pull from the Wayland data-device source.

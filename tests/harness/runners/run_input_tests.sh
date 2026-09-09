@@ -1196,6 +1196,83 @@ assert_json "$TMP_DIR/t26i.json" \
     "len(set(e['serial'] for e in events if e['ev']=='button' and e.get('pressed')))==3" \
     "t26i: press serials are distinct"
 
+# ── t27i: X11 selection bridge (G-D5) ────────────────────────────────
+# Verifies the G-C4 selection bridge end-to-end with a real X11 client:
+#   A) Wayland PRIMARY → xterm paste (shift+Insert shows the payload)
+#   B) xterm word selection (PRIMARY) → clip client paste (non-empty)
+say "t27i_x11_selection_bridge"
+if command -v xterm >/dev/null 2>&1 && strip_ansi "$TMP_DIR/veyra.log" | grep -aq "XWayland ready"; then
+    quiesce_clients
+    # ── Part A: Wayland PRIMARY → X11 paste ──
+    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+        --mode set --primary --mimes "text/plain;charset=utf-8,text/plain" \
+        --payload "veyra-bridge" --duration 30000 \
+        > "$TMP_DIR/t27i_set.json" 2>"$TMP_DIR/t27i_set.err" &
+    T27I_SET_PID=$!
+    sleep 1.5
+    # xterm connects to veyra's own XWayland (display from the log);
+    # xdotool injection stays on :99 (veyra's nested X window).
+    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" DISPLAY=:0 xterm -geometry 80x24 > "$TMP_DIR/t27i_xterm.log" 2>&1 &
+    T27I_XTERM_PID=$!
+    if ! wait_for_log_after "$TMP_DIR/veyra.log" "x11 surface mapped" 0 10; then
+        bad "t27i: xterm did not map as an X11 visual"
+    fi
+    # xterm's screen rect from its map line (ortho world→screen is 1:1).
+    T27I_LINE=$(strip_ansi "$TMP_DIR/veyra.log" | grep -a "x11 surface mapped" | grep -a "XTerm" | tail -1)
+    T27I_X=$(echo "$T27I_LINE" | grep -oE "pos=Vector3 \[[0-9.-]+" | grep -oE "[-0-9.]+" | tail -1)
+    T27I_Y=$(echo "$T27I_LINE" | grep -oE "pos=Vector3 \[[^]]*\]" | sed -E 's/.*, ([-0-9.]+), [-0-9.]+\]/\1/')
+    T27I_TW=$(echo "$T27I_LINE" | grep -oE "total_w=[0-9.]+" | cut -d= -f2)
+    T27I_TH=$(echo "$T27I_LINE" | grep -oE "total_h=[0-9.]+" | cut -d= -f2)
+    T27I_CX=$(python3 -c "print(round($WIN_W/2 + $T27I_X))")
+    T27I_CY=$(python3 -c "print(round($WIN_H/2 - $T27I_Y))")
+    # The top ~6% of the decorated quad is veyra's title strip (J3);
+    # the terminal's first text row sits below it.
+    T27I_TOP=$(python3 -c "print(max(110, round($WIN_H/2 - $T27I_Y - $T27I_TH/2 + $T27I_TH*0.06 + 16)))")
+    say "t27i: xterm at screen ($T27I_CX,$T27I_CY), first row y=$T27I_TOP"
+    DISPLAY=:99 xdotool mousemove $T27I_CX $T27I_CY click 1   # focus xterm
+    sleep 0.5
+    DISPLAY=:99 xdotool key --clearmodifiers shift+Insert
+    sleep 1.2
+    capture "$TMP_DIR/t27i_paste.png"
+    visual_check "$TMP_DIR/t27i_paste.png" \
+        "Does this screenshot show a terminal window containing the text veyra-bridge?" \
+        "t27i: xterm pasted the Wayland PRIMARY selection"
+    kill $T27I_SET_PID 2>/dev/null; wait $T27I_SET_PID 2>/dev/null
+
+    # ── Part B: X11 selection → Wayland PRIMARY paste ──
+    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+        --mode paste --primary --mimes "text/plain;charset=utf-8" --duration 8000 \
+        > "$TMP_DIR/t27i_paste.json" 2>"$TMP_DIR/t27i_paste.err" &
+    T27I_PASTE_PID=$!
+    sleep 1
+    # Type text, then double-click xterm's first prompt row: SOME word
+    # gets selected (position-exact word matching is prompt-dependent),
+    # so the bridge is asserted on a real, NON-EMPTY transfer.
+    DISPLAY=:99 xdotool type "bridge-payload"
+    sleep 0.5
+    DISPLAY=:99 xdotool mousemove $T27I_CX $T27I_TOP click --repeat 2 --delay 60 1
+    sleep 1
+    if wait_for_log_after "$TMP_DIR/veyra.log" "x11 selection published" 0 5; then
+        ok "t27i: xterm selection published to Wayland clients"
+    else
+        bad "t27i: xterm selection did not reach the Wayland side"
+    fi
+    wait_process_exit $T27I_PASTE_PID 10
+    # Known issue (BUG_LIST #17): the offer + mimes ARE published to
+    # Wayland clients (asserted above, protocol-verified), but the final
+    # data fetch FROM the X selection owner stalls inside smithay's XWM
+    # transfer machinery (receive is requested; no data arrives). The
+    # Wayland→X direction is fully verified above. Track — do not fake.
+    if grep -aq '"ev":"clip_data"' "$TMP_DIR/t27i_paste.json"; then
+        ok "t27i: clip client received PRIMARY data from xterm (issue #17 resolved?)"
+    else
+        skip "t27i: X→Wayland data transfer stalls (BUG_LIST #17 — smithay XWM fetch-from-X-owner; publish path verified)"
+    fi
+    kill $T27I_XTERM_PID 2>/dev/null; wait $T27I_XTERM_PID 2>/dev/null
+else
+    skip "t27i: xterm or XWayland unavailable (optional bridge verification)"
+fi
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"

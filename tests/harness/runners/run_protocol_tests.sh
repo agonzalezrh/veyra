@@ -673,7 +673,9 @@ assert_json "$TMP_DIR/t20.json" \
 # Globals advertised on the wire (client-side WAYLAND_DEBUG registry dump).
 WAYLAND_DEBUG=1 XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" \
     "$BIN/client-kit" probe --duration 800 > "$TMP_DIR/t20_globals.out" 2>&1
-for g in wp_viewporter wp_fractional_scale_manager_v1; do
+for g in wp_viewporter wp_fractional_scale_manager_v1 \
+         zwlr_data_control_manager_v1 ext_data_control_manager_v1 \
+         ext_foreign_toplevel_list_v1 wp_presentation; do
     if grep -qF "$g" "$TMP_DIR/t20_globals.out"; then
         ok "t20: $g global advertised"
     else
