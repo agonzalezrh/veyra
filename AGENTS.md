@@ -682,6 +682,16 @@ Priority order from audit:
 
 **Status: ✅ Complete (483 unit tests; protocol 104/0/0; input 95/0/1)**
 
+### G-E — Bridge Completion & Remaining Gaps (G-E1–)
+- G-E1: BUG_LIST #17 RESOLVED — the X→Wayland selection "stall" was a
+  test-harness chain (unpinned Xvfb focus → empty selections; click one
+  row low; focus-gated device broadcasts). With the focus pinned and
+  the click on the typed word, the FULL X11 selection bridge verifies:
+  xterm → XWM transfer → Wayland client payload delivery (t27i green,
+  no skips). xterm→xterm roundtrip also verified.
+
+**Status: ✅ G-E1 Complete (483 unit tests; protocol 104/0/0; input 96/0/0)**
+
 ---
 
 # 25. Commit discipline

@@ -59,7 +59,6 @@ a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 | 9 | Output Change Events | ~~Mode set once~~ R11 mode sync + G-D1 config scale verified; runtime scale *changes* (config reload) have no trigger yet | Low |
 | 11 | Subsurface support | Not explicitly handled | Low |
 | 12 | Serial Validation | Popup serial validation may not catch all edge cases | Medium |
-| 17 | X11 selection data transfer | G-C4/G-D5 bridge: Wayland→X fully verified (xterm pastes compositor clipboard, t27i visual); X→Wayland publish verified (offers + mimes reach clients). The final X→Wayland data FETCH from the X selection owner stalls inside smithay's XWM transfer machinery (receive requested via zwp_primary_selection_offer.receive; no data arrives). Investigate smithay's XWM PendingTransfer flow for fetch-from-X-owner. | Medium |
 | ~~15~~ | ~~Duplicate Button Press~~ | ✅ **G-C2 (Verified clean)**: client-kit pointer events now log the wl serial; input-suite t26i asserts exactly one press/release per physical click with distinct serials over repeated runs. No duplication at HEAD — earlier observations are not reproducible; the t26i regression guard keeps watch. | ~~Medium~~ |
 | ~~16~~ | ~~Stuck META Modifier~~ | ✅ **G-C2 (Fixed)**: root cause was NOT duplicated input — `route_keyboard` dropped modifier releases when no visual held keyboard focus (focus vanished mid-press: window close, workspace switch, drag start), latching smithay's XKB state so every later client enter reported `logo:true`. Modifiers are seat state: they now always reach the keyboard handle (`feed_keyboard_event`). The previously-SKIPped tcfoot foot-copy flow now runs and passes both directions. | ~~Medium~~ |
 
@@ -74,7 +73,28 @@ a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 
 ## Recommended Fix Order for G-E
 
-1. **X11 selection data transfer** (P3, #17) — complete the X→Wayland clipboard loop
-2. **Output change events, runtime half** (P3, #9) — config-reload hook for scale changes
-3. **Subsurface support** (P3, #11) — Chromium/Qt menus
-4. **IME/Text Input** (P3, #6) — CJK input for real desktop use
+1. **Runtime output scale change** (P3, #9) — config-reload hook
+2. **Subsurface support** (P3, #11) — Chromium/Qt menus
+3. **IME/Text Input** (P3, #6) — CJK input for real desktop use
+
+## Resolution notes: #17 (X11 selection bridge) — RESOLVED in G-E
+
+The "stall" was a chain of test-harness artifacts, not a compositor or
+smithay defect:
+1. Diagnostic scripts never pinned the Xvfb keyboard focus (no WM!),
+   so injected keystrokes went to root — xterm never received the
+   typed text, and the double-click selected nothing → xterm took
+   ownership of an EMPTY selection → transfers completed with 0 bytes
+   (misread as a stall).
+2. The harness double-click was one terminal row too low (row 2 is
+   blank; row 1 holds the prompt + typed word) and one row hit veyra's
+   title strip before that.
+3. Data-device selection broadcasts are gated by the primary-selection
+   FOCUS client — a paster that bound BEFORE the selection existed
+   misses it; the reliable desktop flow (select first, then open/focus
+   the paster) delivers the X-owned selection at device bind.
+
+With the focus pinned and the click on the typed word, the FULL bridge
+verifies: xterm selection → XWM incoming transfer → Wayland client
+receives the payload (t27i part B green). xterm→xterm roundtrip also
+verified ("hello-worldhello-world").

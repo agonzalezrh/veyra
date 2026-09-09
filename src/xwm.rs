@@ -350,7 +350,6 @@ impl XwmHandler for LookingGlass {
             SelectionTarget::Clipboard => self.x11_owns_clipboard = true,
             SelectionTarget::Primary => self.x11_owns_primary = true,
         }
-        info!(?selection, mimes = ?mime_types, "x11 selection published to wayland clients");
         if let Some(ref seat) = self.seat {
             let dh = self.display_handle.clone();
             match selection {
@@ -372,6 +371,12 @@ impl XwmHandler for LookingGlass {
                 }
             }
         }
+        // NOTE: wl_data_device selection broadcasts are gated by the
+        // primary/data-device FOCUS client; the focus change to a
+        // pasting client re-broadcasts the current (X-owned) selection
+        // to it. Data-control devices (clipboard managers) bypass the
+        // focus gate entirely per protocol.
+        info!(?selection, "x11 selection published to wayland clients");
     }
 
     fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {

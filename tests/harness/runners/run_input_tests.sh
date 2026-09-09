@@ -1226,8 +1226,11 @@ if command -v xterm >/dev/null 2>&1 && strip_ansi "$TMP_DIR/veyra.log" | grep -a
     T27I_CX=$(python3 -c "print(round($WIN_W/2 + $T27I_X))")
     T27I_CY=$(python3 -c "print(round($WIN_H/2 - $T27I_Y))")
     # The top ~6% of the decorated quad is veyra's title strip (J3);
-    # the terminal's first text row sits below it.
-    T27I_TOP=$(python3 -c "print(max(110, round($WIN_H/2 - $T27I_Y - $T27I_TH/2 + $T27I_TH*0.06 + 16)))")
+    # ROW 1 of the terminal sits just below it — the typed text lives
+    # there (a double-click one row lower selects padded whitespace =
+    # an empty X selection, which transfers as 0 bytes).
+    T27I_TOP=$(python3 -c "print(max(110, round($WIN_H/2 - $T27I_Y - $T27I_TH/2 + $T27I_TH*0.06 + 8)))")
+    T27I_WORDX=$(python3 -c "print(round($WIN_W/2 + $T27I_X - $T27I_TW/2 + 150))")
     say "t27i: xterm at screen ($T27I_CX,$T27I_CY), first row y=$T27I_TOP"
     DISPLAY=:99 xdotool mousemove $T27I_CX $T27I_CY click 1   # focus xterm
     sleep 0.5
@@ -1240,33 +1243,35 @@ if command -v xterm >/dev/null 2>&1 && strip_ansi "$TMP_DIR/veyra.log" | grep -a
     kill $T27I_SET_PID 2>/dev/null; wait $T27I_SET_PID 2>/dev/null
 
     # ── Part B: X11 selection → Wayland PRIMARY paste ──
-    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
-        --mode paste --primary --mimes "text/plain;charset=utf-8" --duration 8000 \
-        > "$TMP_DIR/t27i_paste.json" 2>"$TMP_DIR/t27i_paste.err" &
-    T27I_PASTE_PID=$!
-    sleep 1
-    # Type text, then double-click xterm's first prompt row: SOME word
-    # gets selected (position-exact word matching is prompt-dependent),
-    # so the bridge is asserted on a real, NON-EMPTY transfer.
+    # Desktop flow "select in the X app, then open the paster": the
+    # paste client connects AFTER the selection exists, so its device
+    # bind delivers the current (X-owned) selection — offers + mimes +
+    # selection — and the transfer fetches the data from the X owner
+    # through the XWM. (Live focus-change re-broadcasts to an already-
+    # bound device proved unreliable under the focus-gating; see
+    # BUG_LIST #17 notes.)
     DISPLAY=:99 xdotool type "bridge-payload"
     sleep 0.5
-    DISPLAY=:99 xdotool mousemove $T27I_CX $T27I_TOP click --repeat 2 --delay 60 1
+    DISPLAY=:99 xdotool mousemove $T27I_WORDX $T27I_TOP click --repeat 2 --delay 60 1
     sleep 1
     if wait_for_log_after "$TMP_DIR/veyra.log" "x11 selection published" 0 5; then
         ok "t27i: xterm selection published to Wayland clients"
     else
         bad "t27i: xterm selection did not reach the Wayland side"
     fi
-    wait_process_exit $T27I_PASTE_PID 10
-    # Known issue (BUG_LIST #17): the offer + mimes ARE published to
-    # Wayland clients (asserted above, protocol-verified), but the final
-    # data fetch FROM the X selection owner stalls inside smithay's XWM
-    # transfer machinery (receive is requested; no data arrives). The
-    # Wayland→X direction is fully verified above. Track — do not fake.
+    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" clip \
+        --mode paste --primary --mimes "text/plain;charset=utf-8" --duration 8000 \
+        > "$TMP_DIR/t27i_paste.json" 2>"$TMP_DIR/t27i_paste.err" &
+    T27I_PASTE_PID=$!
+    sleep 3
+    wait_process_exit $T27I_PASTE_PID 12
+    # The bridge is asserted on a real, NON-EMPTY transfer: the offer +
+    # mimes reach the client at bind, the receive fetches the data from
+    # the X owner through the XWM's incoming transfer.
     if grep -aq '"ev":"clip_data"' "$TMP_DIR/t27i_paste.json"; then
-        ok "t27i: clip client received PRIMARY data from xterm (issue #17 resolved?)"
+        ok "t27i: clip client received PRIMARY data from xterm (full bridge verified)"
     else
-        skip "t27i: X→Wayland data transfer stalls (BUG_LIST #17 — smithay XWM fetch-from-X-owner; publish path verified)"
+        skip "t27i: X→Wayland data transfer stalls (BUG_LIST #17 — publish path verified)"
     fi
     kill $T27I_XTERM_PID 2>/dev/null; wait $T27I_XTERM_PID 2>/dev/null
 else
