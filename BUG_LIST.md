@@ -67,7 +67,7 @@ a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 | # | Area | Description | Difficulty |
 |---|------|-------------|------------|
 | ~~13~~ | ~~XWayland~~ | ✅ **G-C4 (Implemented)**: Xwayland spawned at startup (clean degradation when missing); X11Wm drives the X side; windows associate via xwayland-shell-v1 and commit through the same pipeline as native toplevels (chrome, placement, focus-on-map, taskbar). Selections bridge both directions. Known limitations: override-redirect windows unmanaged; X11 move/resize grabs not wired to spatial interaction. | ~~High~~ |
-| 14 | Multi-monitor | Single output only | High |
+| 14 | Multi-monitor | Single output only. **G-E5 audit complete** — single-output assumptions inventoried (see below): `LookingGlass.output` (one wl_output global; sync_output_mode/scale mutate it), `window_size (f32,f32)` consumed ~35× (pointer unproject, overview, layout bounds, taskbar, fullscreen PresentationArea, xwm placement, IME parent fallback), winit backend = one window, DRM backend = one connector/one mode, projection aspect hardcoded 1280/720 in two picking paths (scene.rs:1688, group.rs:380). Required shape: per-output state map (mode/scale/global position), per-output window_size with one output per winit window / per DRM connector, outputs tiling the global desktop plane with camera + unproject per-output hit testing. Milestone-sized batch. | High |
 | 15 | Data Control | ~~not implemented~~ ✅ G-D2 (zwlr + ext advertised and wired) | ~~Medium~~ |
 | 16 | Foreign Toplevel | ~~not implemented~~ ✅ G-D3 (ext_foreign_toplevel_list_v1, publish/update/withdraw wired) | ~~Medium~~ |
 
