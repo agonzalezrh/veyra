@@ -367,6 +367,11 @@ pub struct LookingGlass {
     /// (the client's objects are being torn down), so veyra keeps its
     /// own link for cleanup.
     pub subsurface_parents: HashMap<WlSurface, WlSurface>,
+    /// #12: recent INPUT serials per client (pointer buttons + keyboard
+    /// events). xdg_popup.grab must name the serial of the input event
+    /// that triggered the popup — this ledger is the validation source.
+    /// Capped per client; configures/frame callbacks never enter it.
+    pub input_serial_ledger: HashMap<ClientId, std::collections::VecDeque<u32>>,
     /// G-D4: wp_presentation global state.
     pub presentation_state: smithay::wayland::presentation::PresentationState,
     /// G-D4: monotonic presentation sequence counter.
@@ -663,6 +668,7 @@ impl LookingGlass {
             foreign_toplevels: HashMap::new(),
             subsurface_visuals: HashMap::new(),
             subsurface_parents: HashMap::new(),
+            input_serial_ledger: HashMap::new(),
             presentation_state,
             presentation_seq: 0,
             app_switcher: ApplicationSwitcher::new(),
@@ -2739,6 +2745,8 @@ impl LookingGlass {
                             ph.motion(self, origin.map(|o| (wl_surface.clone(), o)), &mot_ev);
                             ph.button(self, &btn_ev);
                             ph.frame(self);
+                            // #12: button serials are the popup-grab source.
+                            self.record_input_serial(&wl_surface, serial);
                             info!(?vid, ?pos, ?kind, "wl_pointer.enter + button + frame");
                         }
                         PointerEventKind::Scroll(_, _) => {}
@@ -4267,6 +4275,7 @@ impl LookingGlass {
                 let focus = self
                     .pick_wayland_target(x, y)
                     .and_then(|(vid, s, _)| self.surface_global_origin(vid).map(|o| (s, o)));
+                let focus_for_ledger = focus.clone();
                 ph.motion(
                     self,
                     focus,
@@ -4286,6 +4295,10 @@ impl LookingGlass {
                     },
                 );
                 ph.frame(self);
+                // #12: button serials are the popup-grab source.
+                if let Some((fs, _)) = focus_for_ledger.as_ref() {
+                    self.record_input_serial(fs, serial);
+                }
             }
             let _ = self.display_handle.flush_clients();
             return;
@@ -4422,6 +4435,10 @@ impl LookingGlass {
                     },
                 );
                 ph.frame(self);
+                // #12: release serials also count as triggering input.
+                if let Some((fs, _)) = focus.as_ref() {
+                    self.record_input_serial(fs, serial);
+                }
                 if focus.is_none() {
                     self.last_wayland_focus = None;
                 }
@@ -4873,6 +4890,47 @@ impl LookingGlass {
     fn next_serial(&mut self) -> smithay::utils::Serial {
         self.event_serial = self.event_serial.wrapping_add(1);
         smithay::utils::Serial::from(self.event_serial)
+    }
+
+    /// #12: record an input serial against the owning client (pointer
+    /// button or keyboard event delivery). Popup grab requests validate
+    /// against this ledger.
+    fn record_input_serial(&mut self, surface: &WlSurface, serial: smithay::utils::Serial) {
+        if let Some(client) = surface.client() {
+            let ledger = self.input_serial_ledger.entry(client.id()).or_default();
+            ledger.push_back(u32::from(serial));
+            while ledger.len() > 16 {
+                ledger.pop_front();
+            }
+        }
+    }
+
+    /// #12: validate an xdg_popup grab serial — it must name a recent
+    /// input event delivered to the grabbing client. Serials from the
+    /// future or from other clients (garbage, replayed, guessed) are
+    /// rejected: the popup is dismissed with popup_done per the
+    /// toolkit-visible consequence of a failed grab.
+    fn validate_popup_grab(
+        &mut self,
+        surface: &smithay::wayland::shell::xdg::PopupSurface,
+        serial: Serial,
+    ) -> bool {
+        let wl = surface.wl_surface().clone();
+        let client_id = wl.client().map(|c| c.id());
+        let valid = client_id
+            .and_then(|c| self.input_serial_ledger.get(&c))
+            .map(|q| q.contains(&u32::from(serial)))
+            .unwrap_or(false);
+        if !valid {
+            warn!(
+                ?serial,
+                "popup grab rejected: serial not a recent input event of this client"
+            );
+            surface.send_popup_done();
+            self.popups
+                .retain(|p| p.popup.wl_surface() != surface.wl_surface());
+        }
+        valid
     }
 
     /// Orbit camera (right-drag).
@@ -5835,14 +5893,16 @@ impl XdgShellHandler for LookingGlass {
 
     fn grab(
         &mut self,
-        _surface: smithay::wayland::shell::xdg::PopupSurface,
+        surface: smithay::wayland::shell::xdg::PopupSurface,
         _seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat,
-        _serial: Serial,
+        serial: Serial,
     ) {
-        // For now, popup grabs are accepted. In a full implementation,
-        // we'd validate the serial. But the popup is already created
-        // by the client at this point.
-        info!("popup grab accepted");
+        // #12: the spec requires the serial of the input event that
+        // triggered the popup. Validated against the client's recent
+        // input-serial ledger; a rejected grab dismisses the popup.
+        if self.validate_popup_grab(&surface, serial) {
+            info!(?serial, "popup grab accepted (serial validated)");
+        }
     }
 
     fn reposition_request(

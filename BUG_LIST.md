@@ -74,9 +74,23 @@ a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 ## Recommended Fix Order for G-E — COMPLETE
 
 All three remaining P3 items shipped in G-E2: #9 (inotify config reload),
-#11 (subsurfaces), #6 (IME text-input loop). Remaining known gaps are
-P4-only: #12 popup serial validation (Medium), #14 multi-monitor (High),
-plus the IME candidate-popup rendering noted under #6.
+#11 (subsurfaces), #6 (IME text-input loop). #12 (popup serial
+validation) shipped in G-E3. Remaining known gaps are P4-only:
+#14 multi-monitor (High), plus the IME candidate-popup rendering noted
+under #6.
+
+### ~~12. Popup serial validation~~ — ✅ G-E3 (Implemented)
+xdg_popup.grab now validates the serial against a per-client ledger of
+recent INPUT serials (pointer button presses/releases + keyboard events
+delivered to that client, capped at 16 entries). Serials from the
+future, from other clients, or guessed (configure/frame serials never
+enter the ledger) are rejected: veyra logs "popup grab rejected" and
+dismisses the popup with popup_done — the toolkit-visible consequence
+of a failed grab, without killing the client. Valid grabs are accepted
+with "popup grab accepted (serial validated)".
+Input-suite t26 (`popups --grab`): odd cycles grab with the serial of
+the last REAL button press (accepted), even cycles with a bogus
+never-issued serial (rejected -> popup_done delivered to the client).
 
 ## Resolution notes: #17 (X11 selection bridge) — RESOLVED in G-E
 

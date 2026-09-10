@@ -952,7 +952,8 @@ fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(8000);
         let hold = args.iter().any(|a| a == "--hold");
-        let code = run_popups_opts(cycles, duration, hold);
+        let grab = args.iter().any(|a| a == "--grab");
+        let code = run_popups_opts(cycles, duration, hold, grab);
         std::process::exit(code);
     }
     // Raw drag-and-drop tester (G-B2) has its own connection flow.

@@ -20,15 +20,17 @@ use smithay_client_toolkit::reexports::protocols::xdg::shell::client::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_output, delegate_registry, delegate_shm,
+    delegate_compositor, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
+    delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
+    seat::{pointer::PointerHandler, Capability, SeatHandler, SeatState},
     shm::{slot::Buffer, slot::SlotPool, Shm, ShmHandler},
 };
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{wl_output, wl_registry, wl_surface},
+    protocol::{wl_output, wl_pointer, wl_registry, wl_seat, wl_surface},
     Connection, Dispatch, QueueHandle,
 };
 
@@ -72,9 +74,21 @@ pub struct PopupTester {
     committed_cycle: Option<u32>,
     committed_at: Option<std::time::Instant>,
     exit: bool,
+    // #12: grab testing state
+    grab: bool,
+    seat_state: SeatState,
+    #[allow(dead_code)]
+    seat: Option<wl_seat::WlSeat>,
+    pointer: Option<wl_pointer::WlPointer>,
+    last_button_serial: Option<u32>,
+    grabbed_current: bool,
 }
 
-pub fn run_popups_opts(cycles: u32, duration_ms: u64, hold_last: bool) -> i32 {
+/// #12: `grab` enables serial validation testing — odd cycles grab the
+/// popup with the serial of the last received button event (valid),
+/// even cycles grab with a bogus never-issued serial (must be rejected
+/// with popup_done).
+pub fn run_popups_opts(cycles: u32, duration_ms: u64, hold_last: bool, grab: bool) -> i32 {
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
         Err(_) => {
@@ -134,6 +148,12 @@ pub fn run_popups_opts(cycles: u32, duration_ms: u64, hold_last: bool) -> i32 {
         committed_cycle: None,
         committed_at: None,
         exit: false,
+        grab,
+        seat_state: SeatState::new(&globals, &qh),
+        seat: None,
+        pointer: None,
+        last_button_serial: None,
+        grabbed_current: false,
     };
 
     let deadline = Instant::now() + Duration::from_millis(duration_ms);
@@ -150,7 +170,13 @@ pub fn run_popups_opts(cycles: u32, duration_ms: u64, hold_last: bool) -> i32 {
         // (weston-headless vs X11) do not stall the cycle chain.
         if let Some(t) = tester.committed_at {
             let holding = tester.hold_last && tester.cycle >= tester.wanted_cycles;
-            if t.elapsed() >= Duration::from_millis(300) && !holding {
+            // #12: the first odd cycle holds until its real button
+            // press arrives (the grab must respond to input).
+            let waiting_for_press = tester.grab
+                && tester.cycle % 2 == 1
+                && !tester.grabbed_current
+                && tester.last_button_serial.is_none();
+            if t.elapsed() >= Duration::from_millis(300) && !holding && !waiting_for_press {
                 let qh = qh.clone();
                 tester.kill_and_continue(&qh);
             }
@@ -255,6 +281,49 @@ impl PopupTester {
         ]);
         self.committed_cycle = Some(self.cycle);
         self.committed_at = Some(Instant::now());
+        self.grabbed_current = false;
+        // Even cycles grab with a bogus serial right away — no click
+        // needed, the rejection path must fire on its own. Odd cycles
+        // grab here too once a real button serial exists; the FIRST
+        // odd cycle waits for the press (see the hold in the main loop).
+        if self.cycle.is_multiple_of(2) || self.last_button_serial.is_some() {
+            self.maybe_grab_current();
+        }
+    }
+
+    /// #12: grab the current popup — odd cycles with the last REAL
+    /// button serial (accepted), even cycles with a bogus serial
+    /// (rejected -> popup_done).
+    fn maybe_grab_current(&mut self) {
+        if !self.grab || self.grabbed_current {
+            return;
+        }
+        let Some(cyc) = self.current.as_ref() else {
+            return;
+        };
+        let Some(popup) = cyc.popup.as_ref() else {
+            return;
+        };
+        let Some(seat) = self.seat.clone() else {
+            return;
+        };
+        let bogus = self.cycle.is_multiple_of(2);
+        let serial: u32 = if bogus {
+            0xFFFF_0000u32.wrapping_add(self.cycle)
+        } else {
+            match self.last_button_serial {
+                Some(s) => s,
+                None => return,
+            }
+        };
+        popup.grab(&seat, serial);
+        self.grabbed_current = true;
+        crate::log_kv(&[
+            ("ev", "popup_grab_requested".into()),
+            ("cycle", self.cycle.into()),
+            ("serial", serial.into()),
+            ("bogus", bogus.into()),
+        ]);
     }
 
     fn kill_and_continue(&mut self, qh: &QueueHandle<Self>) {
@@ -528,14 +597,82 @@ impl ShmHandler for PopupTester {
     }
 }
 
+// ── #12: seat + pointer capture (button serials for grab testing) ────
+
+impl SeatHandler for PopupTester {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat_state
+    }
+
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        if self.seat.is_none() {
+            self.seat = Some(seat);
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: wl_seat::WlSeat,
+        _: Capability,
+    ) {
+    }
+
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+
+    fn new_capability(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if self.seat.is_none() {
+            self.seat = Some(seat.clone());
+        }
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            self.pointer = Some(
+                self.seat_state
+                    .get_pointer(qh, &seat)
+                    .expect("pointer capability"),
+            );
+        }
+    }
+}
+
+impl PointerHandler for PopupTester {
+    fn pointer_frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_pointer::WlPointer,
+        events: &[smithay_client_toolkit::seat::pointer::PointerEvent],
+    ) {
+        for event in events {
+            if let smithay_client_toolkit::seat::pointer::PointerEventKind::Press {
+                serial, ..
+            } = event.kind
+            {
+                self.last_button_serial = Some(serial);
+                crate::log_kv(&[("ev", "ptr_press".into()), ("serial", serial.into())]);
+                // The grab must be requested in response to the press.
+                self.maybe_grab_current();
+            }
+        }
+    }
+}
+
 impl ProvidesRegistryState for PopupTester {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
-    registry_handlers![OutputState,];
+    registry_handlers![OutputState, SeatState];
 }
 
 delegate_compositor!(PopupTester);
 delegate_shm!(PopupTester);
 delegate_output!(PopupTester);
 delegate_registry!(PopupTester);
+delegate_seat!(PopupTester);
+delegate_pointer!(PopupTester);

@@ -1318,6 +1318,33 @@ assert_json "$TMP_DIR/t25.json" \
     "any(e['ev']=='ti_commit' and e['text']=='漢' for e in events)" \
     "t25: focused field received committed 漢"
 
+# ── t26: popup grab serial validation (#12) ───────────────────────────
+# xdg_popup.grab must carry the serial of the input event that
+# triggered the popup. The popups tester alternates: odd cycles grab
+# with the serial of the last REAL button press (accepted), even
+# cycles grab with a bogus never-issued serial (rejected -> popup_done).
+say "t26_popup_grab_serial"
+XDG_RUNTIME_DIR="$VEYRA_RUNTIME" WAYLAND_DISPLAY="$VEYRA_SOCKET" "$BIN/client-kit" popups \
+    --cycles 4 --grab --duration 12000 > "$TMP_DIR/t26.json" 2>"$TMP_DIR/t26.err" &
+T26_PID=$!
+sleep 2.5
+DISPLAY=:99 xdotool mousemove $CX $CY click 1
+sleep 5
+wait_process_exit $T26_PID 16
+assert_json "$TMP_DIR/t26.json" \
+    "any(e['ev']=='popup_grab_requested' and not e.get('bogus') for e in events)" \
+    "t26: valid-serial grab requested (cycle 1/3)"
+assert_json "$TMP_DIR/t26.json" \
+    "any(e['ev']=='popup_grab_requested' and e.get('bogus') for e in events)" \
+    "t26: bogus-serial grab requested (cycle 2/4)"
+assert_log "$TMP_DIR/veyra.log" "popup grab accepted (serial validated)" \
+    "t26: veyra accepted the real-input-serial grab"
+assert_log "$TMP_DIR/veyra.log" "popup grab rejected" \
+    "t26: veyra rejected the bogus serial"
+assert_json "$TMP_DIR/t26.json" \
+    "any(e['ev']=='popup_done' for e in events)" \
+    "t26: rejected grab dismissed the popup (popup_done delivered)"
+
 say "input tests done"
 echo "-------------------------------------"
 echo "input: $PASS passed, $FAIL failed, $SKIP skipped"

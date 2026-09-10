@@ -717,6 +717,19 @@ Priority order from audit:
 
 **Status: ✅ G-E2 Complete (483 unit tests; protocol 111/0/0; input 103/0/0)**
 
+### G-E3 — Popup Serial Validation (#12)
+- G-E3: xdg_popup.grab validates the serial against a per-client
+  ledger of recent INPUT serials (pointer buttons + keyboard events,
+  capped at 16 per client). Bogus/future/foreign serials are rejected:
+  "popup grab rejected" + popup_done dismissal (client survives).
+  Valid grabs log "popup grab accepted (serial validated)". Input-suite
+  t26 (`popups --grab`): real-press-serial grabs accepted, bogus-serial
+  grabs rejected with popup_done. Harness note: a manual empty
+  Dispatch<wl_pointer> impl silently blocks sctk pointer events — use
+  delegate_pointer!.
+
+**Status: ✅ G-E3 Complete (483 unit tests; protocol 111/0/0; input 108/0/0)**
+
 ---
 
 # 25. Commit discipline
