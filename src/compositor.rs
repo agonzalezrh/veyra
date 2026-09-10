@@ -357,6 +357,12 @@ pub struct LookingGlass {
     pub input_method_state: smithay::wayland::input_method::InputMethodManagerState,
     /// #6: IME popup surfaces (input_popup_surface_v2 role).
     pub ime_popups: Vec<smithay::wayland::input_method::PopupSurface>,
+    /// #6: IME popup visuals by their wl_surface.
+    pub ime_popup_visuals: HashMap<WlSurface, VisualId>,
+    /// #6: the visual of the text field the IME popup anchors to
+    /// (cached from parent_geometry during IME activation; Cell because
+    /// the handler callback only receives &self).
+    pub ime_parent_vid: std::cell::Cell<Option<VisualId>>,
     /// G-D3: foreign toplevel handles per visual.
     pub foreign_toplevels:
         HashMap<VisualId, smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle>,
@@ -665,6 +671,8 @@ impl LookingGlass {
             text_input_state,
             input_method_state,
             ime_popups: Vec::new(),
+            ime_popup_visuals: HashMap::new(),
+            ime_parent_vid: std::cell::Cell::new(None),
             foreign_toplevels: HashMap::new(),
             subsurface_visuals: HashMap::new(),
             subsurface_parents: HashMap::new(),
@@ -866,6 +874,111 @@ impl LookingGlass {
     /// converted to the visual's center convention. Synchronized
     /// (sync) subsurfaces apply with the parent commit per protocol —
     /// smithay's state machine handles the double-buffered merge.
+    /// #6: IME popup commit — the candidate window renders as a visual
+    /// PARENTED to the focused text field's visual (cached during IME
+    /// activation via parent_geometry). Position comes from smithay's
+    /// tracked PopupSurface::location (parent-relative, derived from
+    /// the text-input cursor rectangle).
+    fn handle_ime_popup_commit(&mut self, surface: &WlSurface) {
+        let Some(popup) = self
+            .ime_popups
+            .iter()
+            .find(|p| p.wl_surface() == surface)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(parent_vid) = self.ime_parent_vid.get() else {
+            return;
+        };
+
+        let (wl_buffer, _damage): (
+            Option<_>,
+            Vec<smithay::utils::Rectangle<i32, smithay::utils::Buffer>>,
+        ) = with_states(surface, |states| {
+            let mut cached = states.cached_state.get::<SurfaceAttributes>();
+            let attrs = cached.current();
+            let buf = match &attrs.buffer {
+                Some(BufferAssignment::NewBuffer(b)) => Some(b.clone()),
+                _ => None,
+            };
+            (buf, Vec::new())
+        });
+        let Some(wl_buffer) = wl_buffer else { return };
+
+        let Some(backend) = self.backend.as_mut() else {
+            return;
+        };
+        let renderer = backend.renderer();
+        let import = with_states(surface, |states| {
+            renderer.import_buffer(&wl_buffer, Some(states), &[])
+        });
+        if let Some(Ok(texture)) = import {
+            use smithay::backend::renderer::Texture;
+            let tex_size = texture.size();
+            let logical_size = smithay::utils::Size::new(tex_size.w, tex_size.h);
+            let location = popup.location();
+
+            let existing_vid = self.ime_popup_visuals.get(surface).copied();
+            if let Some(vid) = existing_vid {
+                if let Some(visual) = self.scene.get_mut(vid) {
+                    if let Some(dst) = visual.texture_mut() {
+                        *dst = texture;
+                    }
+                    visual.geometry = smithay::utils::Rectangle::new(
+                        smithay::utils::Point::new(0, 0),
+                        logical_size,
+                    );
+                    visual.transform.position = cgmath::Vector3::new(
+                        location.x as f32 + logical_size.w as f32 * 0.5,
+                        -(location.y as f32 + logical_size.h as f32 * 0.5),
+                        15.0,
+                    );
+                }
+            } else {
+                let mut visual = Visual::new(
+                    VisualContent::WaylandSurface(texture),
+                    smithay::utils::Rectangle::new(smithay::utils::Point::new(0, 0), logical_size),
+                );
+                visual.parent = Some(parent_vid);
+                visual.transform.position = cgmath::Vector3::new(
+                    location.x as f32 + logical_size.w as f32 * 0.5,
+                    -(location.y as f32 + logical_size.h as f32 * 0.5),
+                    15.0,
+                );
+                let vid = visual.id;
+                info!(
+                    ?vid,
+                    ?parent_vid,
+                    ?location,
+                    w = logical_size.w,
+                    h = logical_size.h,
+                    "ime popup mapped"
+                );
+                self.ime_popup_visuals.insert(surface.clone(), vid);
+                self.wayland_surfaces.insert(vid, surface.clone());
+                self.scene.add(visual);
+                self.workspace_manager.active_mut().add(vid);
+            }
+            self.schedule_render();
+        }
+    }
+
+    /// #6: remove an IME popup visual (dismiss/destroy).
+    pub fn remove_ime_popup_visual(&mut self, surface: &WlSurface) {
+        if let Some(vid) = self.ime_popup_visuals.remove(surface) {
+            info!(?vid, "ime popup removed");
+            self.scene.remove(vid);
+            self.wayland_surfaces.remove(&vid);
+            for i in 0..self.workspace_manager.len() {
+                if let Some(ws) = self.workspace_manager.get_mut(i) {
+                    ws.remove(vid);
+                }
+            }
+            self.schedule_render();
+        }
+    }
+
     fn handle_subsurface_commit(&mut self, surface: &WlSurface) {
         let parent_surface = smithay::wayland::compositor::get_parent(surface);
         let parent_vid = parent_surface
@@ -1008,6 +1121,15 @@ impl LookingGlass {
             == Some(smithay::wayland::compositor::SUBSURFACE_ROLE);
         if is_subsurface {
             self.handle_subsurface_commit(surface);
+            return;
+        }
+
+        // #6: IME candidate popups render as visuals anchored to the
+        // focused text field's visual.
+        if smithay::wayland::compositor::get_role(surface)
+            == Some(smithay::wayland::input_method::INPUT_POPUP_SURFACE_ROLE)
+        {
+            self.handle_ime_popup_commit(surface);
             return;
         }
 
@@ -5788,10 +5910,17 @@ delegate_input_method_manager!(LookingGlass);
 impl smithay::wayland::input_method::InputMethodHandler for LookingGlass {
     fn new_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
         info!("ime popup surface created");
+        let wl = surface.wl_surface().clone();
         self.ime_popups.push(surface);
+        // The IME may have committed its popup surface before this
+        // point (commit -> role detected -> no PopupSurface yet).
+        self.handle_ime_popup_commit(&wl);
     }
 
     fn dismiss_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
+        // smithay dismisses + re-adds the popup on parent changes; the
+        // old visual must go with the old surface instance.
+        self.remove_ime_popup_visual(surface.wl_surface());
         self.ime_popups
             .retain(|p| p.wl_surface() != surface.wl_surface());
     }
@@ -5803,6 +5932,11 @@ impl smithay::wayland::input_method::InputMethodHandler for LookingGlass {
         parent: &WlSurface,
     ) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
         // The IME popup anchors to the focused text field's window.
+        // Cache the anchor visual for the render path (interior
+        // mutability: this callback receives &self only).
+        if let Some(vid) = self.find_vid_for_surface(parent) {
+            self.ime_parent_vid.set(Some(vid));
+        }
         self.find_vid_for_surface(parent)
             .and_then(|vid| self.scene.get(vid))
             .map(|v| {

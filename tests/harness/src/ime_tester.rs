@@ -16,12 +16,17 @@
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
-use wayland_client::protocol::{wl_registry, wl_seat};
+use smithay_client_toolkit::delegate_shm;
+use smithay_client_toolkit::reexports::client::protocol::wl_shm::Format;
+use smithay_client_toolkit::shm::slot::SlotPool;
+use smithay_client_toolkit::shm::{Shm, ShmHandler};
+use wayland_client::protocol::{wl_compositor, wl_registry, wl_seat, wl_surface};
 use wayland_client::{
     globals::registry_queue_init, protocol::wl_keyboard, Connection, Dispatch, QueueHandle,
 };
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_keyboard_grab_v2, zwp_input_method_manager_v2, zwp_input_method_v2,
+    zwp_input_popup_surface_v2,
 };
 
 pub fn run_ime(duration_ms: u64) -> i32 {
@@ -52,11 +57,23 @@ pub fn run_ime(duration_ms: u64) -> i32 {
         Ok(s) => s,
         Err(_) => return 3,
     };
+    let shm: Shm = match Shm::bind(&globals, &qh) {
+        Ok(s) => s,
+        Err(_) => return 3,
+    };
+    let compositor: wl_compositor::WlCompositor = match globals.bind(&qh, 1..=5, ()) {
+        Ok(c) => c,
+        Err(_) => return 3,
+    };
     let mut state = ImeTester {
         running: true,
         method: None,
         grab: None,
         commit_serial: 0u32,
+        shm,
+        compositor,
+        popup_surface: None,
+        pool: None,
     };
     let method = manager.get_input_method(&seat, &qh, ());
     state.method = Some(method);
@@ -96,9 +113,49 @@ struct ImeTester {
     method: Option<zwp_input_method_v2::ZwpInputMethodV2>,
     grab: Option<zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2>,
     commit_serial: u32,
+    shm: Shm,
+    compositor: wl_compositor::WlCompositor,
+    popup_surface: Option<wl_surface::WlSurface>,
+    pool: Option<SlotPool>,
 }
 
 impl ImeTester {
+    /// #6: create + commit a candidate-window popup surface — the
+    /// compositor must map it as a visual anchored to the focused field.
+    fn create_candidate_popup(
+        &mut self,
+        method: &zwp_input_method_v2::ZwpInputMethodV2,
+        qh: &QueueHandle<Self>,
+    ) {
+        if self.popup_surface.is_some() {
+            return;
+        }
+        let surface = self.compositor.create_surface(qh, ());
+        method.get_input_popup_surface(&surface, qh, ());
+        // 220x80 candidate strip, distinct color.
+        let pool = self
+            .pool
+            .get_or_insert_with(|| SlotPool::new(220 * 80 * 4, &self.shm).expect("ime pool"));
+        let (buffer, canvas) = pool
+            .create_buffer(220, 80, 220 * 4, Format::Argb8888)
+            .expect("ime popup buffer");
+        for chunk in canvas.as_chunks_mut::<4>().0 {
+            chunk[0] = 0x10;
+            chunk[1] = 0x30;
+            chunk[2] = 0xE0;
+            chunk[3] = 0xFF;
+        }
+        buffer.attach_to(&surface).expect("ime popup attach");
+        surface.damage_buffer(0, 0, 220, 80);
+        surface.commit();
+        crate::log_kv(&[
+            ("ev", "ime_popup_created".into()),
+            ("w", 220.into()),
+            ("h", 80.into()),
+        ]);
+        self.popup_surface = Some(surface);
+    }
+
     fn commit_text(&mut self, qh: &QueueHandle<Self>, text: &str) {
         let Some(method) = &self.method else { return };
         method.commit_string(text.to_string());
@@ -137,6 +194,50 @@ impl Dispatch<wl_seat::WlSeat, ()> for ImeTester {
     }
 }
 
+delegate_shm!(ImeTester);
+
+impl ShmHandler for ImeTester {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
+    }
+}
+
+impl Dispatch<wl_compositor::WlCompositor, ()> for ImeTester {
+    fn event(
+        _: &mut Self,
+        _: &wl_compositor::WlCompositor,
+        _: wl_compositor::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_surface::WlSurface, ()> for ImeTester {
+    fn event(
+        _: &mut Self,
+        _: &wl_surface::WlSurface,
+        _: wl_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2, ()> for ImeTester {
+    fn event(
+        _: &mut Self,
+        _: &zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2,
+        _: zwp_input_popup_surface_v2::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
 impl Dispatch<zwp_input_method_manager_v2::ZwpInputMethodManagerV2, ()> for ImeTester {
     fn event(
         _: &mut Self,
@@ -168,6 +269,7 @@ impl Dispatch<zwp_input_method_v2::ZwpInputMethodV2, ()> for ImeTester {
                 let grab = method.grab_keyboard(qh, ());
                 crate::log_kv(&[("ev", "ime_grabbed".into())]);
                 state.grab = Some(grab);
+                state.create_candidate_popup(method, qh);
             }
             zwp_input_method_v2::Event::Deactivate => {
                 crate::log_kv(&[("ev", "ime_deactivate".into())]);

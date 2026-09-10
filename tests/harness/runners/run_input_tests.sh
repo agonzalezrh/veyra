@@ -1317,6 +1317,13 @@ assert_json "$TMP_DIR/t25.json" \
 assert_json "$TMP_DIR/t25.json" \
     "any(e['ev']=='ti_commit' and e['text']=='漢' for e in events)" \
     "t25: focused field received committed 漢"
+# Candidate popup rendering: the IME creates a popup surface after the
+# grab; veyra must map it as a visual anchored to the focused field.
+assert_json "$TMP_DIR/t25ime.json" \
+    "any(e['ev']=='ime_popup_created' for e in events)" \
+    "t25: IME created a candidate popup surface"
+assert_log "$TMP_DIR/veyra.log" "ime popup mapped" \
+    "t25: veyra mapped the candidate popup as an anchored visual"
 
 # ── t26: popup grab serial validation (#12) ───────────────────────────
 # xdg_popup.grab must carry the serial of the input event that

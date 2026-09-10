@@ -730,6 +730,17 @@ Priority order from audit:
 
 **Status: ✅ G-E3 Complete (483 unit tests; protocol 111/0/0; input 108/0/0)**
 
+### G-E4 — IME Candidate Popup Rendering
+- G-E4: input_popup_surface_v2 commits map as visuals PARENTED to the
+  focused text field's visual (anchor cached from parent_geometry
+  during IME activation; position from smithay's tracked
+  PopupSurface.location, derived from the text-input cursor rectangle).
+  Dismissal (parent change) removes the old visual. t25 extended:
+  ime_tester creates a 220x80 candidate popup after the grab; veyra
+  logs "ime popup mapped".
+
+**Status: ✅ G-E4 Complete (483 unit tests; protocol 111/0/0; input 110/0/0)**
+
 ---
 
 # 25. Commit discipline
