@@ -101,10 +101,18 @@ unsafe fn draw_text(
 
     for (i, ch) in text.chars().enumerate() {
         let code = ch as u32;
-        if !(32..=128).contains(&code) {
+        // Atlas holds 96 ASCII glyphs (32..=127) plus the custom
+        // maximize-box sentinel at PUA U+E000. U+0080 and every other
+        // non-ASCII codepoint is skipped — the old 32..=128 range
+        // rendered client text containing U+0080 as the maximize box.
+        if !((32..=127).contains(&code) || code == MAXIMIZE_GLYPH_CODE) {
             continue;
         }
-        let idx = code - 32;
+        let idx = if code == MAXIMIZE_GLYPH_CODE {
+            font_glyph_count() as u32 - 1
+        } else {
+            code - 32
+        };
         let col = idx % cols;
         let row = idx / cols;
         let u = (col * gw) as f32 / atlas_w;
@@ -242,10 +250,16 @@ unsafe fn draw_text_in_window(
     // are resolved with a depth-only polygon offset below.
     for (i, ch) in text.chars().enumerate() {
         let code = ch as u32;
-        if !(32..=128).contains(&code) {
+        // Same atlas discipline as the overlay draw above: 96 ASCII
+        // glyphs + the PUA maximize-box sentinel only.
+        if !((32..=127).contains(&code) || code == MAXIMIZE_GLYPH_CODE) {
             continue;
         }
-        let idx = code - 32;
+        let idx = if code == MAXIMIZE_GLYPH_CODE {
+            font_glyph_count() as u32 - 1
+        } else {
+            code - 32
+        };
         let col = idx % cols;
         let row = idx / cols;
         let u = (col * gw_atlas) as f32 / atlas_w;
@@ -427,10 +441,15 @@ pub const FONT: &[u8] = &[
     0x00, 0x00, 0x40, 0xa8, 0x10, 0x00, 0x00,
     // 127 DEL (placeholder keeps ASCII codes aligned with indices)
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 128 (custom) hollow box — title-bar maximize button (J3).
-    // Not ASCII; referenced via char::from_u32(128).
+    // Custom hollow box — title-bar maximize button (J3). Lives at the
+    // PUA sentinel MAXIMIZE_GLYPH_CODE (U+E000) so client text can never
+    // collide with it; referenced via char::from_u32(MAXIMIZE_GLYPH_CODE).
     0xf8, 0x88, 0x88, 0x88, 0x88, 0x88, 0xf8,
 ];
+
+/// Custom glyph sentinel: atlas index 96 (after the 96 ASCII glyphs
+/// 32..=127). Private Use Area — real text never contains it.
+pub const MAXIMIZE_GLYPH_CODE: u32 = 0xE000;
 
 pub const fn font_glyph_count() -> usize {
     FONT.len() / 7
@@ -446,7 +465,7 @@ unsafe fn new_font_atlas(gl: &ffi::Gles2) -> FontAtlas {
     const COLS: u32 = 16;
     const ATLAS_W: u32 = COLS * GW;
     // Rows derive from the glyph count so appended custom glyphs
-    // (code 128 = maximize box) extend the atlas automatically.
+    // (MAXIMIZE_GLYPH_CODE = maximize box) extend the atlas automatically.
     const ROWS: u32 = atlas_rows(COLS);
     const ATLAS_H: u32 = ROWS * GH;
 
@@ -633,6 +652,12 @@ struct DrawGl {
     solid_a_uv: u32,
     solid_u_mvp: i32,
     solid_u_color: i32,
+    round_prog: u32,
+    round_u_mvp: i32,
+    round_u_color: i32,
+    round_u_color2: i32,
+    round_u_size: i32,
+    round_u_radius: i32,
     vbo: u32,
     /// Simple text shader: samples alpha from a texture, applies a solid color.
     text_prog: u32,
@@ -671,6 +696,30 @@ precision mediump float;
 uniform vec4 u_color;
 void main() {
     gl_FragColor = u_color;
+}
+";
+
+/// Rounded-rect fragment shader (SDF, px-space). The quad is the rect's
+/// bounding box; `u_size` is the rect size in px, `u_radius` the corner
+/// radius. Vertical gradient mixes u_color (top) into u_color2 (bottom).
+/// 1px analytic AA without OES_standard_derivatives: the SDF distance is
+/// already in px, so `0.5 - dist` is a one-pixel smooth edge.
+const ROUND_FS: &str = "\
+precision mediump float;
+varying vec2 v_uv;
+uniform vec4 u_color;
+uniform vec4 u_color2;
+uniform vec2 u_size;
+uniform float u_radius;
+void main() {
+    vec2 p = v_uv * u_size;
+    vec2 half_size = u_size * 0.5;
+    vec2 corner = half_size - vec2(u_radius);
+    vec2 d = abs(p - half_size) - corner;
+    float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - u_radius;
+    float alpha = clamp(0.5 - dist, 0.0, 1.0);
+    vec3 col = mix(u_color.rgb, u_color2.rgb, v_uv.y);
+    gl_FragColor = vec4(col, u_color.a * alpha);
 }
 ";
 
@@ -759,6 +808,23 @@ impl DrawGl {
         let solid_u_mvp = unsafe { gl.GetUniformLocation(solid_prog, c"u_mvp".as_ptr()) };
         let solid_u_color = unsafe { gl.GetUniformLocation(solid_prog, c"u_color".as_ptr()) };
 
+        // Rounded-rect overlay shader (taskbar buttons, pills).
+        let rvs = Self::compile(gl, ffi::VERTEX_SHADER, QUAD_VS);
+        let rfs = Self::compile(gl, ffi::FRAGMENT_SHADER, ROUND_FS);
+        let round_prog = unsafe { gl.CreateProgram() };
+        unsafe {
+            gl.AttachShader(round_prog, rvs);
+            gl.AttachShader(round_prog, rfs);
+            gl.LinkProgram(round_prog);
+            gl.DeleteShader(rvs);
+            gl.DeleteShader(rfs);
+        }
+        let round_u_mvp = unsafe { gl.GetUniformLocation(round_prog, c"u_mvp".as_ptr()) };
+        let round_u_color = unsafe { gl.GetUniformLocation(round_prog, c"u_color".as_ptr()) };
+        let round_u_color2 = unsafe { gl.GetUniformLocation(round_prog, c"u_color2".as_ptr()) };
+        let round_u_size = unsafe { gl.GetUniformLocation(round_prog, c"u_size".as_ptr()) };
+        let round_u_radius = unsafe { gl.GetUniformLocation(round_prog, c"u_radius".as_ptr()) };
+
         DrawGl {
             program,
             a_pos,
@@ -777,6 +843,12 @@ impl DrawGl {
             solid_a_uv,
             solid_u_mvp,
             solid_u_color,
+            round_prog,
+            round_u_mvp,
+            round_u_color,
+            round_u_color2,
+            round_u_size,
+            round_u_radius,
             vbo,
             text_prog,
             text_a_pos,
@@ -1117,42 +1189,80 @@ pub fn render_scene(
                 bar_y,
                 "taskbar draw"
             );
-            // Bar background + top hairline.
-            solid_rect(0.0, bar_y, w, tb.bar_h, 0.10, 0.11, 0.12, 0.97);
-            solid_rect(0.0, bar_y, w, 1.0, 0.28, 0.30, 0.32, 0.9);
+            // Rounded-rect overlay with a vertical gradient + 1px SDF AA.
+            let round_rect =
+                |px: f32, py: f32, pw: f32, ph: f32, radius: f32,
+                 top: (f32, f32, f32, f32), bottom: (f32, f32, f32, f32)| {
+                    let cx = ((px + pw / 2.0) / w) * 2.0 - 1.0;
+                    let cy = -(((py + ph / 2.0) / h) * 2.0 - 1.0);
+                    let mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(cx, cy, 0.0))
+                        * cgmath::Matrix4::from_nonuniform_scale(pw / w * 2.0, ph / h * 2.0, 1.0);
+                    let radius = radius.min(pw * 0.5).min(ph * 0.5);
+                    gl.UseProgram(draw.round_prog);
+                    gl.UniformMatrix4fv(draw.round_u_mvp, 1, 0, mvp.as_ptr());
+                    gl.Uniform4f(
+                        draw.round_u_color,
+                        top.0,
+                        top.1,
+                        top.2,
+                        top.3,
+                    );
+                    gl.Uniform4f(
+                        draw.round_u_color2,
+                        bottom.0,
+                        bottom.1,
+                        bottom.2,
+                        bottom.3,
+                    );
+                    gl.Uniform2f(draw.round_u_size, pw, ph);
+                    gl.Uniform1f(draw.round_u_radius, radius);
+                    gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
+                    gl.EnableVertexAttribArray(draw.solid_a_pos);
+                    gl.VertexAttribPointer(
+                        draw.solid_a_pos,
+                        2,
+                        ffi::FLOAT,
+                        0,
+                        stride,
+                        std::ptr::null(),
+                    );
+                    gl.EnableVertexAttribArray(draw.solid_a_uv);
+                    gl.VertexAttribPointer(
+                        draw.solid_a_uv,
+                        2,
+                        ffi::FLOAT,
+                        0,
+                        stride,
+                        (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void,
+                    );
+                    gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+                    gl.DisableVertexAttribArray(draw.solid_a_pos);
+                    gl.DisableVertexAttribArray(draw.solid_a_uv);
+                };
 
-            for it in &tb.items {
-                // Button background: active = desaturated green,
-                // inactive = quiet neutral, dim = darker still.
-                let (r, g, b) = if it.active {
-                    (0.20, 0.34, 0.20)
-                } else if it.dim {
-                    (0.14, 0.15, 0.16)
-                } else {
-                    (0.19, 0.20, 0.22)
-                };
-                let iy = bar_y + 3.0;
-                let ih = tb.bar_h - 6.0;
-                solid_rect(it.x, iy, it.w, ih, r, g, b, 0.97);
-                // Label, vertically centered, clipped by the button's
-                // own width via the pre-fitted label string.
-                let text_color = if it.active {
-                    (0.85, 0.92, 0.85)
-                } else {
-                    (0.72, 0.74, 0.76)
-                };
-                // Glyph scale derives from the bar height (DPI-aware,
-                // same family as MenuMetrics) — a fixed 2.0 renders
-                // 7-logical-px text on scaled displays.
-                let scale = (((tb.bar_h - 6.0) * 0.58) / 7.0).round().clamp(2.0, 6.0);
-                let ch = (7.0f32 * scale / h) * 2.0;
-                let cw = (5.0f32 * scale / w) * 2.0;
-                let text_x = ((it.x + 6.0) / w) * 2.0 - 1.0;
-                // First glyph center: convert the row center from PIXELS
-                // to NDC, then subtract half a glyph (draw_text centers
-                // glyphs at y + char_h/2). The old expression added
-                // pixels to NDC (-701!) — labels rendered far below the
-                // viewport.
+            // ── Bar background: subtle top→bottom darkening gradient ──
+            round_rect(
+                0.0,
+                bar_y,
+                w,
+                tb.bar_h,
+                0.0,
+                (0.135, 0.145, 0.165, 0.98),
+                (0.075, 0.082, 0.095, 0.98),
+            );
+            // Top hairline: bright edge for separation from the scene.
+            solid_rect(0.0, bar_y, w, 1.0, 0.42, 0.45, 0.50, 0.22);
+
+            // DPI-scaled glyph metrics (same family as before).
+            let scale = (((tb.bar_h - 6.0) * 0.58) / 7.0).round().clamp(2.0, 6.0);
+            let ch = (7.0f32 * scale / h) * 2.0;
+            let cw = (5.0f32 * scale / w) * 2.0;
+
+            let draw_label = |it: &crate::shell::TaskbarItem,
+                              iy: f32,
+                              ih: f32,
+                              color: (f32, f32, f32)| {
+                let text_x = ((it.x + 8.0) / w) * 2.0 - 1.0;
                 let center_ndc = -(((iy + ih / 2.0) / h) * 2.0 - 1.0);
                 let text_y = center_ndc - ch / 2.0;
                 draw_text(
@@ -1164,10 +1274,58 @@ pub fn render_scene(
                     text_y,
                     cw,
                     ch,
-                    text_color.0,
-                    text_color.1,
-                    text_color.2,
+                    color.0,
+                    color.1,
+                    color.2,
                 );
+            };
+
+            for it in &tb.items {
+                let iy = bar_y + 4.0;
+                let ih = tb.bar_h - 8.0;
+                // Button fill: accent for active, lift for hover, quiet
+                // neutral otherwise, darker for minimized.
+                let (top, bottom) = if it.active {
+                    ((0.165, 0.28, 0.175, 0.97), (0.11, 0.20, 0.125, 0.97))
+                } else if it.hover {
+                    ((0.26, 0.28, 0.32, 0.95), (0.19, 0.205, 0.235, 0.95))
+                } else if it.dim {
+                    ((0.13, 0.14, 0.155, 0.8), (0.10, 0.105, 0.12, 0.8))
+                } else {
+                    ((0.205, 0.22, 0.25, 0.9), (0.15, 0.16, 0.185, 0.9))
+                };
+                round_rect(it.x, iy, it.w, ih, 5.0, top, bottom);
+
+                // Active accent underline (focused window / active ws).
+                if it.active {
+                    round_rect(
+                        it.x + 7.0,
+                        iy + ih - 3.5,
+                        (it.w - 14.0).max(8.0),
+                        2.0,
+                        1.0,
+                        (0.36, 0.78, 0.44, 0.95),
+                        (0.30, 0.66, 0.38, 0.95),
+                    );
+                }
+
+                let text_color = if it.active {
+                    (0.93, 0.97, 0.93)
+                } else if it.dim {
+                    (0.50, 0.52, 0.56)
+                } else if it.hover {
+                    (0.92, 0.93, 0.96)
+                } else {
+                    (0.76, 0.78, 0.82)
+                };
+                draw_label(it, iy, ih, text_color);
+            }
+
+            // Section separators: quiet vertical hairlines.
+            let sep_h = tb.bar_h * 0.55;
+            let sep_y = bar_y + (tb.bar_h - sep_h) * 0.5;
+            for sep_x in [tb.sep_ws, tb.sep_launch].into_iter().flatten() {
+                solid_rect(sep_x, sep_y, 1.0, sep_h, 1.0, 1.0, 1.0, 0.07);
             }
 
             let gl_err = gl.GetError();

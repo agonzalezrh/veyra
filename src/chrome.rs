@@ -24,7 +24,9 @@ impl TitleButton {
     pub fn glyph_code(self) -> u32 {
         match self {
             TitleButton::Minimize => 45,
-            TitleButton::Maximize => 128,
+            // PUA sentinel glyph in the font atlas (U+0080 would collide
+            // with client text — the box is custom, not ASCII).
+            TitleButton::Maximize => crate::renderer::MAXIMIZE_GLYPH_CODE,
             TitleButton::Close => 120,
         }
     }
@@ -235,7 +237,11 @@ mod tests {
     #[test]
     fn glyph_codes_match_atlas() {
         assert_eq!(TitleButton::Minimize.glyph_code(), 45); // '-'
-        assert_eq!(TitleButton::Maximize.glyph_code(), 128); // custom box
+        // Custom PUA sentinel box — never collides with client text.
+        assert_eq!(
+            TitleButton::Maximize.glyph_code(),
+            crate::renderer::MAXIMIZE_GLYPH_CODE
+        );
         assert_eq!(TitleButton::Close.glyph_code(), 120); // 'x'
     }
 }

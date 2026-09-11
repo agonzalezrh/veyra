@@ -2721,6 +2721,14 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
             .enumerate()
             .map(|(i, e)| (i, e.name.clone()))
             .collect();
+        // Hover state for the renderer: only when the pointer is inside
+        // the bar strip (the layout's hover test is bar-scoped).
+        let (mx, my) = self.last_mouse;
+        let hover = if my >= (h - crate::shell::TaskbarLayout::bar_height(h)) as f64 {
+            Some((mx, my))
+        } else {
+            None
+        };
         crate::shell::TaskbarLayout::build(
             w,
             h,
@@ -2728,6 +2736,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
             self.workspace_manager.len(),
             self.workspace_manager.active_id(),
             &launches,
+            hover,
         )
     }
 

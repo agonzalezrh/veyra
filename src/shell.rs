@@ -34,6 +34,8 @@ pub struct TaskbarItem {
     pub active: bool,
     /// Dimmed (minimized window).
     pub dim: bool,
+    /// Pointer is over this button right now (draw state only).
+    pub hover: bool,
 }
 
 /// The full taskbar layout for one frame: bar geometry + items.
@@ -41,17 +43,23 @@ pub struct TaskbarItem {
 pub struct TaskbarLayout {
     pub bar_h: f32,
     pub items: Vec<TaskbarItem>,
+    /// X of the hairline separator between the workspace zone and the
+    /// window zone (None when the two zones touch).
+    pub sep_ws: Option<f32>,
+    /// X of the hairline separator between the window zone and the
+    /// launcher zone.
+    pub sep_launch: Option<f32>,
 }
 
-const WS_BTN_W: f32 = 30.0;
-const WS_BTN_GAP: f32 = 2.0;
-const WS_ZONE_LEFT: f32 = 6.0;
+const WS_BTN_W: f32 = 34.0;
+const WS_BTN_GAP: f32 = 4.0;
+const WS_ZONE_LEFT: f32 = 8.0;
 const LAUNCH_BTN_W: f32 = 104.0;
 const LAUNCH_GAP: f32 = 4.0;
 const WIN_BTN_MAX_W: f32 = 170.0;
 const WIN_BTN_MIN_W: f32 = 84.0;
-const WIN_BTN_GAP: f32 = 4.0;
-const SECTION_PAD: f32 = 8.0;
+const WIN_BTN_GAP: f32 = 5.0;
+const SECTION_PAD: f32 = 10.0;
 
 impl TaskbarLayout {
     /// Bar height for a framebuffer height (DPI-proportional, same
@@ -66,6 +74,7 @@ impl TaskbarLayout {
     /// `windows`: (vid, label, focused, minimized) in DISPLAY order —
     /// most recently focused first (the compositor passes MRU order).
     /// `launches`: (launcher_index, label) to pin on the right.
+    /// `hover`: current pointer position in screen px (draw state).
     pub fn build(
         fb_w: f32,
         fb_h: f32,
@@ -73,6 +82,7 @@ impl TaskbarLayout {
         ws_count: usize,
         ws_active: usize,
         launches: &[(usize, String)],
+        hover: Option<(f64, f64)>,
     ) -> Self {
         let bar_h = Self::bar_height(fb_h);
         let mut items = Vec::new();
@@ -87,9 +97,11 @@ impl TaskbarLayout {
                 label: (i + 1).to_string(),
                 active: i == ws_active,
                 dim: false,
+                hover: Self::hovered(hover, cursor, bar_h, WS_BTN_W - WS_BTN_GAP),
             });
             cursor += WS_BTN_W;
         }
+        let ws_zone_end = cursor;
 
         // ── Right section: pinned launcher entries ──
         let mut r_cursor = fb_w - SECTION_PAD;
@@ -106,9 +118,14 @@ impl TaskbarLayout {
                 label: crate::chrome::fit_title(label, LAUNCH_BTN_W - LAUNCH_GAP - 10.0, 13.0),
                 active: false,
                 dim: false,
+                hover: Self::hovered(hover, x, bar_h, LAUNCH_BTN_W - LAUNCH_GAP),
             });
             r_cursor = x - LAUNCH_GAP;
         }
+        let launch_zone_start = launch_items
+            .last()
+            .map(|it| it.x - LAUNCH_GAP)
+            .unwrap_or(fb_w - SECTION_PAD);
         items.extend(launch_items);
 
         // ── Middle section: window buttons, MRU order, left to right ──
@@ -117,7 +134,7 @@ impl TaskbarLayout {
         let zone_w = (win_zone_r - win_zone_l).max(0.0);
         let n = windows.len() as f32;
         let mut w_cursor = win_zone_l;
-        for (i, (vid, label, focused, minimized)) in windows.iter().enumerate() {
+        for (vid, label, focused, minimized) in windows.iter() {
             // Fair share of the zone, clamped to [min, max].
             let share = ((zone_w - WIN_BTN_GAP * (n - 1.0).max(0.0)) / n)
                 .clamp(WIN_BTN_MIN_W, WIN_BTN_MAX_W);
@@ -131,12 +148,42 @@ impl TaskbarLayout {
                 label: crate::chrome::fit_title(label, share - 12.0, 13.0),
                 active: *focused,
                 dim: *minimized,
+                hover: Self::hovered(hover, w_cursor, bar_h, share),
             });
             w_cursor += share + WIN_BTN_GAP;
-            let _ = i;
         }
 
-        TaskbarLayout { bar_h, items }
+        // Separators only where the zones actually have neighbors.
+        let sep_ws = if ws_count > 0 && (!windows.is_empty() || !launches.is_empty()) {
+            Some(ws_zone_end + (SECTION_PAD - WS_BTN_GAP) * 0.5)
+        } else {
+            None
+        };
+        let sep_launch = if !launches.is_empty() {
+            Some(launch_zone_start - SECTION_PAD * 0.5)
+        } else {
+            None
+        };
+
+        TaskbarLayout {
+            bar_h,
+            items,
+            sep_ws,
+            sep_launch,
+        }
+    }
+
+    /// Pointer-over test for one button. `hover` is bar-scoped: the
+    /// caller only passes a position when the pointer is inside the bar
+    /// strip, so this is an X-range check.
+    fn hovered(hover: Option<(f64, f64)>, x: f32, _bar_h: f32, w: f32) -> bool {
+        match hover {
+            Some((hx, _)) => {
+                let hx = hx as f32;
+                hx >= x && hx <= x + w
+            }
+            None => false,
+        }
     }
 
     pub fn bar_top(&self, fb_h: f32) -> f32 {
@@ -165,14 +212,14 @@ mod tests {
 
     #[test]
     fn bar_geometry_is_bottom_strip() {
-        let l = TaskbarLayout::build(1280.0, 720.0, &[], 3, 0, &[]);
+        let l = TaskbarLayout::build(1280.0, 720.0, &[], 3, 0, &[], None);
         assert_eq!(l.bar_h, 36.0);
         assert_eq!(l.bar_top(720.0), 684.0);
     }
 
     #[test]
     fn workspace_buttons_left_aligned() {
-        let l = TaskbarLayout::build(1280.0, 720.0, &[], 3, 1, &[]);
+        let l = TaskbarLayout::build(1280.0, 720.0, &[], 3, 1, &[], None);
         let ws: Vec<_> = l
             .items
             .iter()
@@ -191,7 +238,7 @@ mod tests {
             (vid(2), "B".to_string(), true, false),
             (vid(1), "A".to_string(), false, false),
         ];
-        let l = TaskbarLayout::build(1280.0, 720.0, &wins, 2, 0, &[]);
+        let l = TaskbarLayout::build(1280.0, 720.0, &wins, 2, 0, &[], None);
         let wins_items: Vec<_> = l
             .items
             .iter()
@@ -207,7 +254,7 @@ mod tests {
     #[test]
     fn launcher_pins_right_aligned() {
         let launches = [(0, "Foot".to_string()), (1, "Weston Terminal".to_string())];
-        let l = TaskbarLayout::build(1280.0, 720.0, &[], 2, 0, &launches);
+        let l = TaskbarLayout::build(1280.0, 720.0, &[], 2, 0, &launches, None);
         let mut ls: Vec<_> = l
             .items
             .iter()
@@ -226,7 +273,7 @@ mod tests {
     fn hit_resolves_regions() {
         let wins = [(vid(1), "A".to_string(), false, false)];
         let launches = [(3, "Foot".to_string())];
-        let l = TaskbarLayout::build(1280.0, 720.0, &wins, 2, 0, &launches);
+        let l = TaskbarLayout::build(1280.0, 720.0, &wins, 2, 0, &launches, None);
         let top = l.bar_top(720.0);
         // Above the bar: no hit.
         assert!(l.hit(720.0, 640.0, (top - 5.0) as f64).is_none());
@@ -265,7 +312,7 @@ mod tests {
     #[test]
     fn minimized_window_is_dimmed() {
         let wins = [(vid(1), "A".to_string(), false, true)];
-        let l = TaskbarLayout::build(1280.0, 720.0, &wins, 1, 0, &[]);
+        let l = TaskbarLayout::build(1280.0, 720.0, &wins, 1, 0, &[], None);
         let win = l
             .items
             .iter()
@@ -276,12 +323,76 @@ mod tests {
     }
 
     #[test]
+    fn hover_marks_only_the_button_under_the_pointer() {
+        let wins = [(vid(1), "A".to_string(), false, false)];
+        let launches = [(0, "Foot".to_string())];
+        let probe = TaskbarLayout::build(1280.0, 720.0, &wins, 1, 0, &launches, None);
+        let win = probe
+            .items
+            .iter()
+            .find(|it| matches!(it.hit, TaskbarHit::Window(_)))
+            .unwrap()
+            .clone();
+        // Pointer at the window button's center.
+        let l = TaskbarLayout::build(
+            1280.0,
+            720.0,
+            &wins,
+            1,
+            0,
+            &launches,
+            Some(((win.x + win.w / 2.0) as f64, 700.0)),
+        );
+        let hovered: Vec<bool> = l.items.iter().map(|it| it.hover).collect();
+        assert_eq!(hovered.iter().filter(|h| **h).count(), 1);
+        assert!(
+            l.items
+                .iter()
+                .find(|it| matches!(it.hit, TaskbarHit::Window(_)))
+                .unwrap()
+                .hover
+        );
+        // Pointer elsewhere: nothing hovered.
+        let l = TaskbarLayout::build(1280.0, 720.0, &wins, 1, 0, &launches, Some((640.0, 700.0)));
+        assert!(l.items.iter().all(|it| !it.hover));
+    }
+
+    #[test]
+    fn separators_sit_between_zones() {
+        let wins = [(vid(1), "A".to_string(), false, false)];
+        let launches = [(0, "Foot".to_string())];
+        let l = TaskbarLayout::build(1280.0, 720.0, &wins, 1, 0, &launches, None);
+        let ws_right = l
+            .items
+            .iter()
+            .filter(|it| matches!(it.hit, TaskbarHit::Workspace(_)))
+            .map(|it| it.x + it.w)
+            .fold(0.0f32, f32::max);
+        let win_left = l
+            .items
+            .iter()
+            .filter(|it| matches!(it.hit, TaskbarHit::Window(_)))
+            .map(|it| it.x)
+            .fold(f32::MAX, f32::min);
+        let launch_left = l
+            .items
+            .iter()
+            .filter(|it| matches!(it.hit, TaskbarHit::Launch(_)))
+            .map(|it| it.x)
+            .fold(f32::MAX, f32::min);
+        let sep_ws = l.sep_ws.expect("ws separator present");
+        let sep_launch = l.sep_launch.expect("launcher separator present");
+        assert!(sep_ws > ws_right && sep_ws < win_left);
+        assert!(sep_launch > ws_right && sep_launch < launch_left);
+    }
+
+    #[test]
     fn many_windows_shrink_but_never_overlap_launcher() {
         let wins: Vec<(VisualId, String, bool, bool)> = (0..12u64)
             .map(|i| (vid(i + 1), format!("Window {}", i), i == 0, false))
             .collect();
         let launches = [(0, "App".to_string())];
-        let l = TaskbarLayout::build(1280.0, 720.0, &wins, 2, 0, &launches);
+        let l = TaskbarLayout::build(1280.0, 720.0, &wins, 2, 0, &launches, None);
         let wins_items: Vec<_> = l
             .items
             .iter()
