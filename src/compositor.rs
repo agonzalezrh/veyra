@@ -20,7 +20,10 @@ use smithay::delegate_shm;
 use smithay::delegate_text_input_manager;
 use smithay::delegate_viewporter;
 use smithay::delegate_xdg_shell;
-use smithay::input::keyboard::{FilterResult, KeyboardHandle, LedState};
+use smithay::input::keyboard::{
+    FilterResult, KeyboardHandle, KeyboardTarget, KeysymHandle, LedState, ModifiersState,
+};
+use smithay::utils::IsAlive;
 use smithay::input::pointer::{ButtonEvent, CursorImageStatus, MotionEvent, PointerHandle};
 use smithay::input::Seat;
 use smithay::input::SeatHandler;
@@ -1318,7 +1321,30 @@ impl LookingGlass {
                             self.scene.add(visual);
                             self.workspace_manager.active_mut().add(visual_id);
                             // focus-on-map policy (same as native toplevels)
-                            self.set_keyboard_focus(Some(visual_id));
+                            // — EXCEPT X11 surfaces that per EWMH never take
+                            // input focus: override-redirect windows
+                            // (dropdowns, menus, tooltips, helper windows)
+                            // and the corresponding _NET_WM_WINDOW_TYPEs.
+                            // Granting them focus steals the keyboard from
+                            // the parent app mid-typing (BUG_LIST #19).
+                            use smithay::xwayland::xwm::WmWindowType;
+                            let x11_focusable = !x11.is_override_redirect()
+                                && !matches!(
+                                    x11.window_type(),
+                                    Some(
+                                        WmWindowType::DropdownMenu
+                                            | WmWindowType::Menu
+                                            | WmWindowType::PopupMenu
+                                            | WmWindowType::Tooltip
+                                            | WmWindowType::Notification
+                                            | WmWindowType::Utility
+                                            | WmWindowType::Toolbar
+                                            | WmWindowType::Splash
+                                    )
+                                );
+                            if x11_focusable {
+                                self.set_keyboard_focus(Some(visual_id));
+                            }
                             if !self.spatial_mode {
                                 self.auto_fit_camera();
                             }
@@ -2423,7 +2449,13 @@ impl LookingGlass {
         if let (Some(vid), Some(kh)) = (vid, self.keyboard_handle.clone()) {
             if let Some(wl_surface) = self.wayland_surfaces.get(&vid).cloned() {
                 let serial = self.next_serial();
-                kh.set_focus(self, Some(wl_surface), serial);
+                // X11 windows must be focused as X11Surface targets so
+                // smithay moves the X-side input focus (BUG_LIST #19).
+                let target = match self.x11_windows.get(&wl_surface) {
+                    Some(x11) => KeyboardFocusTarget::X11(x11.clone()),
+                    None => KeyboardFocusTarget::Wl(wl_surface),
+                };
+                kh.set_focus(self, Some(target), serial);
             }
         } else if let Some(kh) = self.keyboard_handle.clone() {
             let serial = self.next_serial();
@@ -2847,23 +2879,34 @@ impl LookingGlass {
                             _ => smithay::backend::input::ButtonState::Pressed,
                         },
                     };
-                    let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> =
-                        (x, y).into();
+                    // BUG_LIST #18: Smithay derives surface-local coords as
+                    // `MotionEvent.location - focus origin`. In spatial mode
+                    // the window is perspective-transformed on screen, so a
+                    // raw screen position minus the orthographic origin is
+                    // NOT the surface coordinate the user is pointing at.
+                    // The unprojected `pos` IS that coordinate — deliver it
+                    // as `location = origin + pos` so the subtraction yields
+                    // exactly `pos` while `location` keeps global semantics
+                    // (grabs, constraints, relative motion).
+                    let origin = self.surface_global_origin(vid);
+                    let location: smithay::utils::Point<f64, smithay::utils::Logical> =
+                        match origin {
+                            Some(o) => smithay::utils::Point::new(o.x + pos.x, o.y + pos.y),
+                            None => pos,
+                        };
                     let mot_ev = MotionEvent {
-                        location: global_pos,
+                        location,
                         serial,
                         time,
                     };
                     match kind {
                         PointerEventKind::Motion => {
                             self.last_wayland_focus = Some(wl_surface.clone());
-                            let origin = self.surface_global_origin(vid);
                             ph.motion(self, origin.map(|o| (wl_surface.clone(), o)), &mot_ev);
                             ph.frame(self);
                         }
                         PointerEventKind::Down | PointerEventKind::Up => {
                             self.last_wayland_focus = Some(wl_surface.clone());
-                            let origin = self.surface_global_origin(vid);
                             ph.motion(self, origin.map(|o| (wl_surface.clone(), o)), &mot_ev);
                             ph.button(self, &btn_ev);
                             ph.frame(self);
@@ -3057,8 +3100,13 @@ impl LookingGlass {
             } else {
                 KeyState::Released
             };
-            // Ensure keyboard focus is on the right surface
-            kh_handle.set_focus(self, Some(wl_surface), serial);
+            // Ensure keyboard focus is on the right surface — as an
+            // X11Surface target for X11 windows (BUG_LIST #19).
+            let focus_target = match self.x11_windows.get(&wl_surface) {
+                Some(x11) => KeyboardFocusTarget::X11(x11.clone()),
+                None => KeyboardFocusTarget::Wl(wl_surface.clone()),
+            };
+            kh_handle.set_focus(self, Some(focus_target), serial);
             let xkb_keycode = Keycode::new(key);
             let _ = kh_handle.input::<(), _>(
                 self,
@@ -4394,15 +4442,26 @@ impl LookingGlass {
             if let Some(ph) = self.pointer_handle.clone() {
                 let serial = self.next_serial();
                 let time = now_ms();
-                let focus = self
-                    .pick_wayland_target(x, y)
-                    .and_then(|(vid, s, _)| self.surface_global_origin(vid).map(|o| (s, o)));
+                let picked = self.pick_wayland_target(x, y);
+                // BUG_LIST #18: `location = origin + pos` delivery (see
+                // route_to_content) so the drop target sees the true
+                // surface coordinate in spatial mode.
+                let focus = picked.as_ref().and_then(|(vid, s, _)| {
+                    self.surface_global_origin(*vid).map(|o| (s.clone(), o))
+                });
+                let location: smithay::utils::Point<f64, smithay::utils::Logical> =
+                    match (&picked, &focus) {
+                        (Some((_, _, pos)), Some((_, o))) => {
+                            smithay::utils::Point::new(o.x + pos.x, o.y + pos.y)
+                        }
+                        _ => (x, y).into(),
+                    };
                 let focus_for_ledger = focus.clone();
                 ph.motion(
                     self,
                     focus,
                     &MotionEvent {
-                        location: (x, y).into(),
+                        location,
                         serial,
                         time,
                     },
@@ -4535,14 +4594,25 @@ impl LookingGlass {
             if let Some(ph) = self.pointer_handle.clone() {
                 let serial = self.next_serial();
                 let time = now_ms();
-                let focus = self
-                    .pick_wayland_target(x, y)
-                    .and_then(|(vid, s, _)| self.surface_global_origin(vid).map(|o| (s, o)));
+                let picked = self.pick_wayland_target(x, y);
+                // BUG_LIST #18: `location = origin + pos` delivery (see
+                // route_to_content) so the drop target sees the true
+                // surface coordinate in spatial mode.
+                let focus = picked.as_ref().and_then(|(vid, s, _)| {
+                    self.surface_global_origin(*vid).map(|o| (s.clone(), o))
+                });
+                let location: smithay::utils::Point<f64, smithay::utils::Logical> =
+                    match (&picked, &focus) {
+                        (Some((_, _, pos)), Some((_, o))) => {
+                            smithay::utils::Point::new(o.x + pos.x, o.y + pos.y)
+                        }
+                        _ => (x, y).into(),
+                    };
                 ph.motion(
                     self,
                     focus.clone(),
                     &MotionEvent {
-                        location: (x, y).into(),
+                        location,
                         serial,
                         time,
                     },
@@ -4926,13 +4996,19 @@ impl LookingGlass {
         // PointerHandle::motion handles enter/leave internally — same
         // surface = motion; different surface = leave old + enter new.
         self.last_wayland_focus = Some(wl_surface.clone());
-        let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
+        // BUG_LIST #18: same delivery convention as route_to_content —
+        // `location = origin + pos` so Smithay's subtraction yields the
+        // unprojected surface coordinate (spatial-mode safe).
+        let origin = self.surface_global_origin(vid);
+        let location: smithay::utils::Point<f64, smithay::utils::Logical> = match origin {
+            Some(o) => smithay::utils::Point::new(o.x + pos.x, o.y + pos.y),
+            None => pos,
+        };
         let mot_ev = MotionEvent {
-            location: global_pos,
+            location,
             serial: self.next_serial(),
             time: now_ms(),
         };
-        let origin = self.surface_global_origin(vid);
         ph.motion(self, origin.map(|o| (wl_surface.clone(), o)), &mot_ev);
         // R7: constraints requested while unfocused activate now that
         // pointer focus has entered this surface.
@@ -5082,16 +5158,21 @@ impl LookingGlass {
             return;
         };
 
-        if let Some((vid, wl_surface, _pos)) = self.pick_wayland_target(x, y) {
+        if let Some((vid, wl_surface, pos)) = self.pick_wayland_target(x, y) {
             // Ensure pointer focus is on the target surface before axis events.
             self.last_wayland_focus = Some(wl_surface.clone());
-            let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
+            // BUG_LIST #18: deliver the unprojected surface coordinate
+            // (see route_to_content for the convention).
+            let origin = self.surface_global_origin(vid);
+            let location: smithay::utils::Point<f64, smithay::utils::Logical> = match origin {
+                Some(o) => smithay::utils::Point::new(o.x + pos.x, o.y + pos.y),
+                None => pos,
+            };
             let mot_ev = MotionEvent {
-                location: global_pos,
+                location,
                 serial: self.next_serial(),
                 time: now_ms(),
             };
-            let origin = self.surface_global_origin(vid);
             ph.motion(self, origin.map(|o| (wl_surface, o)), &mot_ev);
 
             let time = now_ms();
@@ -6424,8 +6505,94 @@ fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
     state.scene.remove_from_all_groups(vid);
 }
 
+/// BUG_LIST #19: keyboard focus target that can be either a native
+/// Wayland surface or an X11 surface. Focusing an `X11Surface` goes
+/// through smithay's `KeyboardTarget<..> for X11Surface` impl, which
+/// performs the ICCCM input-focus dance (SetInputFocus / WM_TAKE_FOCUS
+/// per the window's input mode) — focusing its raw wl_surface instead
+/// delivers wl_keyboard events that XWayland drops because the X-side
+/// input focus is never moved (X focus stays on None; X11 apps receive
+/// no key events at all).
+#[derive(Clone, PartialEq, Debug)]
+pub enum KeyboardFocusTarget {
+    Wl(WlSurface),
+    X11(smithay::xwayland::xwm::X11Surface),
+}
+
+impl IsAlive for KeyboardFocusTarget {
+    fn alive(&self) -> bool {
+        match self {
+            KeyboardFocusTarget::Wl(s) => s.alive(),
+            KeyboardFocusTarget::X11(x) => x.alive(),
+        }
+    }
+}
+
+impl smithay::wayland::seat::WaylandFocus for KeyboardFocusTarget {
+    fn wl_surface(&self) -> Option<std::borrow::Cow<'_, WlSurface>> {
+        match self {
+            KeyboardFocusTarget::Wl(s) => s.wl_surface(),
+            KeyboardFocusTarget::X11(x) => smithay::wayland::seat::WaylandFocus::wl_surface(x),
+        }
+    }
+}
+
+impl KeyboardTarget<LookingGlass> for KeyboardFocusTarget {
+    fn enter(
+        &self,
+        seat: &Seat<LookingGlass>,
+        data: &mut LookingGlass,
+        keys: Vec<KeysymHandle<'_>>,
+        serial: Serial,
+    ) {
+        match self {
+            KeyboardFocusTarget::Wl(s) => KeyboardTarget::<LookingGlass>::enter(s, seat, data, keys, serial),
+            KeyboardFocusTarget::X11(x) => KeyboardTarget::<LookingGlass>::enter(x, seat, data, keys, serial),
+        }
+    }
+
+    fn leave(&self, seat: &Seat<LookingGlass>, data: &mut LookingGlass, serial: Serial) {
+        match self {
+            KeyboardFocusTarget::Wl(s) => KeyboardTarget::<LookingGlass>::leave(s, seat, data, serial),
+            KeyboardFocusTarget::X11(x) => KeyboardTarget::<LookingGlass>::leave(x, seat, data, serial),
+        }
+    }
+
+    fn key(
+        &self,
+        seat: &Seat<LookingGlass>,
+        data: &mut LookingGlass,
+        key: KeysymHandle<'_>,
+        state: KeyState,
+        serial: Serial,
+        time: u32,
+    ) {
+        match self {
+            KeyboardFocusTarget::Wl(s) => KeyboardTarget::<LookingGlass>::key(s, seat, data, key, state, serial, time),
+            KeyboardFocusTarget::X11(x) => KeyboardTarget::<LookingGlass>::key(x, seat, data, key, state, serial, time),
+        }
+    }
+
+    fn modifiers(
+        &self,
+        seat: &Seat<LookingGlass>,
+        data: &mut LookingGlass,
+        modifiers: ModifiersState,
+        serial: Serial,
+    ) {
+        match self {
+            KeyboardFocusTarget::Wl(s) => {
+                KeyboardTarget::<LookingGlass>::modifiers(s, seat, data, modifiers, serial)
+            }
+            KeyboardFocusTarget::X11(x) => {
+                KeyboardTarget::<LookingGlass>::modifiers(x, seat, data, modifiers, serial)
+            }
+        }
+    }
+}
+
 impl SeatHandler for LookingGlass {
-    type KeyboardFocus = WlSurface;
+    type KeyboardFocus = KeyboardFocusTarget;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
