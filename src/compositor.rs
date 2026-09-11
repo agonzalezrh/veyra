@@ -85,6 +85,7 @@ use crate::launcher::Launcher;
 use crate::layout;
 use crate::navigation::{EscapeAction, NavigationModel};
 use crate::perf::PerfStats;
+use crate::window::{PopupInfo, SurfaceLifecycle, ToplevelInfo};
 use crate::producer::{FrameProducer, FrameResult};
 use crate::recovery::Recovery;
 use crate::renderer;
@@ -150,106 +151,25 @@ impl ClientData for ClientState {
     }
 }
 
+#[allow(dead_code)] // reserved API surface; not yet wired
+/// P1 (audit): which presentation backend family is in use. DRM can be
+/// recreated in-session (try_new_with_session); winit cannot (the
+/// calloop-registered event source owns the window and cannot be rebuilt
+/// mid-run), so its context loss must fail loudly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // reserved API surface; not yet wired
-pub enum SurfaceLifecycle {
-    Created,
-    Configured,
-    Mapped,
-    Unmapped,
-    Destroyed,
+pub enum BackendOrigin {
+    Winit,
+    Drm,
 }
 
-/// Track a popup surface with its parent relationship.
-#[derive(Debug, Clone)]
-pub struct PopupInfo {
-    pub popup: smithay::wayland::shell::xdg::PopupSurface,
-    pub wl_surface: WlSurface,
-    pub parent_toplevel_vid: Option<VisualId>,
-    pub visual_id: Option<VisualId>,
-    pub lifecycle: SurfaceLifecycle,
-    pub size: Option<(i32, i32)>,
-    /// The positioner state for computing popup geometry.
-    pub positioner: PositionerState,
-}
+const BACKEND_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const BEGIN_FRAME_FAILURE_LIMIT: u32 = 3;
+/// P2 (audit): a producer that fails this many CONSECUTIVE frames is
+/// disconnected instead of erroring every frame forever. The threshold
+/// tolerates periodic error emitters (SimulatedGlitch glitches every
+/// 20th frame with successes in between — never consecutive).
+const PRODUCER_ERROR_LIMIT: u32 = 60;
 
-#[derive(Debug, Clone)]
-pub struct ToplevelInfo {
-    pub toplevel: ToplevelSurface,
-    pub wl_surface: WlSurface,
-    pub app_id: String,
-    pub title: String,
-    pub lifecycle: SurfaceLifecycle,
-    pub visual_id: Option<VisualId>,
-    pub size: Option<(i32, i32)>,
-    /// I4: the client acknowledged a maximized configure. Geometry
-    /// authority stays with the client; this only tracks the state.
-    pub maximized: bool,
-    /// I4: committed size to restore on unmaximize (captured at
-    /// maximize time). None while not maximized.
-    pub restore_size: Option<(i32, i32)>,
-    /// I4: presentation pose to restore on unmaximize: (position xyz,
-    /// rotation ijkw). Captured when the window is maximized.
-    pub restore_pose: Option<((f32, f32, f32), [f32; 4])>,
-    /// I5: the window is currently minimized (hidden, Wayland surface
-    /// still mapped and alive). Presentation transform is untouched;
-    /// layout/arrangement treat minimized visuals as detached.
-    pub minimized: bool,
-    /// I7: the client acknowledged a fullscreen configure and committed
-    /// at the transition size (FULLSCREEN state in the machine above).
-    /// The snapshot for restoring lives in the fullscreen coordinator.
-    pub fullscreened: bool,
-    /// I7: the pre-fullscreen snapshot (FullscreenSnapshot), captured
-    /// exactly once at fullscreen entry and consumed by unfullscreen
-    /// restore. None while not fullscreen.
-    pub fullscreen_snapshot: Option<crate::fullscreen::FullscreenSnapshot>,
-}
-
-impl ToplevelInfo {
-    fn new(toplevel: ToplevelSurface) -> Self {
-        let wl_surface = toplevel.wl_surface().clone();
-        let (title, app_id) = with_states(&wl_surface, |states| {
-            let title = states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .map(|attrs| attrs.lock().unwrap().title.clone().unwrap_or_default())
-                .unwrap_or_default();
-            let app_id = states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .map(|attrs| attrs.lock().unwrap().app_id.clone().unwrap_or_default())
-                .unwrap_or_default();
-            (title, app_id)
-        });
-        ToplevelInfo {
-            lifecycle: SurfaceLifecycle::Created,
-            toplevel,
-            wl_surface,
-            app_id,
-            title,
-            visual_id: None,
-            size: None,
-            maximized: false,
-            restore_size: None,
-            restore_pose: None,
-            minimized: false,
-            fullscreened: false,
-            fullscreen_snapshot: None,
-        }
-    }
-
-    fn refresh_metadata(&mut self) {
-        with_states(&self.wl_surface, |states| {
-            if let Some(attrs) = states.data_map.get::<XdgToplevelSurfaceData>() {
-                let attrs = attrs.lock().unwrap();
-                self.title = attrs.title.clone().unwrap_or_default();
-                self.app_id = attrs.app_id.clone().unwrap_or_default();
-            }
-        });
-    }
-}
-
-#[allow(dead_code)] // reserved API surface; not yet wired
 pub struct LookingGlass {
     pub display_handle: DisplayHandle,
     pub compositor_state: CompositorState,
