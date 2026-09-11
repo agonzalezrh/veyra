@@ -115,6 +115,37 @@ static KBD_FOCUS_CLIENT: Mutex<Option<Client>> = Mutex::new(None);
 static SELECTION_REFRESH_PENDING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+// #12: input-serial ledger shared with `ClientData::disconnected`
+// (which has no LookingGlass access) so a disconnecting client's
+// entries are dropped with it. ClientIds are never reused — this is
+// memory hygiene plus defense against any future id recycling.
+static INPUT_SERIAL_LEDGER: std::sync::LazyLock<Mutex<HashMap<ClientId, std::collections::VecDeque<u32>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+
+/// #12 ledger capacity: how many recent input serials per client are
+/// kept for popup-grab validation.
+pub const INPUT_SERIAL_LEDGER_CAP: usize = 16;
+
+/// #12: push one input serial into a client's ledger (pure helper for
+/// tests). Serial 0 is never a real input event — drop it.
+fn ledger_push(ledger: &mut std::collections::VecDeque<u32>, serial: u32) {
+    if serial == 0 {
+        return;
+    }
+    ledger.push_back(serial);
+    while ledger.len() > INPUT_SERIAL_LEDGER_CAP {
+        ledger.pop_front();
+    }
+}
+
+/// #12: validate against a client's ledger (pure helper for tests).
+/// Serial 0 can never validate: it is never recorded and never a real
+/// event serial.
+fn ledger_contains(ledger: Option<&std::collections::VecDeque<u32>>, serial: u32) -> bool {
+    serial != 0 && ledger.map(|q| q.contains(&serial)).unwrap_or(false)
+}
+
 #[derive(Debug, Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
@@ -152,6 +183,8 @@ impl ClientData for ClientState {
                 "selection owner disconnected; refresh scheduled"
             );
         }
+        // #12: drop the disconnected client's input-serial ledger.
+        INPUT_SERIAL_LEDGER.lock().unwrap().remove(&client_id);
     }
 }
 
@@ -333,7 +366,6 @@ pub struct LookingGlass {
     /// events). xdg_popup.grab must name the serial of the input event
     /// that triggered the popup — this ledger is the validation source.
     /// Capped per client; configures/frame callbacks never enter it.
-    pub input_serial_ledger: HashMap<ClientId, std::collections::VecDeque<u32>>,
     /// G-D4: wp_presentation global state.
     #[allow(dead_code)] // registered global / configuration snapshot
     pub presentation_state: smithay::wayland::presentation::PresentationState,
@@ -642,7 +674,6 @@ impl LookingGlass {
             foreign_toplevels: HashMap::new(),
             subsurface_visuals: HashMap::new(),
             subsurface_parents: HashMap::new(),
-            input_serial_ledger: HashMap::new(),
             presentation_state,
             presentation_seq: 0,
             app_switcher: ApplicationSwitcher::new(),
@@ -3223,6 +3254,11 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
                     FilterResult::Forward
                 },
             );
+            // #12 edge case: keyboard key serials are INPUT serials —
+            // popups opened from the keyboard (context-menu key, app
+            // menus) validate against the key-press serial. Without this
+            // recording, every keyboard-opened popup grab was rejected.
+            self.record_input_serial(&wl_surface, serial);
             let _ = self.display_handle.flush_clients();
             return;
         }
@@ -5192,11 +5228,8 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     /// against this ledger.
     fn record_input_serial(&mut self, surface: &WlSurface, serial: smithay::utils::Serial) {
         if let Some(client) = surface.client() {
-            let ledger = self.input_serial_ledger.entry(client.id()).or_default();
-            ledger.push_back(u32::from(serial));
-            while ledger.len() > 16 {
-                ledger.pop_front();
-            }
+            let mut ledger = INPUT_SERIAL_LEDGER.lock().unwrap();
+            ledger_push(ledger.entry(client.id()).or_default(), u32::from(serial));
         }
     }
 
@@ -5213,8 +5246,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
         let wl = surface.wl_surface().clone();
         let client_id = wl.client().map(|c| c.id());
         let valid = client_id
-            .and_then(|c| self.input_serial_ledger.get(&c))
-            .map(|q| q.contains(&u32::from(serial)))
+            .map(|c| ledger_contains(INPUT_SERIAL_LEDGER.lock().unwrap().get(&c), u32::from(serial)))
             .unwrap_or(false);
         if !valid {
             warn!(
@@ -6945,6 +6977,58 @@ smithay::delegate_presentation!(LookingGlass);
 delegate_pointer_constraints!(LookingGlass);
 delegate_relative_pointer!(LookingGlass);
 delegate_dmabuf!(LookingGlass);
+
+#[cfg(test)]
+mod serial_ledger_tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    fn q(items: &[u32]) -> VecDeque<u32> {
+        items.iter().copied().collect()
+    }
+
+    #[test]
+    fn ledger_skips_serial_zero() {
+        // P1: serial 0 is never a real input event (smithay's initial
+        // Serial) — recording it would let a zero-serial grab validate.
+        let mut l = VecDeque::new();
+        ledger_push(&mut l, 0);
+        assert!(l.is_empty());
+        assert!(!ledger_contains(Some(&l), 0));
+    }
+
+    #[test]
+    fn ledger_caps_at_limit_dropping_oldest() {
+        let mut l = VecDeque::new();
+        for s in 1..=(INPUT_SERIAL_LEDGER_CAP as u32 + 5) {
+            ledger_push(&mut l, s);
+        }
+        assert_eq!(l.len(), INPUT_SERIAL_LEDGER_CAP);
+        // Newest kept…
+        assert!(ledger_contains(Some(&l), INPUT_SERIAL_LEDGER_CAP as u32 + 5));
+        // …oldest evicted — a stale serial no longer validates.
+        assert!(!ledger_contains(Some(&l), 1));
+    }
+
+    #[test]
+    fn ledger_rejects_unknown_and_empty() {
+        assert!(!ledger_contains(None, 7));
+        assert!(!ledger_contains(Some(&q(&[1, 2, 3])), 9));
+        assert!(ledger_contains(Some(&q(&[1, 2, 3])), 2));
+    }
+
+    #[test]
+    fn ledger_survives_window_wraparound() {
+        // u32 wraparound: a huge serial followed by small ones (both
+        // legitimate after wrapping) are recorded as-is — matching
+        // contains() semantics, no ordering assumptions.
+        let mut l = VecDeque::new();
+        ledger_push(&mut l, u32::MAX - 2);
+        ledger_push(&mut l, 4);
+        assert!(ledger_contains(Some(&l), u32::MAX - 2));
+        assert!(ledger_contains(Some(&l), 4));
+    }
+}
 
 #[cfg(test)]
 mod projection_tests {
