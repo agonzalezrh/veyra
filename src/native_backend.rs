@@ -23,7 +23,8 @@ use smithay::backend::input::{self as backend, ButtonState, InputEvent};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier};
 use smithay::backend::session::Session as _;
-use smithay::reexports::calloop::LoopHandle;
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::wayland_server::DisplayHandle;
 use tracing::info;
 
@@ -103,7 +104,7 @@ pub fn create_native_state(
 /// revoked/restored with VT switches.
 pub fn wire_native_input(
     handle: &LoopHandle<'static, LookingGlass>,
-    _state: &LookingGlass,
+    state: &mut LookingGlass,
     stack: NativeStack,
 ) -> Result<(), NativeError> {
     let NativeStack { session, notifier } = stack;
@@ -136,6 +137,44 @@ pub fn wire_native_input(
             state.schedule_render();
         })
         .map_err(|e| NativeError::Libinput(format!("source: {e}")))?;
+
+    // BUG_LIST #4 (step 1): page-flip completions are event-driven via
+    // a calloop source on the DRM event fd — no more poll(0) per frame
+    // in begin_frame (it remains only as a safety-net drain there). A
+    // completed flip wakes the render loop immediately, so the next
+    // frame's queue_buffer does not race the swapchain, and the flip
+    // completion becomes the vblank tick future pacing builds on.
+    let flip_fd = state
+        .backend
+        .as_mut()
+        .and_then(|b| {
+            b.as_any()
+                .downcast_mut::<crate::drm_backend::DrmGraphicsBackend>()
+                .map(|d| d.event_device_fd())
+        });
+    if let Some(fdfd) = flip_fd {
+        handle
+            .insert_source(
+                Generic::new(fdfd, Interest::READ, Mode::Level),
+                |_, _, state: &mut LookingGlass| {
+                    let completed = state
+                        .backend
+                        .as_mut()
+                        .and_then(|b| {
+                            b.as_any()
+                                .downcast_mut::<crate::drm_backend::DrmGraphicsBackend>()
+                        })
+                        .map(|d| d.handle_flip_events())
+                        .unwrap_or(false);
+                    if completed {
+                        state.schedule_render();
+                    }
+                    Ok(PostAction::Continue)
+                },
+            )
+            .map_err(|e| NativeError::Session(format!("flip source: {e}")))?;
+        info!("drm flip-event source registered (BUG_LIST #4 step 1)");
+    }
 
     info!("native backend ready (session + drm + libinput)");
     Ok(())

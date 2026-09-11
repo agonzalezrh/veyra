@@ -17,6 +17,9 @@ pub trait PresentationBackend {
     fn size(&self) -> (f32, f32);
     /// Access the underlying EGL surface, if available.
     fn egl_surface(&self) -> Option<&EGLSurface>;
+    /// Downcast hook for backend-specific plumbing (BUG_LIST #4: the
+    /// DRM flip-event source reaches DrmGraphicsBackend through this).
+    fn as_any(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// Wrapper implementing PresentationBackend for Smithay's WinitGraphicsBackend.
@@ -64,5 +67,9 @@ impl PresentationBackend for WinitPresentationBackend {
 
     fn egl_surface(&self) -> Option<&EGLSurface> {
         Some(self.0.egl_surface())
+    }
+
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

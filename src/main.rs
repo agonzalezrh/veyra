@@ -257,8 +257,8 @@ fn main() {
     let mut state = if use_native {
         tracing::info!("Starting native DRM/KMS backend");
         match native_backend::create_native_state(&display_handle, &config) {
-            Ok((native_state, stack)) => {
-                if let Err(e) = native_backend::wire_native_input(&handle, &native_state, stack) {
+            Ok((mut native_state, stack)) => {
+                if let Err(e) = native_backend::wire_native_input(&handle, &mut native_state, stack) {
                     tracing::error!(e = %e, "native input setup failed");
                     std::process::exit(1);
                 }

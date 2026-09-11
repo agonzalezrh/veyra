@@ -45,11 +45,12 @@ capability gate refuses those drivers cleanly with diagnostics
 (`VEYRA_DRM_FORCE=1` overrides). Full presentation verification requires
 a real GPU; see `tests/harness/runners/run_drm_tests.sh`.
 
-### 4. Frame scheduling (no vblank sync)
+### 4. Frame scheduling (no vblank sync) — partially addressed (G-E5 step 1)
 
 **Area**: Rendering
 **What's done**: RenderScheduler with dirty/animating state replaces fixed 16ms timer. Idle compositor does not render.
-**What's missing**: No vsync-based scheduling. Frame pacing may be incorrect for video/games.
+**What's changed (step 1)**: page-flip completions are now EVENT-DRIVEN — a calloop source on the DRM event fd dispatches flip completions and wakes the render loop (PresentationBackend::as_any downcast); begin_frame's poll(0) remains only as a safety-net drain. The flip completion is the vblank tick that future pacing builds on.
+**What's missing**: full vsync-based frame PACING (queueing the next flip on flip completion rather than on dirty state); frame pacing may still be incorrect for video/games.
 
 ## P3: Remaining
 

@@ -438,13 +438,14 @@ impl DrmGraphicsBackend {
             .ok_or_else(|| "dmabuf rebuild failed".into())
     }
 
-    /// Non-blocking drain of completed page flips. Every flip event for
-    /// our CRTC releases one buffer back to the swapchain
-    /// (`frame_submitted`). Called at the top of `begin_frame` so the
-    /// swapchain never starves while pacing stays vblank-driven.
-    fn drain_flips(&mut self) {
+    /// Drain completed page flips. Every flip event for our CRTC
+    /// releases one buffer back to the swapchain (`frame_submitted`).
+    /// Returns true when one of OUR flips completed — the calloop flip
+    /// source (BUG_LIST #4 step 1) uses that to wake the render loop
+    /// event-driven instead of begin_frame polling per frame.
+    pub fn handle_flip_events(&mut self) -> bool {
         if !self.flip_pending {
-            return;
+            return false;
         }
         // receive_events blocks on read when no event is queued — poll
         // first (timeout 0) so an idle device cannot stall the frame.
@@ -455,8 +456,9 @@ impl DrmGraphicsBackend {
         };
         let ready = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, 0) };
         if ready <= 0 {
-            return;
+            return false;
         }
+        let mut completed = false;
         match self.event_fd.receive_events() {
             Ok(events) => {
                 for ev in events {
@@ -465,6 +467,7 @@ impl DrmGraphicsBackend {
                             match self.gbm_surface.frame_submitted() {
                                 Ok(Some(_)) => {
                                     self.flip_pending = false;
+                                    completed = true;
                                 }
                                 Ok(None) => {
                                     // Flip event without a pending frame:
@@ -483,6 +486,20 @@ impl DrmGraphicsBackend {
                 warn!(?e, "drm event read failed");
             }
         }
+        completed
+    }
+
+    /// Safety-net drain at the top of begin_frame: with the calloop
+    /// flip source active this is normally a no-op (events are consumed
+    /// event-driven the moment they arrive), but it guarantees the
+    /// swapchain never starves if the source missed a wake.
+    fn drain_flips(&mut self) {
+        self.handle_flip_events();
+    }
+
+    /// Clone of the DRM event fd for the calloop flip-event source.
+    pub fn event_device_fd(&self) -> DrmDeviceFd {
+        self.event_fd.clone()
     }
 }
 
@@ -609,6 +626,10 @@ impl PresentationBackend for DrmGraphicsBackend {
         // surface. render_scene's rebind_surface no-ops accordingly,
         // preserving the FBO binding across with_context closures.
         None
+    }
+
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
