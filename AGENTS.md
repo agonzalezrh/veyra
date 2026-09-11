@@ -741,6 +741,28 @@ Priority order from audit:
 
 **Status: ✅ G-E4 Complete (483 unit tests; protocol 111/0/0; input 110/0/0)**
 
+### G-E5 — Real-App Input Integrity + Audit Remediation
+- G-E5 input fixes (BUG_LIST #18/#19): spatial-mode pointer delivery
+  now delivers the unprojected surface coordinate at all five sites
+  (clicks no longer land tens of px off under perspective); X11
+  override-redirect/EWMH non-focusable windows no longer steal keyboard
+  focus on map; SeatHandler::KeyboardFocus is KeyboardFocusTarget
+  (WlSurface | X11Surface) so X11 windows receive ICCCM input focus and
+  key events (Firefox Ctrl+L/typing verified end-to-end; Chrome
+  bookmarks/URL typing verified in spatial mode).
+- G-E5 audit remediation: GL context-loss recovery (DRM recreates via
+  stashed libseat session; winit fails loudly), begin_frame failure
+  state transition, producer consecutive-error disconnect, projection
+  NaN guard (degenerate framebuffer sizes), refresh-only mode sync,
+  per-frame clone elimination, event-driven DRM page-flip dispatch
+  (BUG_LIST #4 step 1), popup-grab keyboard serial recording + ledger
+  hardening (#12), window-model type extraction into window.rs,
+  outputs.rs per-output state registry (#14 phase 1), taskbar shell
+  polish (SDF rounded-rect renderer, hover, separators, accent
+  underline) and PUA glyph sentinel.
+
+**Status: ✅ G-E5 Complete (499 unit tests; protocol 111/0/0; input 110/0/0)**
+
 ---
 
 # 25. Commit discipline
