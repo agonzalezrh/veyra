@@ -94,9 +94,13 @@ use crate::scheduler::RenderScheduler;
 use crate::session::Session;
 use crate::shelf::SpatialShelf;
 use crate::workspace::WorkspaceManager;
+use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+// P1 (audit): Session trait provides is_active() on the libseat handle
+// used by backend recreation.
+use smithay::backend::session::Session as _;
 
 // G-B1 selection bookkeeping shared with `ClientData::disconnected`
 // (which has no LookingGlass access): who owns each selection, the
@@ -181,6 +185,23 @@ pub struct LookingGlass {
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
     pub backend: Option<Box<dyn PresentationBackend>>,
+    /// P1 (audit): how the backend was created — decides whether a lost
+    /// GL context can be recreated in-session. The DRM path can genuinely
+    /// re-run `DrmGraphicsBackend::try_new_with_session`; the winit path
+    /// cannot (the event loop owns the window), so failure must at least
+    /// be LOUD instead of a silent no-op loop.
+    pub backend_origin: Option<BackendOrigin>,
+    /// Native mode only: a clone of the libseat session so backend
+    /// recreation re-opens the session-owned DRM device after context
+    /// loss (the old backend's DRM master died with it).
+    pub drm_session: Option<smithay::backend::session::libseat::LibSeatSession>,
+
+    /// P1 (audit): begin_frame failures are a state transition, not a
+    /// warn loop — N consecutive failures drop the backend like
+    /// ContextLost does.
+    begin_frame_failures: u32,
+    backend_lost_logged: bool,
+    last_backend_attempt: Option<std::time::Instant>,
     pub toplevels: Vec<ToplevelInfo>,
     pub popups: Vec<PopupInfo>,
     pub scene: Scene,
@@ -199,11 +220,18 @@ pub struct LookingGlass {
     pub workspace_manager: WorkspaceManager,
     /// Registered frame producers
     producers: Vec<(VisualId, Box<dyn FrameProducer>)>,
+    /// P2 (audit): consecutive-failure counters per producer — a
+    /// persistently failing producer is disconnected instead of
+    /// erroring every frame indefinitely.
+    producer_error_counts: HashMap<VisualId, u32>,
     pub perf: PerfStats,
     pub output: Option<Output>,
     pub window_size: (f32, f32),
     pub last_mouse: (f64, f64),
+    // Reserved API surface (relative-delta consumers); not read yet.
+    #[allow(dead_code)]
     pub last_dx: f64,
+    #[allow(dead_code)]
     pub last_dy: f64,
     pub press_pos: (f64, f64),
     pub nav_button: u32,
@@ -245,8 +273,10 @@ pub struct LookingGlass {
     alt_pressed: bool,
     meta_pressed: bool,
     /// G-C3: wp_viewporter global state.
+    #[allow(dead_code)] // global registered on the display; the field is bookkeeping
     pub viewporter_state: ViewporterState,
     /// G-C3: wp_fractional_scale_manager_v1 global state.
+    #[allow(dead_code)] // global registered on the display; the field is bookkeeping
     pub fractional_scale_state: FractionalScaleManagerState,
     /// G-C3: preferred scale advertised to clients (output scale).
     pub preferred_scale: f64,
@@ -273,10 +303,13 @@ pub struct LookingGlass {
     pub ext_data_control_state: ExtDataControlState,
     /// G-D3: ext_foreign_toplevel_list_v1 (docks/taskbars observing
     /// the compositor's toplevels).
+    #[allow(dead_code)] // global registered on the display; the field is bookkeeping
     pub foreign_toplevel_state: smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     /// #6: zwp_text_input_v3 manager state.
+    #[allow(dead_code)] // global registered on the display; the field is bookkeeping
     pub text_input_state: smithay::wayland::text_input::TextInputManagerState,
     /// #6: zwp_input_method_v2 manager state.
+    #[allow(dead_code)] // global registered on the display; the field is bookkeeping
     pub input_method_state: smithay::wayland::input_method::InputMethodManagerState,
     /// #6: IME popup surfaces (input_popup_surface_v2 role).
     pub ime_popups: Vec<smithay::wayland::input_method::PopupSurface>,
@@ -302,6 +335,7 @@ pub struct LookingGlass {
     /// Capped per client; configures/frame callbacks never enter it.
     pub input_serial_ledger: HashMap<ClientId, std::collections::VecDeque<u32>>,
     /// G-D4: wp_presentation global state.
+    #[allow(dead_code)] // registered global / configuration snapshot
     pub presentation_state: smithay::wayland::presentation::PresentationState,
     /// G-D4: monotonic presentation sequence counter.
     presentation_seq: u64,
@@ -326,10 +360,12 @@ pub struct LookingGlass {
     /// Context menu (right-click popup).
     pub context_menu: ContextMenu,
     /// Configuration (loaded at startup, no live reload).
+    #[allow(dead_code)] // registered global / configuration snapshot
     pub config: Config,
     /// Session lifecycle management.
     pub session: Session,
     /// Recovery operations for destroyed focus, corrupt state, etc.
+    #[allow(dead_code)] // reserved API surface (Recovery module not yet wired)
     pub recovery: Recovery,
     /// Pointer constraints (lock/confine) state.
     pub pointer_constraints: crate::pointer_constraints::PointerConstraints,
@@ -355,6 +391,7 @@ pub struct LookingGlass {
     /// Smithay's DnDGrab can drive the protocol.
     pub dnd_active: bool,
     /// Relative pointer manager for sending relative motion deltas.
+    #[allow(dead_code)] // global registered on the display; the field is bookkeeping
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
     /// DMA-BUF buffer import state.
     pub dmabuf_manager: crate::dmabuf::DmabufManager,
@@ -550,6 +587,7 @@ impl LookingGlass {
             spatial_cam_adapted: false,
             workspace_manager: WorkspaceManager::new(config.workspace.count),
             producers: Vec::new(),
+            producer_error_counts: HashMap::new(),
             perf: PerfStats::new(),
             output: Some(output),
             window_size: (1280.0, 720.0),
@@ -566,6 +604,11 @@ impl LookingGlass {
             pacing_active: false,
             render_caches: Default::default(),
             session_paused: false,
+            backend_origin: None,
+            drm_session: None,
+            begin_frame_failures: 0,
+            backend_lost_logged: false,
+            last_backend_attempt: None,
             focus_manager: FocusManager::new(),
             interaction: InteractionController::new(),
             input_sinks: HashMap::new(),
@@ -1868,8 +1911,11 @@ impl LookingGlass {
             size: (w, h).into(),
             refresh,
         };
-        let current = output.current_mode().map(|m| m.size);
-        if current == Some((w, h).into()) {
+        let current = output.current_mode();
+        // P3 (audit): a refresh-only change must still apply — the old
+        // early-return on size match silently ignored it (masked so far
+        // because every caller passed a hardcoded 60000).
+        if current.as_ref().map(|m| (m.size, m.refresh)) == Some(((w, h).into(), refresh)) {
             return;
         }
         output.change_current_state(Some(mode), None, None, None);
@@ -1926,6 +1972,72 @@ impl LookingGlass {
         }
     }
 
+    /// P1 (audit): bring the presentation backend back after a lost GL
+    /// context. DRM retries are throttled (the device may be revoked
+    /// while the VT is paused); winit cannot be recreated mid-session,
+    /// so it fails LOUDLY exactly once instead of silently no-oping
+    /// forever. Wayland client state is untouched either way — clients
+    /// stay connected and their surface state survives the outage.
+    fn try_recreate_backend(&mut self) {
+        if self.backend.is_some() {
+            return;
+        }
+        let Some(origin) = self.backend_origin else {
+            return;
+        };
+        match origin {
+            BackendOrigin::Winit => {
+                if !self.backend_lost_logged {
+                    self.backend_lost_logged = true;
+                    error!(
+                        "GL context lost on the winit (nested) backend; the winit \
+                         window/event-loop cannot be rebuilt mid-session. The \
+                         compositor is now idle — Wayland clients remain \
+                         connected but nothing renders. Restart veyra to recover."
+                    );
+                }
+            }
+            BackendOrigin::Drm => {
+                let now = std::time::Instant::now();
+                if let Some(last) = self.last_backend_attempt {
+                    if now.duration_since(last) < BACKEND_RETRY_INTERVAL {
+                        return;
+                    }
+                }
+                self.last_backend_attempt = Some(now);
+                let Some(session) = self.drm_session.as_ref() else {
+                    if !self.backend_lost_logged {
+                        self.backend_lost_logged = true;
+                        error!("DRM context lost and no libseat session held; cannot recreate backend");
+                    }
+                    return;
+                };
+                if !session.is_active() {                    // VT backgrounded: device access is revoked. Retry
+                    // when the session notifier flips back to active
+                    // (that path calls schedule_render()).
+                    debug!("backend recreate deferred: seat session inactive");
+                    return;
+                }
+                match crate::drm_backend::DrmGraphicsBackend::try_new_with_session(session) {
+                    Ok(drm) => {
+                        let (w, h) = drm.size();
+                        self.backend = Some(Box::new(drm));
+                        // The GPU caches died with the old context.
+                        self.render_caches = Default::default();
+                        self.window_size = (w, h);
+                        self.sync_output_mode(w as i32, h as i32, 60000);
+                        self.backend_lost_logged = false;
+                        self.last_backend_attempt = None;
+                        info!(w, h, "presentation backend recreated after context loss");
+                    }
+                    Err(e) => {
+                        warn!(?e, "backend recreation attempt failed (will retry)");
+                    }
+                }
+            }
+        }
+    }
+
     pub fn render(&mut self) {
         use crate::perf::PipelineStage;
 
@@ -1953,6 +2065,13 @@ impl LookingGlass {
         self.perf.record_rendered();
         self.scheduler.clear();
 
+        // P1 (audit): a lost context must not turn the compositor into a
+        // silent no-op loop — attempt recovery before giving up on the frame.
+        self.try_recreate_backend();
+        if self.backend.is_none() {
+            return;
+        }
+
         let t_frame = std::time::Instant::now();
         self.perf.begin_frame();
 
@@ -1967,16 +2086,19 @@ impl LookingGlass {
             let mut i = 0;
             while i < self.producers.len() {
                 let (vid, producer) = &mut self.producers[i];
+                let vid = *vid;
                 let t0 = std::time::Instant::now();
                 let result = producer.update(renderer);
                 let dt = t0.elapsed().as_nanos() as u64;
                 match result {
                     FrameResult::Updated => {
+                        self.producer_error_counts.remove(&vid);
                         self.perf.record_stage(PipelineStage::ProducerUpdate, dt);
-                        updates.push((*vid, producer.texture().clone()));
+                        updates.push((vid, producer.texture().clone()));
                         i += 1;
                     }
                     FrameResult::Unchanged => {
+                        self.producer_error_counts.remove(&vid);
                         self.perf.record_stage(PipelineStage::ProducerUpdate, dt);
                         self.perf.record_dropped();
                         i += 1;
@@ -1984,7 +2106,7 @@ impl LookingGlass {
                     FrameResult::Resized(w, h) => {
                         // Update visual geometry to match new framebuffer size.
                         // The transform.scale is NOT modified — it's the user's spatial scale.
-                        if let Some(visual) = self.scene.get_mut(*vid) {
+                        if let Some(visual) = self.scene.get_mut(vid) {
                             visual.geometry = smithay::utils::Rectangle::new(
                                 smithay::utils::Point::new(0, 0),
                                 smithay::utils::Size::new(w as i32, h as i32),
@@ -1992,16 +2114,36 @@ impl LookingGlass {
                             info!(?vid, new_w = w, new_h = h, "visual resized");
                         }
                         self.perf.record_stage(PipelineStage::ProducerUpdate, dt);
-                        updates.push((*vid, producer.texture().clone()));
+                        updates.push((vid, producer.texture().clone()));
                         i += 1;
                     }
                     FrameResult::Error(msg) => {
-                        warn!(?vid, ?msg, "producer error");
+                        let count = self
+                            .producer_error_counts
+                            .entry(vid)
+                            .and_modify(|c| *c = c.saturating_add(1))
+                            .or_insert(1);
+                        if *count >= PRODUCER_ERROR_LIMIT {
+                            error!(
+                                ?vid,
+                                failures = *count,
+                                last_error = ?msg,
+                                "producer failing persistently — disconnecting"
+                            );
+                            self.scene.disconnect(vid);
+                            self.producers.swap_remove(i);
+                            self.producer_error_counts.remove(&vid);
+                            continue; // swap_remove moved a new element into i
+                        }
+                        if *count == 1 || *count % 20 == 0 {
+                            warn!(?vid, failures = *count, ?msg, "producer error");
+                        }
                         i += 1;
                     }
                     FrameResult::Finished => {
                         info!(?vid, "producer finished, disconnecting visual");
-                        self.scene.disconnect(*vid);
+                        self.producer_error_counts.remove(&vid);
+                        self.scene.disconnect(vid);
                         self.producers.swap_remove(i);
                     }
                 }
@@ -2027,16 +2169,15 @@ impl LookingGlass {
         let detached = self.layout_detached();
         // Layout only speaks for the active workspace (audit: foreign
         // workspace transforms must not be rearranged every frame).
-        let eligible = self.workspace_manager.active().visual_ids.clone();
-        let layout_mode = self.workspace_manager.active().layout_mode;
+        // Disjoint field borrows — no per-frame Vec clone.
         layout::apply_layout(
             &mut self.scene,
-            layout_mode,
+            self.workspace_manager.active().layout_mode,
             &layout::LayoutConfig::default(),
             &detached,
             world_w,
             world_h,
-            &eligible,
+            &self.workspace_manager.active().visual_ids,
         );
 
         // Apply shelf transforms to shelved visuals (overrides layout)
@@ -2082,11 +2223,7 @@ impl LookingGlass {
             .interpolated_camera(&self.camera, &self.scene);
         let (w, h) = self.window_size;
         let view = render_camera.view_matrix();
-        let proj = if self.spatial_mode {
-            cgmath::perspective(cgmath::Deg(45.0), w / h, 1.0, 10000.0)
-        } else {
-            cgmath::ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -1000.0, 1000.0)
-        };
+        let proj = Self::projection_for(self.spatial_mode, w, h);
         // In workspace overview mode, show all workspaces' visuals
         let ws_visible = match self.focus_manager.camera_mode {
             CameraMode::WorkspaceOverview => None, // show all
@@ -2105,15 +2242,32 @@ impl LookingGlass {
         };
         // Bind the EGL surface before rendering (makes rendering context current)
         if let Err(e) = back.begin_frame() {
-            error!(?e, "begin_frame failed");
-            // P2 #9: the GPU caches die with the context.
-            self.render_caches = Default::default();
+            // P2 #9: the GPU caches die with the context — but a begin
+            // failure may also be transient (surface-less window during a
+            // resize). Only a PERSISTENT failure is a state transition:
+            // after BEGIN_FRAME_FAILURE_LIMIT consecutive failures the
+            // backend is dropped (recreated via try_recreate_backend)
+            // instead of warn-per-dirty-frame forever.
+            self.begin_frame_failures = self.begin_frame_failures.saturating_add(1);
+            if self.begin_frame_failures >= BEGIN_FRAME_FAILURE_LIMIT {
+                error!(
+                    ?e,
+                    failures = self.begin_frame_failures,
+                    "begin_frame persistently failing — dropping backend for recreation"
+                );
+                self.backend = None;
+                self.render_caches = Default::default();
+                self.last_backend_attempt = None;
+            } else {
+                warn!(?e, failures = self.begin_frame_failures, "begin_frame failed");
+            }
             self.scheduler.clear();
             self.perf
                 .record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
             self.perf.record_frame();
             return;
         }
+        self.begin_frame_failures = 0;
         let overlays = renderer::Overlays {
             context_menu,
             taskbar: Some(&taskbar),
@@ -2138,6 +2292,7 @@ impl LookingGlass {
             self.backend = None;
             // P2 #9: the GPU caches die with the context.
             self.render_caches = Default::default();
+            self.last_backend_attempt = None;
             self.scheduler.clear();
             self.perf
                 .record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
@@ -2145,9 +2300,10 @@ impl LookingGlass {
             return;
         }
         // R1: presentation errors must reach the frame owner. A lost
-        // context drops the backend (recreated on demand) exactly like
-        // the begin path above; temporary failures are logged and the
-        // frame is not counted as presented.
+        // context drops the backend; render() re-enters through
+        // try_recreate_backend (DRM recreates for real, winit fails
+        // loudly) exactly like the begin path above; temporary failures
+        // are logged and the frame is not counted as presented.
         match back.finish_frame() {
             Ok(()) => {
                 self.perf.record_presented();
@@ -2160,6 +2316,7 @@ impl LookingGlass {
                 self.backend = None;
                 // P2 #9: the GPU caches die with the context.
                 self.render_caches = Default::default();
+                self.last_backend_attempt = None;
                 self.scheduler.clear();
                 self.perf
                     .record_stage(PipelineStage::Total, t_frame.elapsed().as_nanos() as u64);
@@ -2176,8 +2333,7 @@ impl LookingGlass {
         // repaints on frame callbacks, so an X11 window whose callbacks
         // were never answered renders exactly one frame and freezes).
         let time = now_ms();
-        let surfaces: Vec<WlSurface> = self.wayland_surfaces.values().cloned().collect();
-        for surface in &surfaces {
+        for surface in self.wayland_surfaces.values() {
             with_states(surface, |states| {
                 let mut attrs = states.cached_state.get::<SurfaceAttributes>();
                 let current = attrs.current();
@@ -2209,10 +2365,9 @@ impl LookingGlass {
         };
         let (psec, pnsec) = monotonic_since_boot();
         let ptime = Duration::new(psec as u64, pnsec);
-        let surfaces: Vec<WlSurface> = self.wayland_surfaces.values().cloned().collect();
-        for surface in surfaces {
+        for surface in self.wayland_surfaces.values() {
             let output = self.output.clone();
-            let feedbacks = with_states(&surface, |states| {
+            let feedbacks = with_states(surface, |states| {
                 std::mem::take(
                     &mut states
                         .cached_state
@@ -2250,15 +2405,25 @@ impl LookingGlass {
         self.perf.record_frame();
     }
 
-    /// Compute proj × view matrix for the current camera.
+/// P1 (audit): the single projection constructor for rendering AND
+/// picking. winit reports 0×N sizes on some minimize/resize transitions;
+/// an unclamped `w / h` yields ∞/NaN aspect ratios that poison matrices,
+/// GL uniforms, and every ray cast derived from them. Sizes are clamped
+/// to ≥1 so the degenerate case degrades to a 1px view instead of NaN.
+pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
+    let w = w.max(1.0);
+    let h = h.max(1.0);
+    if spatial_mode {
+        cgmath::perspective(cgmath::Deg(45.0), w / h, 1.0, 10000.0)
+    } else {
+        cgmath::ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -1000.0, 1000.0)
+    }
+}
+
+/// Compute proj × view matrix for the current camera.
     fn proj_view(&self) -> Matrix4<f32> {
         let (w, h) = self.window_size;
-        let proj = if self.spatial_mode {
-            cgmath::perspective(cgmath::Deg(45.0), w / h, 1.0, 10000.0)
-        } else {
-            cgmath::ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -1000.0, 1000.0)
-        };
-        proj * self.camera.view_matrix()
+        Self::projection_for(self.spatial_mode, w, h) * self.camera.view_matrix()
     }
 
     /// Route a pointer event to the selected visual's InputSink.
@@ -2670,6 +2835,9 @@ impl LookingGlass {
         }
 
         let (w, h) = self.window_size;
+        // P1 (audit): same degenerate-size guard as projection_for — a
+        // 0-height framebuffer must not produce inf NDC coordinates.
+        let (w, h) = (w.max(1.0), h.max(1.0));
         let ndc_x = (x as f32 / w) * 2.0 - 1.0;
         let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
         let pv = self.proj_view();
@@ -4899,7 +5067,7 @@ impl LookingGlass {
             None => self.scene.hovered_id = None,
         }
 
-        let Some((vid, wl_surface, _pos)) = target else {
+        let Some((vid, wl_surface, pos)) = target else {
             // Cursor left all client surfaces — emit pointer leave.
             if self.last_wayland_focus.take().is_some() {
                 let global_pos: smithay::utils::Point<f64, smithay::utils::Logical> = (x, y).into();
@@ -6768,6 +6936,39 @@ smithay::delegate_presentation!(LookingGlass);
 delegate_pointer_constraints!(LookingGlass);
 delegate_relative_pointer!(LookingGlass);
 delegate_dmabuf!(LookingGlass);
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    fn all_finite(m: &Matrix4<f32>) -> bool {
+        let cells: &[f32; 16] = m.as_ref();
+        cells.iter().all(|v| v.is_finite())
+    }
+
+    #[test]
+    fn zero_height_is_clamped_not_nan() {
+        // P1 (audit): winit reports 0×N on some minimize transitions.
+        assert!(all_finite(&LookingGlass::projection_for(false, 1280.0, 0.0)));
+        assert!(all_finite(&LookingGlass::projection_for(true, 1280.0, 0.0)));
+    }
+
+    #[test]
+    fn zero_width_is_clamped_not_nan() {
+        assert!(all_finite(&LookingGlass::projection_for(false, 0.0, 720.0)));
+        assert!(all_finite(&LookingGlass::projection_for(true, 0.0, 720.0)));
+    }
+
+    #[test]
+    fn normal_size_projection_unchanged() {
+        let p = LookingGlass::projection_for(false, 1280.0, 720.0);
+        let expected = cgmath::ortho(-640.0, 640.0, -360.0, 360.0, -1000.0, 1000.0);
+        assert_eq!(p, expected);
+        let sp = LookingGlass::projection_for(true, 1280.0, 720.0);
+        let expected_sp = cgmath::perspective(cgmath::Deg(45.0), 1280.0 / 720.0, 1.0, 10000.0);
+        assert_eq!(sp, expected_sp);
+    }
+}
 
 #[cfg(test)]
 mod damage_tests {

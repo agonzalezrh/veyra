@@ -82,6 +82,11 @@ pub fn create_native_state(
         .map_err(|e| NativeError::Drm(e.to_string()))?;
 
     let mut state = LookingGlass::new(display_handle, Box::new(drm), config.clone());
+    // P1 (audit): remember how this backend was built so a lost GL
+    // context can genuinely be recovered — the session-owned device is
+    // re-opened through a clone of the libseat session.
+    state.backend_origin = Some(crate::compositor::BackendOrigin::Drm);
+    state.drm_session = Some(session.clone());
     state.session_paused = session_paused;
     let (w, h) = state.backend.as_ref().expect("backend just set").size();
     state.window_size = (w, h);

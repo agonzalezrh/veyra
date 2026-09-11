@@ -181,6 +181,9 @@ fn start_winit_state(
         Box::new(WinitPresentationBackend(backend)),
         config.clone(),
     );
+    // P1 (audit): winit contexts cannot be recreated mid-session — a
+    // lost GL context must fail loudly instead of silently no-oping.
+    state.backend_origin = Some(compositor::BackendOrigin::Winit);
     // Trust the actual winit window over the struct default: without a
     // WM (raw Xvfb) no Resized event may arrive, leaving window_size
     // stale and desynchronizing projection, input mapping, and the
@@ -395,7 +398,14 @@ fn main() {
         handle
             .insert_source(winit_source, |event, _, state| match event {
                 WinitEvent::Resized { size, .. } => {
-                    state.window_size = (size.w as f32, size.h as f32);
+                    // P1 (audit): winit reports 0×N on some minimize/resize
+                    // transitions; storing it verbatim poisons projection,
+                    // picking, and the shell plane (aspect ∞). Clamp at the
+                    // single storage point.
+                    state.window_size = (
+                        (size.w as f32).max(1.0),
+                        (size.h as f32).max(1.0),
+                    );
                     // Same greppable shape as the startup log so consumers
                     // (harness) always see the CURRENT render size.
                     tracing::info!(window_size = ?state.window_size, "render size");
