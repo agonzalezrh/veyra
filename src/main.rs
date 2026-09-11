@@ -26,6 +26,7 @@ mod layout;
 mod maximize;
 mod native_backend;
 mod navigation;
+mod outputs;
 mod perf;
 mod persist;
 mod pointer_constraints;

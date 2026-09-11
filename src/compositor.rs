@@ -260,6 +260,11 @@ pub struct LookingGlass {
     pub perf: PerfStats,
     pub output: Option<Output>,
     pub window_size: (f32, f32),
+    /// #14 phase 1: the per-output state registry. The live single
+    /// output registers here so the multi-monitor data layer is
+    /// exercised; later phases migrate consumers off the scalar
+    /// `window_size` onto per-output state.
+    pub outputs: crate::outputs::OutputManager,
     pub last_mouse: (f64, f64),
     // Reserved API surface (relative-delta consumers); not read yet.
     #[allow(dead_code)]
@@ -623,6 +628,7 @@ impl LookingGlass {
             perf: PerfStats::new(),
             output: Some(output),
             window_size: (1280.0, 720.0),
+            outputs: crate::outputs::OutputManager::new(),
             last_mouse: (0.0, 0.0),
             last_dx: 0.0,
             last_dy: 0.0,
@@ -1951,6 +1957,19 @@ impl LookingGlass {
         }
         output.change_current_state(Some(mode), None, None, None);
         output.set_preferred(mode);
+        // #14 phase 1: mirror the live output into the per-output
+        // registry — first sync registers it, later syncs update it.
+        if self.outputs.is_empty() {
+            self.outputs.add(crate::outputs::OutputState {
+                name: output.name(),
+                mode: (w as u32, h as u32),
+                refresh_mhz: refresh,
+                scale: self.preferred_scale,
+                global_pos: (0, 0),
+            });
+        } else {
+            self.outputs.update_primary_mode(w as u32, h as u32, refresh);
+        }
         info!(w, h, refresh, "output mode synced with backend size");
     }
 
@@ -1967,6 +1986,8 @@ impl LookingGlass {
         }
         output.change_current_state(None, None, Some(scale_from_f64(scale)), None);
         self.preferred_scale = scale;
+        // #14 phase 1: keep the registry's scale in step.
+        self.outputs.update_primary_scale(scale);
         // wp_fractional_scale clients learn the new preferred scale on
         // their next bind; already-bound surfaces get the update here.
         let surfaces: Vec<WlSurface> = self.wayland_surfaces.values().cloned().collect();
