@@ -221,9 +221,24 @@ impl OutputManager {
 
     /// Total global desktop plane size (the union of the tiled row).
     pub fn global_extents(&self) -> (u32, u32) {
-        let w: u32 = self.states.values().map(|o| o.mode.0).sum();
-        let h = self.states.values().map(|o| o.mode.1).max().unwrap_or(0);
-        (w, h)
+        // AABB of all output rects measured from the desktop origin —
+        // respects actual placements (stacked outputs, mixed sizes),
+        // not just the default row tiling. Negative-origin outputs
+        // extend the plane leftward/upward but do not shrink the
+        // origin-anchored extents.
+        let w = self
+            .states
+            .values()
+            .map(|o| o.global_pos.0.max(0) as u64 + o.mode.0 as u64)
+            .max()
+            .unwrap_or(0);
+        let h = self
+            .states
+            .values()
+            .map(|o| o.global_pos.1.max(0) as u64 + o.mode.1 as u64)
+            .max()
+            .unwrap_or(0);
+        (w.min(u32::MAX as u64) as u32, h.min(u32::MAX as u64) as u32)
     }
 
     /// Resolve a global-plane point (physical px) to an output id.
@@ -361,5 +376,138 @@ mod tests {
         // Extents height is the TALLEST row member (1024), not the
         // pre-resize mode.
         assert_eq!(m.global_extents(), (2560, 1024));
+    }
+
+    // ---- G-E5.4 remainder: synthetic multi-output regression battery.
+    // These tests pin the INPUT geometry contract that multi-output
+    // presentation will rely on: global-plane hit testing, per-event
+    // output-local conversion, and the straddling-window rule (the hit
+    // output is the POINTER's output, not the window-origin output).
+    // Manual placement is applied by writing global_pos directly after
+    // add() — retile() owns placement until a persistent position
+    // source exists, and these tests never trigger it afterwards.
+
+    /// Two outputs side by side with different resolutions:
+    /// A(1920x1080) at (0,0), B(1280x720) at (1920,0).
+    fn side_by_side() -> OutputManager {
+        let mut m = OutputManager::new();
+        m.add(out("A", 1920, 1080));
+        m.add(out("B", 1280, 720));
+        let ids = m.order.clone();
+        m.states.get_mut(&ids[1]).unwrap().global_pos = (1920, 0);
+        m
+    }
+
+    #[test]
+    fn battery_hit_testing_mixed_resolutions() {
+        let m = side_by_side();
+        let a = m.order[0];
+        let b = m.order[1];
+        assert_eq!(m.output_at_global(0, 0), Some(a));
+        assert_eq!(m.output_at_global(1919, 1079), Some(a));
+        // Boundary: the first pixel of B belongs to B, the last pixel
+        // of A to A (x = 1920 is exclusive on A's [0,1920) range).
+        assert_eq!(m.output_at_global(1920, 0), Some(b));
+        assert_eq!(m.output_at_global(1919, 0), Some(a));
+        assert_eq!(m.output_at_global(3199, 719), Some(b));
+        assert_eq!(m.output_at_global(3200, 0), None, "past the right edge");
+        assert_eq!(m.output_at_global(100, 1080), None, "below A's bottom");
+        assert_eq!(m.output_at_global(2000, 1080), None, "below B's bottom");
+    }
+
+    #[test]
+    fn battery_to_local_converts_per_output() {
+        let m = side_by_side();
+        let b = m.order[1];
+        // Global (2000, 100) → B-local (80, 100).
+        assert_eq!(m.to_local(2000, 100), Some((b, 80, 100)));
+        let a = m.order[0];
+        assert_eq!(m.to_local(500, 900), Some((a, 500, 900)));
+        assert_eq!(m.to_local(-1, 0), None, "negative global: outside");
+    }
+
+    #[test]
+    fn battery_negative_origins() {
+        let mut m = OutputManager::new();
+        m.add(out("L", 1920, 1080));
+        m.add(out("R", 1920, 1080));
+        let ids = m.order.clone();
+        // L sits to the LEFT of the origin: [-1920, 0).
+        m.states.get_mut(&ids[0]).unwrap().global_pos = (-1920, 0);
+        m.states.get_mut(&ids[1]).unwrap().global_pos = (0, 0);
+        let l = ids[0];
+        let r = ids[1];
+        assert_eq!(m.output_at_global(-1920, 0), Some(l));
+        assert_eq!(m.output_at_global(-1, 500), Some(l));
+        assert_eq!(m.output_at_global(0, 0), Some(r));
+        // Local conversion crosses the negative boundary correctly.
+        assert_eq!(m.to_local(-1000, 400), Some((l, 920, 400)));
+        assert_eq!(m.output_at_global(-1921, 0), None);
+    }
+
+    #[test]
+    fn battery_outputs_stacked_vertically() {
+        let mut m = OutputManager::new();
+        m.add(out("top", 1920, 1080));
+        m.add(out("bot", 2560, 1440));
+        let ids = m.order.clone();
+        m.states.get_mut(&ids[1]).unwrap().global_pos = (0, 1080);
+        let t = ids[0];
+        let b = ids[1];
+        assert_eq!(m.output_at_global(100, 1079), Some(t));
+        assert_eq!(m.output_at_global(100, 1080), Some(b));
+        assert_eq!(m.to_local(1500, 2000), Some((b, 1500, 920)));
+        assert_eq!(m.global_extents(), (2560, 2520));
+    }
+
+    #[test]
+    fn battery_scale_does_not_shift_input_plane() {
+        // Input geometry is the PHYSICAL plane: per-output scale affects
+        // client surface rendering, never output hit testing or
+        // output-local input coordinates.
+        let mut m = side_by_side();
+        let ids = m.order.clone();
+        m.states.get_mut(&ids[1]).unwrap().scale = 2.0;
+        let b = ids[1];
+        assert_eq!(m.to_local(2000, 100), Some((b, 80, 100)));
+        assert_eq!(m.output_at_global(2500, 500), Some(b));
+    }
+
+    #[test]
+    fn battery_overlapping_outputs_prefer_primary() {
+        let mut m = OutputManager::new();
+        m.add(out("A", 1920, 1080));
+        m.add(out("B", 1920, 1080));
+        let ids = m.order.clone();
+        // B fully overlaps A (mirrored clone). A is primary.
+        m.states.get_mut(&ids[1]).unwrap().global_pos = (0, 0);
+        let a = ids[0];
+        assert_eq!(m.output_at_global(100, 100), Some(a), "primary wins overlap");
+        // Primary B: now B wins.
+        let mut m2 = OutputManager::new();
+        m2.add(out("A", 1920, 1080));
+        m2.add(out("B", 1920, 1080));
+        let ids2 = m2.order.clone();
+        m2.states.get_mut(&ids2[1]).unwrap().global_pos = (0, 0);
+        m2.set_primary(ids2[1]);
+        assert_eq!(m2.output_at_global(100, 100), Some(ids2[1]));
+    }
+
+    #[test]
+    fn battery_straddling_window_hits_pointer_output() {
+        // A window spans global x [1800, 2100] across the A|B boundary.
+        // The same window must receive events in DIFFERENT output-local
+        // spaces depending on where the pointer is: the hit output is
+        // the pointer's output, NOT the window-origin output.
+        let m = side_by_side();
+        let a = m.order[0];
+        let b = m.order[1];
+        // Pointer over the window's left part (on A):
+        assert_eq!(m.to_local(1850, 300), Some((a, 1850, 300)));
+        // Pointer over the window's right part (on B) — the same
+        // window, different coordinate space:
+        assert_eq!(m.to_local(2050, 300), Some((b, 130, 300)));
+        // And the event just OUTSIDE the window on B still hits B:
+        assert_eq!(m.to_local(2200, 300), Some((b, 280, 300)));
     }
 }
