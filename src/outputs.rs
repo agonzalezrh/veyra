@@ -1,20 +1,19 @@
-//! Per-output state model (#14 phase 1 — G-E5 multi-monitor audit).
+//! Per-output state model (#14 / G-E5 — multi-monitor architecture).
 //!
 //! The audit (BUG_LIST #14) inventoried the single-output assumptions:
 //! one `window_size`, one wl_output global, projection/hit-testing
 //! keyed off one framebuffer. The required shape is a per-output state
 //! map whose outputs tile the global desktop plane, with per-output
-//! hit testing. This module is that shape's data layer: it owns the
-//! output registry (mode, scale, global position), global-rect
-//! computation, and point→output resolution. Wiring consumers off
-//! `window_size` onto this model proceeds incrementally in later
-//! phases; today the live compositor registers its single output here
-//! so the structure is exercised on every real session.
+//! hit testing. This module is that shape's data layer:
 //!
-//! Layout rule (audit): outputs tile the global desktop plane as a
-//! horizontal row (x accumulates by width, y pinned to 0) until a
-//! per-output position source exists (winit multi-window / DRM
-//! connector geometry in later phases).
+//! - `OutputId` is the stable identity (never reused, survives mode
+//!   changes and removal/re-add) — consumers key off it, never off
+//!   slot indices.
+//! - `OutputManager` is the `HashMap<OutputId, OutputState>` registry
+//!   plus an insertion-ordered id list that defines the horizontal row
+//!   tiling (x accumulates by width, y pinned to 0) until a per-output
+//!   position source exists (winit multi-window / DRM connector
+//!   geometry in a later phase).
 //!
 //! Phase-1 note: only the registry-consumer methods the compositor
 //! exercises today are wired; the multi-output accessors (hit test,
@@ -22,11 +21,19 @@
 //! exercised by this module's tests in the meantime.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
+/// Stable output identity. Assigned from a monotonic counter — ids are
+/// never recycled, so a removed and re-added output is a DIFFERENT
+/// output (matching X11/Wayland semantics where a hotplugged monitor
+/// is a new wl_output).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OutputId(pub u64);
+
 /// One output's state: identity, mode, scale, and its position on the
 /// global desktop plane.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutputState {
-    pub name: String,
     /// Current mode in physical pixels.
     pub mode: (u32, u32),
     /// Advertised refresh in mHz (e.g. 60000 = 60 Hz).
@@ -36,6 +43,8 @@ pub struct OutputState {
     /// Global position of the output's top-left corner on the desktop
     /// plane, in physical pixels.
     pub global_pos: (i32, i32),
+    /// wl_output name (e.g. "DP-1") — diagnostic/UX label.
+    pub name: String,
 }
 
 impl OutputState {
@@ -44,12 +53,16 @@ impl OutputState {
     }
 }
 
-/// The output registry. Phase 1 keeps single-output behavior identical:
-/// the primary output mirrors the existing `window_size`/scale state.
-#[derive(Debug, Clone, Default)]
+/// The output registry: `HashMap<OutputId, OutputState>` + insertion
+/// order. Phase 1 keeps single-output behavior identical: the primary
+/// output mirrors the existing `window_size`/scale state.
+#[derive(Debug, Default)]
 pub struct OutputManager {
-    outputs: Vec<OutputState>,
-    primary: usize,
+    states: HashMap<OutputId, OutputState>,
+    /// Insertion order — defines the row tiling and iteration order.
+    order: Vec<OutputId>,
+    primary: Option<OutputId>,
+    next_id: u64,
 }
 
 impl OutputManager {
@@ -57,23 +70,32 @@ impl OutputManager {
         Self::default()
     }
 
-    /// Register an output; it is appended and tiled to the right of the
-    /// existing row. Returns its index.
-    pub fn add(&mut self, mut state: OutputState) -> usize {
-        let x: i32 = self.outputs.iter().map(|o| o.mode.0 as i32).sum();
+    /// Register an output; it is appended to the row (tiled right of
+    /// the existing outputs). Returns its stable id.
+    pub fn add(&mut self, mut state: OutputState) -> OutputId {
+        let id = OutputId(self.next_id);
+        self.next_id += 1;
+        let x: i32 = self
+            .order
+            .iter()
+            .filter_map(|i| self.states.get(i))
+            .map(|o| o.mode.0 as i32)
+            .sum();
         state.global_pos = (x, 0);
-        self.outputs.push(state);
-        self.outputs.len() - 1
+        self.states.insert(id, state);
+        self.order.push(id);
+        if self.primary.is_none() {
+            self.primary = Some(id);
+        }
+        id
     }
 
-    pub fn remove(&mut self, index: usize) -> Option<OutputState> {
-        if index >= self.outputs.len() {
-            return None;
-        }
-        let removed = self.outputs.remove(index);
+    pub fn remove(&mut self, id: OutputId) -> Option<OutputState> {
+        let removed = self.states.remove(&id)?;
+        self.order.retain(|i| *i != id);
         self.retile();
-        if self.primary >= self.outputs.len() {
-            self.primary = 0;
+        if self.primary == Some(id) {
+            self.primary = self.order.first().copied();
         }
         Some(removed)
     }
@@ -81,31 +103,45 @@ impl OutputManager {
     /// Re-tile the row after add/remove/resize.
     fn retile(&mut self) {
         let mut x = 0;
-        for o in &mut self.outputs {
-            o.global_pos = (x, 0);
-            x += o.mode.0 as i32;
+        for id in &self.order {
+            if let Some(o) = self.states.get_mut(id) {
+                o.global_pos = (x, 0);
+                x += o.mode.0 as i32;
+            }
         }
     }
 
     pub fn len(&self) -> usize {
-        self.outputs.len()
+        self.states.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.outputs.is_empty()
+        self.states.is_empty()
     }
 
-    pub fn outputs(&self) -> &[OutputState] {
-        &self.outputs
+    /// Outputs in tiling (insertion) order.
+    pub fn outputs(&self) -> Vec<(OutputId, &OutputState)> {
+        self.order
+            .iter()
+            .filter_map(|id| self.states.get(id).map(|s| (*id, s)))
+            .collect()
     }
 
-    pub fn primary_index(&self) -> usize {
-        self.primary.min(self.outputs.len().saturating_sub(1))
+    pub fn get(&self, id: OutputId) -> Option<&OutputState> {
+        self.states.get(&id)
     }
 
-    pub fn set_primary(&mut self, index: usize) -> bool {
-        if index < self.outputs.len() {
-            self.primary = index;
+    pub fn get_mut(&mut self, id: OutputId) -> Option<&mut OutputState> {
+        self.states.get_mut(&id)
+    }
+
+    pub fn primary_id(&self) -> Option<OutputId> {
+        self.primary
+    }
+
+    pub fn set_primary(&mut self, id: OutputId) -> bool {
+        if self.states.contains_key(&id) {
+            self.primary = Some(id);
             true
         } else {
             false
@@ -114,7 +150,7 @@ impl OutputManager {
 
     /// Primary output state — the single-output compatibility view.
     pub fn primary(&self) -> Option<&OutputState> {
-        self.outputs.get(self.primary_index())
+        self.primary.and_then(|id| self.states.get(&id))
     }
 
     /// Primary output mode — mirrors the existing `window_size`.
@@ -129,8 +165,7 @@ impl OutputManager {
 
     /// Update the primary output's mode (resize) and re-tile.
     pub fn update_primary_mode(&mut self, w: u32, h: u32, refresh_mhz: i32) {
-        let idx = self.primary_index();
-        if let Some(o) = self.outputs.get_mut(idx) {
+        if let Some(o) = self.primary.and_then(|id| self.states.get_mut(&id)) {
             o.mode = (w, h);
             o.refresh_mhz = refresh_mhz;
         }
@@ -138,44 +173,43 @@ impl OutputManager {
     }
 
     pub fn update_primary_scale(&mut self, scale: f64) {
-        let idx = self.primary_index();
-        if let Some(o) = self.outputs.get_mut(idx) {
+        if let Some(o) = self.primary.and_then(|id| self.states.get_mut(&id)) {
             o.scale = scale;
         }
     }
 
     /// Total global desktop plane size (the union of the tiled row).
     pub fn global_extents(&self) -> (u32, u32) {
-        let w: u32 = self.outputs.iter().map(|o| o.mode.0).sum();
-        let h = self.outputs.iter().map(|o| o.mode.1).max().unwrap_or(0);
+        let w: u32 = self.states.values().map(|o| o.mode.0).sum();
+        let h = self.states.values().map(|o| o.mode.1).max().unwrap_or(0);
         (w, h)
     }
 
-    /// Resolve a global-plane point (physical px) to an output index.
+    /// Resolve a global-plane point (physical px) to an output id.
     /// Point-in-rect per output; the primary wins ties.
-    pub fn output_at_global(&self, x: i32, y: i32) -> Option<usize> {
-        let primary = self.primary_index();
+    pub fn output_at_global(&self, x: i32, y: i32) -> Option<OutputId> {
         let mut best = None;
-        for (i, o) in self.outputs.iter().enumerate() {
+        for id in &self.order {
+            let o = &self.states[id];
             let (ox, oy) = o.global_pos;
             let (ow, oh) = o.mode;
             let inside = x >= ox && x < ox + ow as i32 && y >= oy && y < oy + oh as i32;
             if inside {
-                if best == Some(primary) {
-                    return Some(primary);
+                if best == self.primary {
+                    return self.primary;
                 }
-                best = Some(i);
+                best = Some(*id);
             }
         }
         best
     }
 
     /// Convert a global-plane point to output-local coordinates.
-    /// Returns (index, local_x, local_y).
-    pub fn to_local(&self, x: i32, y: i32) -> Option<(usize, i32, i32)> {
-        let idx = self.output_at_global(x, y)?;
-        let o = &self.outputs[idx];
-        Some((idx, x - o.global_pos.0, y - o.global_pos.1))
+    /// Returns (id, local_x, local_y).
+    pub fn to_local(&self, x: i32, y: i32) -> Option<(OutputId, i32, i32)> {
+        let id = self.output_at_global(x, y)?;
+        let o = &self.states[&id];
+        Some((id, x - o.global_pos.0, y - o.global_pos.1))
     }
 }
 
@@ -199,9 +233,21 @@ mod tests {
         m.add(out("eDP-1", 1280, 720));
         assert_eq!(m.primary_size(), Some((1280.0, 720.0)));
         assert_eq!(m.global_extents(), (1280, 720));
-        assert_eq!(m.output_at_global(0, 0), Some(0));
-        assert_eq!(m.output_at_global(1279, 719), Some(0));
+        assert_eq!(m.output_at_global(0, 0), Some(OutputId(0)));
+        assert_eq!(m.output_at_global(1279, 719), Some(OutputId(0)));
         assert_eq!(m.output_at_global(1280, 0), None);
+    }
+
+    #[test]
+    fn ids_are_stable_and_never_reused() {
+        let mut m = OutputManager::new();
+        let a = m.add(out("A", 1920, 1080));
+        let b = m.add(out("B", 1280, 720));
+        assert_ne!(a, b);
+        m.remove(a);
+        let c = m.add(out("C", 1920, 1080));
+        assert_ne!(c, a, "removed id must not be recycled");
+        assert_ne!(c, b);
     }
 
     #[test]
@@ -209,27 +255,23 @@ mod tests {
         let mut m = OutputManager::new();
         m.add(out("DP-1", 1920, 1080));
         m.add(out("eDP-1", 1280, 720));
-        assert_eq!(m.outputs()[0].global_pos, (0, 0));
-        assert_eq!(m.outputs()[1].global_pos, (1920, 0));
+        let outs = m.outputs();
+        assert_eq!(outs[0].1.global_pos, (0, 0));
+        assert_eq!(outs[1].1.global_pos, (1920, 0));
         assert_eq!(m.global_extents(), (3200, 1080));
     }
 
     #[test]
     fn hit_test_resolves_per_output_and_prefers_primary_on_tie() {
         let mut m = OutputManager::new();
-        m.add(out("DP-1", 1920, 1080));
-        m.add(out("eDP-1", 1280, 720));
-        assert_eq!(m.output_at_global(100, 100), Some(0));
-        assert_eq!(m.output_at_global(2000, 100), Some(1));
-        assert_eq!(m.output_at_global(1921, 700), Some(1));
-        // Primary is output 1 here? No — primary defaults to 0; a point
-        // inside only output 1 resolves to 1.
-        assert_eq!(m.primary_index(), 0);
-        m.set_primary(1);
-        assert_eq!(m.primary_index(), 1);
+        let a = m.add(out("DP-1", 1920, 1080));
+        let b = m.add(out("eDP-1", 1280, 720));
+        assert_eq!(m.output_at_global(100, 100), Some(a));
+        assert_eq!(m.output_at_global(2000, 100), Some(b));
+        assert_eq!(m.primary_id(), Some(a));
+        m.set_primary(b);
+        assert_eq!(m.primary_id(), Some(b));
         assert_eq!(m.primary_size(), Some((1280.0, 720.0)));
-        // A point inside BOTH cannot happen in a row tiling — assert
-        // out-of-plane points miss.
         assert_eq!(m.output_at_global(-5, 5), None);
         assert_eq!(m.output_at_global(5000, 5000), None);
     }
@@ -239,23 +281,26 @@ mod tests {
         let mut m = OutputManager::new();
         m.add(out("DP-1", 1920, 1080));
         m.add(out("eDP-1", 1280, 720));
-        let (idx, lx, ly) = m.to_local(2000, 300).unwrap();
-        assert_eq!(idx, 1);
+        let (id, lx, ly) = m.to_local(2000, 300).unwrap();
+        assert_eq!(id, OutputId(1));
         assert_eq!((lx, ly), (80, 300));
         assert!(m.to_local(1920, 1080).is_none()); // y past the 720 row
     }
 
     #[test]
-    fn remove_retiles_and_keeps_primary_valid() {
+    fn remove_retiles_and_rehomes_primary() {
         let mut m = OutputManager::new();
-        m.add(out("A", 1920, 1080));
-        m.add(out("B", 1280, 720));
-        m.set_primary(1);
-        m.remove(0);
+        let a = m.add(out("A", 1920, 1080));
+        let b = m.add(out("B", 1280, 720));
+        m.set_primary(b);
+        m.remove(a);
         assert_eq!(m.len(), 1);
-        assert_eq!(m.outputs()[0].global_pos, (0, 0));
-        assert_eq!(m.primary_index(), 0, "primary clamps after removal");
-        assert_eq!(m.primary_size(), Some((1280.0, 720.0)));
+        assert_eq!(m.outputs()[0].1.global_pos, (0, 0));
+        assert_eq!(m.primary_id(), Some(b), "unrelated primary survives removal");
+        m.remove(b);
+        assert_eq!(m.primary_id(), None, "all removed → no primary");
+        assert_eq!(m.primary_size(), None);
+        assert_eq!(m.primary_scale(), 1.0);
     }
 
     #[test]
@@ -264,8 +309,8 @@ mod tests {
         m.add(out("A", 1920, 1080));
         m.add(out("B", 1280, 720));
         m.update_primary_mode(1280, 1024, 144000);
-        assert_eq!(m.outputs()[1].global_pos, (1280, 0));
-        assert_eq!(m.outputs()[0].refresh_mhz, 144000);
+        assert_eq!(m.outputs()[1].1.global_pos, (1280, 0));
+        assert_eq!(m.outputs()[0].1.refresh_mhz, 144000);
         // Extents height is the TALLEST row member (1024), not the
         // pre-resize mode.
         assert_eq!(m.global_extents(), (2560, 1024));
