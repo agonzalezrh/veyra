@@ -328,7 +328,13 @@ fn main() {
         state.add_benchmark_visual(p, i, bench_count);
     }
     if bench_count > 0 {
-        tracing::info!(total = %(bench_count + 2), "benchmark scene ready");
+        // G-G4: continuous frame demand — static producers return
+        // Unchanged and the demand-driven loop would go idle, measuring
+        // nothing. Auto-orbit keeps the scheduler animating so the
+        // PROFILE lines capture the steady-state draw path at N
+        // visuals (culling included).
+        state.workspace_manager.active_mut().auto_orbit = true;
+        tracing::info!(total = %(bench_count + 2), "benchmark scene ready (auto-orbit on)");
     }
 
     // Wayland socket listener
