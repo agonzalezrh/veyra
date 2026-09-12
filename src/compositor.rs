@@ -259,7 +259,6 @@ pub struct LookingGlass {
     /// erroring every frame indefinitely.
     producer_error_counts: HashMap<VisualId, u32>,
     pub perf: PerfStats,
-    pub output: Option<Output>,
     pub window_size: (f32, f32),
     /// #14 phase 1: the per-output state registry. The live single
     /// output registers here so the multi-monitor data layer is
@@ -526,6 +525,7 @@ impl LookingGlass {
             scale: 1.0,
             global_pos: (0, 0),
             camera: Camera::new(),
+            wl: None,
         });
         let compositor_state = CompositorState::new::<Self>(display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
@@ -613,6 +613,9 @@ impl LookingGlass {
             Some(scale_from_f64(out_scale)),
             None,
         );
+        // G-E5.2 completion: the registry owns the protocol handle —
+        // the compositor has no separate singleton output field.
+        outputs.set_primary_wl(output.clone());
         output.set_preferred(Mode {
             size: (1280, 720).into(),
             refresh: 60000,
@@ -638,7 +641,6 @@ impl LookingGlass {
             producers: Vec::new(),
             producer_error_counts: HashMap::new(),
             perf: PerfStats::new(),
-            output: Some(output),
             window_size: (1280.0, 720.0),
             outputs,
             last_mouse: (0.0, 0.0),
@@ -1992,7 +1994,7 @@ impl LookingGlass {
     /// backend) and on every resize; smithay propagates mode events to
     /// connected clients automatically.
     pub fn sync_output_mode(&mut self, w: i32, h: i32, refresh: i32) {
-        let Some(output) = self.output.clone() else {
+        let Some(output) = self.outputs.primary_wl() else {
             return;
         };
         let mode = Mode {
@@ -2022,7 +2024,7 @@ impl LookingGlass {
     /// the preferred fractional scale to every mapped surface. Called
     /// from the config-reload path (inotify watch in main.rs).
     pub fn sync_output_scale(&mut self, scale: f64) {
-        let Some(output) = self.output.clone() else {
+        let Some(output) = self.outputs.primary_wl() else {
             return;
         };
         if self.preferred_scale == scale {
@@ -2465,8 +2467,8 @@ impl LookingGlass {
         self.presentation_seq = self.presentation_seq.wrapping_add(1);
         let seq = self.presentation_seq;
         let refresh_mhz = self
-            .output
-            .as_ref()
+            .outputs
+            .primary_wl()
             .and_then(|o| o.current_mode())
             .map(|m| m.refresh)
             .unwrap_or(60000);
@@ -2479,7 +2481,7 @@ impl LookingGlass {
         };
         let (psec, pnsec) = monotonic_since_boot();
         let ptime = Duration::new(psec as u64, pnsec);
-        let output = self.output.clone();
+        let output = self.outputs.primary_wl();
         for surface in self.wayland_surfaces.values() {
             let feedbacks = with_states(surface, |states| {
                 std::mem::take(
@@ -2622,7 +2624,12 @@ impl LookingGlass {
     /// query. Coordinate chain (ARCHITECTURE §15): surface → window-local
     /// → workspace → world → camera → output-local → framebuffer.
     pub fn fb_size(&self) -> (f32, f32) {
-        self.outputs.primary_size().unwrap_or(self.window_size)
+        // G-E5.2 completion: the registry is the single source of
+        // truth. A primary always exists (pre-seeded at construction;
+        // remove() reassigns and never empties) — the constant is a
+        // cold-start guard only. `window_size` remains the resize WRITE
+        // input (line ~2128), never a read path.
+        self.outputs.primary_size().unwrap_or((1280.0, 720.0))
     }
 
     /// Compute proj × view matrix for the current camera.

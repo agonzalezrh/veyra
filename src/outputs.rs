@@ -54,6 +54,12 @@ pub struct OutputState {
     pub name: String,
     /// This output's live presentation view (G-E5.3).
     pub camera: Camera,
+    /// G-E5.2 completion: the smithay protocol handle (the wl_output
+    /// global clients bind). One per output — with multi-output, every
+    /// output advertises its own mode/scale to the clients that bind
+    /// it. The registry is the single source of truth; this is the
+    /// protocol mirror, not a second source.
+    pub wl: Option<smithay::output::Output>,
 }
 
 impl OutputState {
@@ -192,6 +198,21 @@ impl OutputManager {
         self.retile();
     }
 
+    /// G-E5.2 completion: attach the smithay protocol handle to the
+    /// primary output (called once at construction when the wl_output
+    /// global is created).
+    pub fn set_primary_wl(&mut self, wl: smithay::output::Output) {
+        if let Some(o) = self.primary_mut() {
+            o.wl = Some(wl);
+        }
+    }
+
+    /// G-E5.2 completion: the primary output's protocol handle. The
+    /// handle is a cheap clone (Arc internally).
+    pub fn primary_wl(&self) -> Option<smithay::output::Output> {
+        self.primary().and_then(|o| o.wl.clone())
+    }
+
     pub fn update_primary_scale(&mut self, scale: f64) {
         if let Some(o) = self.primary.and_then(|id| self.states.get_mut(&id)) {
             o.scale = scale;
@@ -245,6 +266,7 @@ mod tests {
             scale: 1.0,
             global_pos: (0, 0),
             camera: Camera::new(),
+            wl: None,
         }
     }
 
