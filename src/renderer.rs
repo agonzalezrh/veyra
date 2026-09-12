@@ -966,26 +966,63 @@ pub fn render_scene(
 
     let (w, h) = backend.size();
 
-    // Stash raw pointers to EGL context and surface so we can rebind the
-    // window surface inside with_context() closures. with_context() internally
-    // calls eglMakeCurrent with EGL_NO_SURFACE, which unbinds the window surface
-    // and causes GL_INVALID_FRAMEBUFFER_OPERATION on subsequent GL operations.
-    // Using raw pointers avoids borrow conflicts with with_context(&mut self).
-    // Stash the surface pointer BEFORE borrowing renderer (borrows backend).
-    let egl_surface_ptr: Option<*const smithay::backend::egl::EGLSurface> =
-        backend.egl_surface().map(|s| s as *const _);
+    // G-F3 (P2 #9 remainder): the EGL binding pair is owned by ONE
+    // type with a documented invariant instead of two loose raw
+    // pointers. The unsafety is irreducible with smithay's current
+    // API: `GlesRenderer::with_context` makes current with
+    // EGL_NO_SURFACE (backend/egl/context.rs:363), so every raw-GL
+    // closure drawing to the default framebuffer must re-make-current
+    // with the presentation surface — but the closure already holds
+    // `&ffi::Gles2` borrowed from the renderer borrowed from the
+    // backend that owns the surface. The pointers are valid for the
+    // whole render_scene body (the backend outlives it) and never
+    // stored. Rebind failures are ERRORS, not panics: a lost context
+    // surfaces at frame submission and the G-E5 recovery path takes
+    // over.
+    struct SurfaceBinding {
+        ctx: *const smithay::backend::egl::EGLContext,
+        surface: Option<*const smithay::backend::egl::EGLSurface>,
+    }
+    impl SurfaceBinding {
+        /// SAFETY: both pointers must outlive every `rebind` call —
+        /// guaranteed by render_scene's borrow structure (the backend
+        /// binding outlives the function; nothing mutates the EGL
+        /// objects during rendering).
+        fn rebind(&self, gl: &ffi::Gles2) -> Result<(), SwapBuffersError> {
+            if let Some(surface_ptr) = self.surface {
+                unsafe {
+                    let surface = &*surface_ptr;
+                    let ctx = &*self.ctx;
+                    ctx.make_current_with_surface(surface).map_err(|_| {
+                        SwapBuffersError::ContextLost(
+                            "surface rebind failed (context lost)".into(),
+                        )
+                    })?;
+                }
+                unsafe { gl.BindFramebuffer(ffi::FRAMEBUFFER, 0) };
+            }
+            Ok(())
+        }
+    }
 
+    // Stash the surface pointer BEFORE borrowing renderer (borrows backend).
+    let surface_ptr: Option<*const smithay::backend::egl::EGLSurface> =
+        backend.egl_surface().map(|s| s as *const _);
     let renderer = backend.renderer();
-    let egl_ctx_ptr: *const smithay::backend::egl::EGLContext = renderer.egl_context();
+    let binding = SurfaceBinding {
+        ctx: renderer.egl_context(),
+        surface: surface_ptr,
+    };
 
     // Helper to rebind the window surface as the current draw/read target.
-    // Must be called inside each with_context() closure before any GL operations.
-    let rebind_surface = |gl: &ffi::Gles2| unsafe {
-        if let Some(surface_ptr) = egl_surface_ptr {
-            (*egl_ctx_ptr)
-                .make_current_with_surface(&*surface_ptr)
-                .expect("make_current_with_surface");
-            gl.BindFramebuffer(ffi::FRAMEBUFFER, 0);
+    // Must be called inside each with_context() closure before any GL
+    // operations. Failure is logged once per frame; the frame fails
+    // downstream at submit (context-loss handling takes over).
+    let mut rebind_failed = false;
+    let mut rebind_surface = |gl: &ffi::Gles2| {
+        if binding.rebind(gl).is_err() && !rebind_failed {
+            rebind_failed = true;
+            tracing::error!("surface rebind failed — frame will not present");
         }
     };
 
