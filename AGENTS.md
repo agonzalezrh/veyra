@@ -763,6 +763,40 @@ Priority order from audit:
 
 **Status: ✅ G-E5 Complete (499 unit tests; protocol 111/0/0; input 110/0/0)**
 
+### G-E5 (continued) — Multi-Output Architecture
+
+Post-audit direction: remove the single-output architectural constraint
+before any new visual features. Five-phase plan adopted:
+
+```text
+G-E5  Multi-output architecture   ← in progress
+G-F   Native hardware / presentation hardening
+G-G   Rendering + performance scalability
+G-H   Desktop UX / spatial interaction
+G-I   Production hardening / release
+```
+
+Milestones landed:
+- **G-E5.0** documentation reconciliation (COMPATIBILITY_MATRIX rewritten
+  to post-G-E5 reality; RECOMMENDATIONS addendum; README refresh)
+- **G-E5.1** `OutputId` + `HashMap<OutputId, OutputState>` registry
+  (outputs.rs; stable ids, row tiling, hit testing, primary semantics)
+- **G-E5.2** registry-backed `fb_size()`; ALL single-output consumers
+  migrated (projection, picking, layout, taskbar, menus, fullscreen,
+  camera fits) — the scalar survives only as the write path + fallback
+- **G-E5.4 step 1** explicit pointer→output resolution at all four
+  input entry points (identity single-output; output-local coords feed
+  picking)
+
+Remaining: G-E5.3 per-output cameras (workspace/world shared, view
+per-output), G-E5.5 one-winit-window-per-output, G-E5.6 DRM
+multi-connector, G-E5.7 multi-monitor integration tests. Exit criteria:
+two outputs w/ different resolutions+scales, cross-output picking,
+straddling windows, per-output fullscreen/shell/IME, hotplug without
+restart — and single-output tests pass unchanged.
+
+**Status: 🟡 G-E5 multi-output in progress (500 unit tests; protocol 111/0/0; input 110/0/0)**
+
 ---
 
 # 25. Commit discipline
