@@ -285,7 +285,6 @@ impl Visual {
             VisualContent::Test => None,
         }
     }
-
     pub fn texture_mut(&mut self) -> Option<&mut GlesTexture> {
         match &mut self.content {
             VisualContent::WaylandSurface(t) | VisualContent::ExternalTexture(t) => Some(t),
@@ -293,6 +292,36 @@ impl Visual {
             VisualContent::Test => None,
         }
     }
+}
+
+/// J2 parent-local offset for a surface child (subsurface / IME popup)
+/// whose `location` is the child's TOP-LEFT corner relative to the
+/// parent surface's top-left (Wayland client convention, y down).
+///
+/// Returns the offset from the parent visual's CENTER in the parent's
+/// unrotated frame (workspace convention, y up) — the local translation
+/// to compose under the parent matrix. Two conventions meet here:
+///
+/// - the parent transform anchors at its center, so the offset is
+///   measured from the center, not the top-left corner;
+/// - the parent's title strip sits ABOVE the client surface (the full
+///   quad is content * (1 + title_frac)), so the parent surface's
+///   top-left sits `ph * (1 - t) / 2` above the parent center.
+///
+/// Callers divide the result by the parent's scale: the parent matrix
+/// re-applies scale and rotation, so the child follows both.
+pub fn surface_child_local_offset(
+    location: (i32, i32),
+    size: (i32, i32),
+    parent_content: (i32, i32),
+    parent_title_frac: f32,
+) -> (f32, f32) {
+    let (lx, ly) = (location.0 as f32, location.1 as f32);
+    let (w, h) = (size.0 as f32, size.1 as f32);
+    let (pw, ph) = (parent_content.0 as f32, parent_content.1 as f32);
+    let dx = lx + w * 0.5 - pw * 0.5;
+    let dy = ph * (1.0 - parent_title_frac) * 0.5 - (ly + h * 0.5);
+    (dx, dy)
 }
 
 #[derive(Debug, Default)]
@@ -1593,6 +1622,67 @@ mod tests {
     }
 
     // ── J2 popup coordinate model ────────────────────────────────────
+
+    /// The surface-child offset helper places a client decoration
+    /// subsurface exactly where the client put it: a 700x26 title bar at
+    /// location (0,-26) on a 700x474 parent (foot's CSD layout) sits
+    /// centered above the parent surface, hugging its top edge.
+    #[test]
+    fn surface_child_offset_foot_csd_title_bar() {
+        let t = 0.06_f32; // default title fraction
+        let (dx, dy) = super::surface_child_local_offset((0, -26), (700, 26), (700, 474), t);
+        assert!((dx - 0.0).abs() < 1e-4, "dx {}", dx);
+        // Surface top-left sits ph*(1-t)/2 = 222.78 above the parent
+        // center; the bar center is 13px above that.
+        let expected = 474.0 * (1.0 - t) * 0.5 + 13.0;
+        assert!((dy - expected).abs() < 1e-4, "dy {} vs {}", dy, expected);
+    }
+
+    /// The five foot CSD frame pieces all land relative to the parent
+    /// center, NOT displaced by (+pw/2, -ph/2) like the old top-left
+    /// math (the bug scattered them across the desktop as ghosts).
+    #[test]
+    fn surface_child_offset_foot_csd_borders() {
+        let t = 0.06_f32;
+        let surface_top = 474.0 * (1.0 - t) * 0.5;
+        // Left border: 5x500 at (-5,-26) → hugs the left edge.
+        let (dx, dy) = super::surface_child_local_offset((-5, -26), (5, 500), (700, 474), t);
+        assert!((dx + 352.5).abs() < 1e-4, "dx {}", dx);
+        assert!((dy - (surface_top - 224.0)).abs() < 1e-4, "dy {}", dy);
+        // Right border: 5x500 at (700,-26) → hugs the right edge.
+        let (dx, _) = super::surface_child_local_offset((700, -26), (5, 500), (700, 474), t);
+        assert!((dx - 352.5).abs() < 1e-4, "dx {}", dx);
+        // Bottom border: 710x5 at (-5,474) → centered below the surface.
+        let (dx, dy) = super::surface_child_local_offset((-5, 474), (710, 5), (700, 474), t);
+        assert!((dx - 0.0).abs() < 1e-4, "dx {}", dx);
+        assert!((dy - (surface_top - 476.5)).abs() < 1e-4, "dy {}", dy);
+    }
+
+    /// End-to-end through the scene graph: with the helper-computed
+    /// local offset, the child's WORLD position is the parent position
+    /// plus the offset — and a scaled parent does not distort it (the
+    /// caller divides by parent scale, the matrix multiplies it back).
+    #[test]
+    fn surface_child_world_lands_at_parent_frame_offset() {
+        let mut scene = Scene::default();
+        let mut parent = crate::scene::Visual::new_test(700, 474);
+        let pid = parent.id;
+        parent.transform.position = Vector3::new(100.0, 50.0, 0.0);
+        parent.transform.scale = Vector3::new(2.0, 2.0, 1.0);
+        let mut child = crate::scene::Visual::new_test(700, 26);
+        let cid = child.id;
+        child.decoration.title_bar_height = 0.0;
+        scene.add(parent);
+        scene.add(child);
+        scene.set_parent(cid, pid).unwrap();
+        let t = 0.06_f32; // Visual::new_test default title fraction
+        let (dx, dy) = super::surface_child_local_offset((0, -26), (700, 26), (700, 474), t);
+        // Caller-side scale compensation (mirrors the commit path).
+        scene.visuals[1].transform.position = Vector3::new(dx / 2.0, dy / 2.0, 10.0);
+        let w = scene.world_matrix(cid);
+        assert!((w[3][0] - (100.0 + dx)).abs() < 1e-3, "wx {}", w[3][0]);
+        assert!((w[3][1] - (50.0 + dy)).abs() < 1e-3, "wy {}", w[3][1]);
+    }
 
     /// Popup on a parent at the origin: world == local (identity parent).
     #[test]

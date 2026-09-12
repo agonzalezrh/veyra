@@ -895,6 +895,7 @@ fn draw_textured_quad(
     gw: f32,
     gh: f32,
     src_uv: [f32; 4],
+    edge_enabled: bool,
 ) {
     unsafe {
         gl.UseProgram(draw.program);
@@ -902,7 +903,10 @@ fn draw_textured_quad(
         gl.Uniform1f(draw.u_selected, if selected { 1.0 } else { 0.0 });
         gl.Uniform1f(draw.u_focused, if focused { 1.0 } else { 0.0 });
         gl.Uniform1f(draw.u_title_h, title_h);
-        gl.Uniform1f(draw.u_edge, 1.0);
+        // Parented visuals (subsurfaces, IME popups) are raw client
+        // content: no veyra chrome ring, no title strip carve — the
+        // texture fills the whole quad.
+        gl.Uniform1f(draw.u_edge, if edge_enabled { 1.0 } else { 0.0 });
         gl.Uniform4f(draw.u_tint, 1.0, 1.0, 1.0, 1.0);
         gl.Uniform4f(draw.u_src, src_uv[0], src_uv[1], src_uv[2], src_uv[3]);
         // ~1.5px chrome ring regardless of window size (2.5px read as
@@ -1078,56 +1082,63 @@ pub fn render_scene(
                 gw,
                 gh,
                 visual.src_uv,
+                visual.parent.is_none(),
             );
 
             // J3 chrome: title text + window buttons ride the SAME model
-            // matrix as the client surface (one spatial object).
-            let strip_px = title_h * gh;
-            let char_h = strip_px * 0.62;
-            let layout = crate::chrome::ButtonLayout::for_window(gw, gh, title_h);
-            let [_, _, min_zone] = layout.zones();
-            // Title text: left-aligned in the strip, fitting between the
-            // left margin and the button region.
-            let left_margin = strip_px * 0.35;
-            let avail = min_zone.u_lo * gw - left_margin - strip_px * 0.25;
-            let title = crate::chrome::fit_title(&chrome.title, avail.max(0.0), char_h);
-            if !title.is_empty() {
-                let (tr, tg, tb) = if focused {
-                    (0.95, 0.95, 0.95)
+            // matrix as the client surface (one spatial object). Scope:
+            // toplevel visuals only — parented visuals (subsurfaces, IME
+            // popups) are raw client content and must not grow veyra
+            // chrome (a chrome strip carved from a 5px CSD border reads
+            // as ghost buttons floating on the desktop).
+            if visual.parent.is_none() {
+                let strip_px = title_h * gh;
+                let char_h = strip_px * 0.62;
+                let layout = crate::chrome::ButtonLayout::for_window(gw, gh, title_h);
+                let [_, _, min_zone] = layout.zones();
+                // Title text: left-aligned in the strip, fitting between the
+                // left margin and the button region.
+                let left_margin = strip_px * 0.35;
+                let avail = min_zone.u_lo * gw - left_margin - strip_px * 0.25;
+                let title = crate::chrome::fit_title(&chrome.title, avail.max(0.0), char_h);
+                if !title.is_empty() {
+                    let (tr, tg, tb) = if focused {
+                        (0.95, 0.95, 0.95)
+                    } else {
+                        (0.55, 0.58, 0.60)
+                    };
+                    draw_text_in_window(
+                        gl,
+                        draw,
+                        atlas,
+                        &title,
+                        (&model, &pv),
+                        (gw, gh),
+                        (-gw * 0.5 + left_margin, gh * 0.5 - strip_px * 0.5, char_h),
+                        (tr, tg, tb),
+                    );
+                }
+                // Buttons: right-aligned glyphs, slightly brighter on focus.
+                let (br, bg, bb) = if focused {
+                    (0.92, 0.92, 0.92)
                 } else {
-                    (0.55, 0.58, 0.60)
+                    (0.52, 0.55, 0.57)
                 };
-                draw_text_in_window(
-                    gl,
-                    draw,
-                    atlas,
-                    &title,
-                    (&model, &pv),
-                    (gw, gh),
-                    (-gw * 0.5 + left_margin, gh * 0.5 - strip_px * 0.5, char_h),
-                    (tr, tg, tb),
-                );
-            }
-            // Buttons: right-aligned glyphs, slightly brighter on focus.
-            let (br, bg, bb) = if focused {
-                (0.92, 0.92, 0.92)
-            } else {
-                (0.52, 0.55, 0.57)
-            };
-            for (button, u_center) in layout.centers() {
-                let glyph = char::from_u32(button.glyph_code()).unwrap_or(' ');
-                let cw = char_h * 0.9 * 5.0 / 7.0;
-                let cx_px = (u_center - 0.5) * gw;
-                draw_text_in_window(
-                    gl,
-                    draw,
-                    atlas,
-                    &glyph.to_string(),
-                    (&model, &pv),
-                    (gw, gh),
-                    (cx_px - cw * 0.5, gh * 0.5 - strip_px * 0.5, char_h * 0.9),
-                    (br, bg, bb),
-                );
+                for (button, u_center) in layout.centers() {
+                    let glyph = char::from_u32(button.glyph_code()).unwrap_or(' ');
+                    let cw = char_h * 0.9 * 5.0 / 7.0;
+                    let cx_px = (u_center - 0.5) * gw;
+                    draw_text_in_window(
+                        gl,
+                        draw,
+                        atlas,
+                        &glyph.to_string(),
+                        (&model, &pv),
+                        (gw, gh),
+                        (cx_px - cw * 0.5, gh * 0.5 - strip_px * 0.5, char_h * 0.9),
+                        (br, bg, bb),
+                    );
+                }
             }
         });
     }
@@ -1190,55 +1201,47 @@ pub fn render_scene(
                 "taskbar draw"
             );
             // Rounded-rect overlay with a vertical gradient + 1px SDF AA.
-            let round_rect =
-                |px: f32, py: f32, pw: f32, ph: f32, radius: f32,
-                 top: (f32, f32, f32, f32), bottom: (f32, f32, f32, f32)| {
-                    let cx = ((px + pw / 2.0) / w) * 2.0 - 1.0;
-                    let cy = -(((py + ph / 2.0) / h) * 2.0 - 1.0);
-                    let mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(cx, cy, 0.0))
-                        * cgmath::Matrix4::from_nonuniform_scale(pw / w * 2.0, ph / h * 2.0, 1.0);
-                    let radius = radius.min(pw * 0.5).min(ph * 0.5);
-                    gl.UseProgram(draw.round_prog);
-                    gl.UniformMatrix4fv(draw.round_u_mvp, 1, 0, mvp.as_ptr());
-                    gl.Uniform4f(
-                        draw.round_u_color,
-                        top.0,
-                        top.1,
-                        top.2,
-                        top.3,
-                    );
-                    gl.Uniform4f(
-                        draw.round_u_color2,
-                        bottom.0,
-                        bottom.1,
-                        bottom.2,
-                        bottom.3,
-                    );
-                    gl.Uniform2f(draw.round_u_size, pw, ph);
-                    gl.Uniform1f(draw.round_u_radius, radius);
-                    gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
-                    gl.EnableVertexAttribArray(draw.solid_a_pos);
-                    gl.VertexAttribPointer(
-                        draw.solid_a_pos,
-                        2,
-                        ffi::FLOAT,
-                        0,
-                        stride,
-                        std::ptr::null(),
-                    );
-                    gl.EnableVertexAttribArray(draw.solid_a_uv);
-                    gl.VertexAttribPointer(
-                        draw.solid_a_uv,
-                        2,
-                        ffi::FLOAT,
-                        0,
-                        stride,
-                        (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void,
-                    );
-                    gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
-                    gl.DisableVertexAttribArray(draw.solid_a_pos);
-                    gl.DisableVertexAttribArray(draw.solid_a_uv);
-                };
+            let round_rect = |px: f32,
+                              py: f32,
+                              pw: f32,
+                              ph: f32,
+                              radius: f32,
+                              top: (f32, f32, f32, f32),
+                              bottom: (f32, f32, f32, f32)| {
+                let cx = ((px + pw / 2.0) / w) * 2.0 - 1.0;
+                let cy = -(((py + ph / 2.0) / h) * 2.0 - 1.0);
+                let mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(cx, cy, 0.0))
+                    * cgmath::Matrix4::from_nonuniform_scale(pw / w * 2.0, ph / h * 2.0, 1.0);
+                let radius = radius.min(pw * 0.5).min(ph * 0.5);
+                gl.UseProgram(draw.round_prog);
+                gl.UniformMatrix4fv(draw.round_u_mvp, 1, 0, mvp.as_ptr());
+                gl.Uniform4f(draw.round_u_color, top.0, top.1, top.2, top.3);
+                gl.Uniform4f(draw.round_u_color2, bottom.0, bottom.1, bottom.2, bottom.3);
+                gl.Uniform2f(draw.round_u_size, pw, ph);
+                gl.Uniform1f(draw.round_u_radius, radius);
+                gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
+                gl.EnableVertexAttribArray(draw.solid_a_pos);
+                gl.VertexAttribPointer(
+                    draw.solid_a_pos,
+                    2,
+                    ffi::FLOAT,
+                    0,
+                    stride,
+                    std::ptr::null(),
+                );
+                gl.EnableVertexAttribArray(draw.solid_a_uv);
+                gl.VertexAttribPointer(
+                    draw.solid_a_uv,
+                    2,
+                    ffi::FLOAT,
+                    0,
+                    stride,
+                    (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void,
+                );
+                gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+                gl.DisableVertexAttribArray(draw.solid_a_pos);
+                gl.DisableVertexAttribArray(draw.solid_a_uv);
+            };
 
             // ── Bar background: subtle top→bottom darkening gradient ──
             round_rect(
@@ -1258,27 +1261,16 @@ pub fn render_scene(
             let ch = (7.0f32 * scale / h) * 2.0;
             let cw = (5.0f32 * scale / w) * 2.0;
 
-            let draw_label = |it: &crate::shell::TaskbarItem,
-                              iy: f32,
-                              ih: f32,
-                              color: (f32, f32, f32)| {
-                let text_x = ((it.x + 8.0) / w) * 2.0 - 1.0;
-                let center_ndc = -(((iy + ih / 2.0) / h) * 2.0 - 1.0);
-                let text_y = center_ndc - ch / 2.0;
-                draw_text(
-                    gl,
-                    draw,
-                    atlas,
-                    &it.label,
-                    text_x,
-                    text_y,
-                    cw,
-                    ch,
-                    color.0,
-                    color.1,
-                    color.2,
-                );
-            };
+            let draw_label =
+                |it: &crate::shell::TaskbarItem, iy: f32, ih: f32, color: (f32, f32, f32)| {
+                    let text_x = ((it.x + 8.0) / w) * 2.0 - 1.0;
+                    let center_ndc = -(((iy + ih / 2.0) / h) * 2.0 - 1.0);
+                    let text_y = center_ndc - ch / 2.0;
+                    draw_text(
+                        gl, draw, atlas, &it.label, text_x, text_y, cw, ch, color.0, color.1,
+                        color.2,
+                    );
+                };
 
             for it in &tb.items {
                 let iy = bar_y + 4.0;

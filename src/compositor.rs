@@ -23,7 +23,6 @@ use smithay::delegate_xdg_shell;
 use smithay::input::keyboard::{
     FilterResult, KeyboardHandle, KeyboardTarget, KeysymHandle, LedState, ModifiersState,
 };
-use smithay::utils::IsAlive;
 use smithay::input::pointer::{ButtonEvent, CursorImageStatus, MotionEvent, PointerHandle};
 use smithay::input::Seat;
 use smithay::input::SeatHandler;
@@ -36,6 +35,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Client;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::Resource;
+use smithay::utils::IsAlive;
 use smithay::utils::Serial;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::with_states;
@@ -85,7 +85,6 @@ use crate::launcher::Launcher;
 use crate::layout;
 use crate::navigation::{EscapeAction, NavigationModel};
 use crate::perf::PerfStats;
-use crate::window::{PopupInfo, SurfaceLifecycle, ToplevelInfo};
 use crate::producer::{FrameProducer, FrameResult};
 use crate::recovery::Recovery;
 use crate::renderer;
@@ -93,6 +92,7 @@ use crate::scene::{DamageKind, Scene, Visual, VisualContent, VisualId};
 use crate::scheduler::RenderScheduler;
 use crate::session::Session;
 use crate::shelf::SpatialShelf;
+use crate::window::{PopupInfo, SurfaceLifecycle, ToplevelInfo};
 use crate::workspace::WorkspaceManager;
 use tracing::debug;
 use tracing::error;
@@ -119,9 +119,9 @@ static SELECTION_REFRESH_PENDING: std::sync::atomic::AtomicBool =
 // (which has no LookingGlass access) so a disconnecting client's
 // entries are dropped with it. ClientIds are never reused — this is
 // memory hygiene plus defense against any future id recycling.
-static INPUT_SERIAL_LEDGER: std::sync::LazyLock<Mutex<HashMap<ClientId, std::collections::VecDeque<u32>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
+static INPUT_SERIAL_LEDGER: std::sync::LazyLock<
+    Mutex<HashMap<ClientId, std::collections::VecDeque<u32>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// #12 ledger capacity: how many recent input serials per client are
 /// kept for popup-grab validation.
@@ -921,6 +921,29 @@ impl LookingGlass {
             let tex_size = texture.size();
             let logical_size = smithay::utils::Size::new(tex_size.w, tex_size.h);
             let location = popup.location();
+            // J2: parent-local center offset (see
+            // scene::surface_child_local_offset) — same top-left↔center
+            // convention as subsurfaces.
+            let (pw, ph, ptf, psx, psy) = self
+                .scene
+                .get(parent_vid)
+                .map(|p| {
+                    (
+                        p.geometry.size.w,
+                        p.geometry.size.h,
+                        p.title_bar_fraction(),
+                        p.transform.scale.x,
+                        p.transform.scale.y,
+                    )
+                })
+                .unwrap_or((0, 0, 0.0, 1.0, 1.0));
+            let inv = |s: f32| if s.abs() > 1e-6 { 1.0 / s } else { 1.0 };
+            let (dx, dy) = crate::scene::surface_child_local_offset(
+                (location.x, location.y),
+                (logical_size.w, logical_size.h),
+                (pw, ph),
+                ptf,
+            );
 
             let existing_vid = self.ime_popup_visuals.get(surface).copied();
             if let Some(vid) = existing_vid {
@@ -932,23 +955,18 @@ impl LookingGlass {
                         smithay::utils::Point::new(0, 0),
                         logical_size,
                     );
-                    visual.transform.position = cgmath::Vector3::new(
-                        location.x as f32 + logical_size.w as f32 * 0.5,
-                        -(location.y as f32 + logical_size.h as f32 * 0.5),
-                        15.0,
-                    );
+                    visual.transform.position =
+                        cgmath::Vector3::new(dx * inv(psx), dy * inv(psy), 15.0);
                 }
             } else {
                 let mut visual = Visual::new(
                     VisualContent::WaylandSurface(texture),
                     smithay::utils::Rectangle::new(smithay::utils::Point::new(0, 0), logical_size),
                 );
+                visual.decoration.title_bar_height = 0.0;
                 visual.parent = Some(parent_vid);
-                visual.transform.position = cgmath::Vector3::new(
-                    location.x as f32 + logical_size.w as f32 * 0.5,
-                    -(location.y as f32 + logical_size.h as f32 * 0.5),
-                    15.0,
-                );
+                visual.transform.position =
+                    cgmath::Vector3::new(dx * inv(psx), dy * inv(psy), 15.0);
                 let vid = visual.id;
                 info!(
                     ?vid,
@@ -1046,6 +1064,30 @@ impl LookingGlass {
             });
 
             let existing_vid = self.subsurface_visuals.get(surface).copied();
+            // J2: parent-local center offset (see
+            // scene::surface_child_local_offset). Computed from the
+            // parent's CURRENT geometry so a resized parent repositions
+            // its children on their next commit.
+            let (pw, ph, ptf, psx, psy) = self
+                .scene
+                .get(parent_vid)
+                .map(|p| {
+                    (
+                        p.geometry.size.w,
+                        p.geometry.size.h,
+                        p.title_bar_fraction(),
+                        p.transform.scale.x,
+                        p.transform.scale.y,
+                    )
+                })
+                .unwrap_or((0, 0, 0.0, 1.0, 1.0));
+            let inv = |s: f32| if s.abs() > 1e-6 { 1.0 / s } else { 1.0 };
+            let (dx, dy) = crate::scene::surface_child_local_offset(
+                (location.x, location.y),
+                (logical_size.w, logical_size.h),
+                (pw, ph),
+                ptf,
+            );
             if let Some(vid) = existing_vid {
                 if let Some(visual) = self.scene.get_mut(vid) {
                     if let Some(dst) = visual.texture_mut() {
@@ -1056,13 +1098,8 @@ impl LookingGlass {
                         logical_size,
                     );
                     visual.src_uv = src_uv;
-                    // J2: parent-local center offset from the top-left
-                    // location.
-                    visual.transform.position = cgmath::Vector3::new(
-                        location.x as f32 + logical_size.w as f32 * 0.5,
-                        -(location.y as f32 + logical_size.h as f32 * 0.5),
-                        10.0,
-                    );
+                    visual.transform.position =
+                        cgmath::Vector3::new(dx * inv(psx), dy * inv(psy), 10.0);
                 }
             } else {
                 let mut visual = Visual::new(
@@ -1070,12 +1107,13 @@ impl LookingGlass {
                     smithay::utils::Rectangle::new(smithay::utils::Point::new(0, 0), logical_size),
                 );
                 visual.src_uv = src_uv;
+                // Presentation children are raw client content: no veyra
+                // chrome strip, no ring (the renderer also gates chrome
+                // on parented visuals).
+                visual.decoration.title_bar_height = 0.0;
                 visual.parent = Some(parent_vid);
-                visual.transform.position = cgmath::Vector3::new(
-                    location.x as f32 + logical_size.w as f32 * 0.5,
-                    -(location.y as f32 + logical_size.h as f32 * 0.5),
-                    10.0,
-                );
+                visual.transform.position =
+                    cgmath::Vector3::new(dx * inv(psx), dy * inv(psy), 10.0);
                 let vid = visual.id;
                 info!(
                     ?vid,
@@ -1968,7 +2006,8 @@ impl LookingGlass {
                 global_pos: (0, 0),
             });
         } else {
-            self.outputs.update_primary_mode(w as u32, h as u32, refresh);
+            self.outputs
+                .update_primary_mode(w as u32, h as u32, refresh);
         }
         info!(w, h, refresh, "output mode synced with backend size");
     }
@@ -2060,11 +2099,14 @@ impl LookingGlass {
                 let Some(session) = self.drm_session.as_ref() else {
                     if !self.backend_lost_logged {
                         self.backend_lost_logged = true;
-                        error!("DRM context lost and no libseat session held; cannot recreate backend");
+                        error!(
+                            "DRM context lost and no libseat session held; cannot recreate backend"
+                        );
                     }
                     return;
                 };
-                if !session.is_active() {                    // VT backgrounded: device access is revoked. Retry
+                if !session.is_active() {
+                    // VT backgrounded: device access is revoked. Retry
                     // when the session notifier flips back to active
                     // (that path calls schedule_render()).
                     debug!("backend recreate deferred: seat session inactive");
@@ -2313,7 +2355,11 @@ impl LookingGlass {
                 self.render_caches = Default::default();
                 self.last_backend_attempt = None;
             } else {
-                warn!(?e, failures = self.begin_frame_failures, "begin_frame failed");
+                warn!(
+                    ?e,
+                    failures = self.begin_frame_failures,
+                    "begin_frame failed"
+                );
             }
             self.scheduler.clear();
             self.perf
@@ -2459,20 +2505,20 @@ impl LookingGlass {
         self.perf.record_frame();
     }
 
-/// P1 (audit): the single projection constructor for rendering AND
-/// picking. winit reports 0×N sizes on some minimize/resize transitions;
-/// an unclamped `w / h` yields ∞/NaN aspect ratios that poison matrices,
-/// GL uniforms, and every ray cast derived from them. Sizes are clamped
-/// to ≥1 so the degenerate case degrades to a 1px view instead of NaN.
-pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
-    let w = w.max(1.0);
-    let h = h.max(1.0);
-    if spatial_mode {
-        cgmath::perspective(cgmath::Deg(45.0), w / h, 1.0, 10000.0)
-    } else {
-        cgmath::ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -1000.0, 1000.0)
+    /// P1 (audit): the single projection constructor for rendering AND
+    /// picking. winit reports 0×N sizes on some minimize/resize transitions;
+    /// an unclamped `w / h` yields ∞/NaN aspect ratios that poison matrices,
+    /// GL uniforms, and every ray cast derived from them. Sizes are clamped
+    /// to ≥1 so the degenerate case degrades to a 1px view instead of NaN.
+    pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
+        let w = w.max(1.0);
+        let h = h.max(1.0);
+        if spatial_mode {
+            cgmath::perspective(cgmath::Deg(45.0), w / h, 1.0, 10000.0)
+        } else {
+            cgmath::ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -1000.0, 1000.0)
+        }
     }
-}
 
     /// G-E5.2: the framebuffer size of the output a frame presents to.
     /// Registry-backed: the primary output's mode, falling back to the
@@ -2482,9 +2528,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     /// query. Coordinate chain (ARCHITECTURE §15): surface → window-local
     /// → workspace → world → camera → output-local → framebuffer.
     pub fn fb_size(&self) -> (f32, f32) {
-        self.outputs
-            .primary_size()
-            .unwrap_or(self.window_size)
+        self.outputs.primary_size().unwrap_or(self.window_size)
     }
 
     /// Compute proj × view matrix for the current camera.
@@ -3053,11 +3097,11 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
                     // exactly `pos` while `location` keeps global semantics
                     // (grabs, constraints, relative motion).
                     let origin = self.surface_global_origin(vid);
-                    let location: smithay::utils::Point<f64, smithay::utils::Logical> =
-                        match origin {
-                            Some(o) => smithay::utils::Point::new(o.x + pos.x, o.y + pos.y),
-                            None => pos,
-                        };
+                    let location: smithay::utils::Point<f64, smithay::utils::Logical> = match origin
+                    {
+                        Some(o) => smithay::utils::Point::new(o.x + pos.x, o.y + pos.y),
+                        None => pos,
+                    };
                     let mot_ev = MotionEvent {
                         location,
                         serial,
@@ -4568,10 +4612,8 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     /// Handle a left-click on the context menu. Returns true if the click was handled by the menu.
     pub fn handle_menu_click(&mut self, x: f64, y: f64) -> bool {
         // Must match the renderer's metrics (MenuMetrics::for_framebuffer)
-        let m = crate::context_menu::MenuMetrics::for_framebuffer(
-            self.fb_size().0,
-            self.fb_size().1,
-        );
+        let m =
+            crate::context_menu::MenuMetrics::for_framebuffer(self.fb_size().0, self.fb_size().1);
         if let Some(idx) =
             self.context_menu
                 .item_at(x, y, m.menu_width as f64, m.item_height as f64)
@@ -4859,7 +4901,11 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     /// window the resolution is the identity (primary at (0,0)); the
     /// conversion point is explicit so multi-output input never silently
     /// assumes global == framebuffer (ARCHITECTURE §15).
-    fn resolve_pointer_output(&self, x: f64, y: f64) -> (Option<crate::outputs::OutputId>, f64, f64) {
+    fn resolve_pointer_output(
+        &self,
+        x: f64,
+        y: f64,
+    ) -> (Option<crate::outputs::OutputId>, f64, f64) {
         match self.outputs.to_local(x as i32, y as i32) {
             Some((id, lx, ly)) => (Some(id), lx as f64, ly as f64),
             // Outside every output (possible mid-transition): clamp to
@@ -5311,7 +5357,12 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
         let wl = surface.wl_surface().clone();
         let client_id = wl.client().map(|c| c.id());
         let valid = client_id
-            .map(|c| ledger_contains(INPUT_SERIAL_LEDGER.lock().unwrap().get(&c), u32::from(serial)))
+            .map(|c| {
+                ledger_contains(
+                    INPUT_SERIAL_LEDGER.lock().unwrap().get(&c),
+                    u32::from(serial),
+                )
+            })
             .unwrap_or(false);
         if !valid {
             warn!(
@@ -6740,15 +6791,23 @@ impl KeyboardTarget<LookingGlass> for KeyboardFocusTarget {
         serial: Serial,
     ) {
         match self {
-            KeyboardFocusTarget::Wl(s) => KeyboardTarget::<LookingGlass>::enter(s, seat, data, keys, serial),
-            KeyboardFocusTarget::X11(x) => KeyboardTarget::<LookingGlass>::enter(x, seat, data, keys, serial),
+            KeyboardFocusTarget::Wl(s) => {
+                KeyboardTarget::<LookingGlass>::enter(s, seat, data, keys, serial)
+            }
+            KeyboardFocusTarget::X11(x) => {
+                KeyboardTarget::<LookingGlass>::enter(x, seat, data, keys, serial)
+            }
         }
     }
 
     fn leave(&self, seat: &Seat<LookingGlass>, data: &mut LookingGlass, serial: Serial) {
         match self {
-            KeyboardFocusTarget::Wl(s) => KeyboardTarget::<LookingGlass>::leave(s, seat, data, serial),
-            KeyboardFocusTarget::X11(x) => KeyboardTarget::<LookingGlass>::leave(x, seat, data, serial),
+            KeyboardFocusTarget::Wl(s) => {
+                KeyboardTarget::<LookingGlass>::leave(s, seat, data, serial)
+            }
+            KeyboardFocusTarget::X11(x) => {
+                KeyboardTarget::<LookingGlass>::leave(x, seat, data, serial)
+            }
         }
     }
 
@@ -6762,8 +6821,12 @@ impl KeyboardTarget<LookingGlass> for KeyboardFocusTarget {
         time: u32,
     ) {
         match self {
-            KeyboardFocusTarget::Wl(s) => KeyboardTarget::<LookingGlass>::key(s, seat, data, key, state, serial, time),
-            KeyboardFocusTarget::X11(x) => KeyboardTarget::<LookingGlass>::key(x, seat, data, key, state, serial, time),
+            KeyboardFocusTarget::Wl(s) => {
+                KeyboardTarget::<LookingGlass>::key(s, seat, data, key, state, serial, time)
+            }
+            KeyboardFocusTarget::X11(x) => {
+                KeyboardTarget::<LookingGlass>::key(x, seat, data, key, state, serial, time)
+            }
         }
     }
 
@@ -7070,7 +7133,10 @@ mod serial_ledger_tests {
         }
         assert_eq!(l.len(), INPUT_SERIAL_LEDGER_CAP);
         // Newest kept…
-        assert!(ledger_contains(Some(&l), INPUT_SERIAL_LEDGER_CAP as u32 + 5));
+        assert!(ledger_contains(
+            Some(&l),
+            INPUT_SERIAL_LEDGER_CAP as u32 + 5
+        ));
         // …oldest evicted — a stale serial no longer validates.
         assert!(!ledger_contains(Some(&l), 1));
     }
@@ -7107,7 +7173,9 @@ mod projection_tests {
     #[test]
     fn zero_height_is_clamped_not_nan() {
         // P1 (audit): winit reports 0×N on some minimize transitions.
-        assert!(all_finite(&LookingGlass::projection_for(false, 1280.0, 0.0)));
+        assert!(all_finite(&LookingGlass::projection_for(
+            false, 1280.0, 0.0
+        )));
         assert!(all_finite(&LookingGlass::projection_for(true, 1280.0, 0.0)));
     }
 
