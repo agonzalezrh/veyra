@@ -1067,12 +1067,17 @@ pub fn render_scene(
     // Draw all visuals
     let t_draw = std::time::Instant::now();
     let pv = proj * view;
+    // G-G1: the visible set is a HashSet — the old slice `contains`
+    // made the draw loop O(N·V) (quadratic when all N visuals are
+    // visible).
+    let visible_set: Option<std::collections::HashSet<crate::scene::VisualId>> =
+        visible_ids.map(|ids| ids.iter().copied().collect());
     for visual in scene.iter() {
         if visual.window_state == crate::scene::WindowState::Minimized {
             continue;
         }
-        if let Some(ids) = visible_ids {
-            if !ids.contains(&visual.id) {
+        if let Some(set) = &visible_set {
+            if !set.contains(&visual.id) {
                 continue;
             }
         }
