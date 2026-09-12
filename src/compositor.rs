@@ -6041,6 +6041,22 @@ impl LookingGlass {
                 self.shelf.toggle_visibility();
                 info!("help overlay toggled (using shelf for now)");
             }
+            CycleLayout => {
+                // G-H3: cycle the active workspace's arrangement —
+                // arrangement produces transforms; the workspace owns
+                // the mode (and the layout engine applies it).
+                use crate::layout::LayoutMode;
+                let next = match self.workspace_manager.active().layout_mode {
+                    LayoutMode::Freeform => LayoutMode::Flat,
+                    LayoutMode::Flat => LayoutMode::Grid { columns: 3 },
+                    LayoutMode::Grid { .. } => LayoutMode::Arc,
+                    LayoutMode::Arc => LayoutMode::Circle,
+                    LayoutMode::Circle => LayoutMode::Freeform,
+                };
+                self.workspace_manager.active_mut().layout_mode = next;
+                info!(?next, "layout mode cycled");
+                self.schedule_render();
+            }
         }
     }
 

@@ -27,6 +27,9 @@ pub enum Binding {
     CycleVisuals,
     OpenContextMenu,
     HelpOverlay,
+    /// G-H3: cycle the active workspace's arrangement
+    /// Freeform → Flat → Grid(3) → Arc → Circle → Freeform.
+    CycleLayout,
 }
 
 /// Describes a key binding composed of modifiers and a key.
@@ -148,6 +151,7 @@ impl NavigationModel {
             // Meta+Q is the canonical close binding (I6); Meta+W predates it
             // and stays for muscle memory.
             (CloseApp, KeyBinding::meta(keys::Q)),
+            (CycleLayout, KeyBinding::meta(keys::L)),
             (ToggleMaximize, KeyBinding::meta(keys::UP)),
             // Meta+Down is taken by SendToShelf; minimize/restore answer to
             // Meta+N / Meta+U, plus plain F9/F10/F11 for deterministic

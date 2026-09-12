@@ -157,6 +157,13 @@ pub enum LayoutMode {
     Grid { columns: usize },
     /// Horizontally arranged on a flat plane (existing 2D-mode behavior).
     Flat,
+    /// G-H3: arranged on a horizontal arc that bows around the camera —
+    /// every window faces the viewer, edge windows recede in depth.
+    /// Radius shrinks/grows to fit the content (deterministic).
+    Arc,
+    /// G-H3: arranged on a full circle facing the center — a spatial
+    /// carousel. Radius fits the widest content around the ring.
+    Circle,
 }
 
 /// Global layout configuration.
@@ -213,6 +220,81 @@ pub fn apply_layout(
         LayoutMode::Freeform => {}
         LayoutMode::Flat => apply_flat(scene, config, detached_set, world_width, eligible),
         LayoutMode::Grid { .. } => apply_grid(scene, config, detached_set, world_height, eligible),
+        LayoutMode::Arc => apply_arc(scene, config, detached_set, eligible),
+        LayoutMode::Circle => apply_circle(scene, config, detached_set, eligible),
+    }
+}
+
+/// G-H3: arrange visuals on an arc facing the camera. Each visual's
+/// angular slot derives from its own width (`w + spacing) / r` —
+/// content-aware and deterministic; the radius adapts so the arc never
+/// exceeds a 140° spread (beyond that the edge windows face away).
+/// Positions sit on the circle through the origin with the center of
+/// curvature BEHIND the camera (+z), so windows bow around the viewer;
+/// each window yaws to face the origin.
+fn apply_arc(scene: &mut Scene, config: &LayoutConfig, detached_set: &[VisualId], eligible: &[VisualId]) {
+    let items: Vec<(VisualId, f32, f32)> = scene
+        .visuals
+        .iter()
+        .filter(|v| layout_eligible(v, detached_set, eligible))
+        .map(|v| (v.id, v.total_width(), v.total_height()))
+        .collect();
+    if items.is_empty() {
+        return;
+    }
+    const MAX_SPREAD_DEG: f32 = 140.0;
+    // Radius must fit the total angular demand under the spread cap.
+    let total_width: f32 = items.iter().map(|(_, w, _)| *w).sum();
+    let spacing_total = (items.len().saturating_sub(1)) as f32 * config.spacing;
+    let min_radius = (total_width + spacing_total) * 180.0 / (MAX_SPREAD_DEG * std::f32::consts::PI) / 2.0;
+    let radius = min_radius.max(600.0);
+
+    let angular = |w: f32| (w + config.spacing) / radius;
+    let total_angle: f32 = items.iter().map(|(_, w, _)| angular(*w)).sum::<f32>()
+        - angular(0.0).min(config.spacing / radius);
+    let mut theta = -total_angle / 2.0;
+    for (vid, w, _h) in items {
+        let half = angular(w) / 2.0;
+        let mid = theta + half;
+        // Circle center at (0, 0, radius); arc point = center + r·(sin, 0, -cos).
+        let x = radius * mid.sin();
+        let z = radius - radius * mid.cos();
+        if let Some(v) = scene.get_mut(vid) {
+            v.transform.position = Vector3::new(x, 0.0, z);
+            // Face the origin: yaw = -theta (window normal +z rotated by yaw).
+            v.transform.rotation = Quaternion::from_angle_y(cgmath::Rad(-mid));
+        }
+        theta += angular(w);
+    }
+}
+
+/// G-H3: arrange visuals on a full circle, each facing the center — a
+/// spatial carousel. The radius fits the widest visual around the ring
+/// at a comfortable angular share.
+fn apply_circle(scene: &mut Scene, config: &LayoutConfig, detached_set: &[VisualId], eligible: &[VisualId]) {
+    let items: Vec<(VisualId, f32)> = scene
+        .visuals
+        .iter()
+        .filter(|v| layout_eligible(v, detached_set, eligible))
+        .map(|v| (v.id, v.total_width()))
+        .collect();
+    let n = items.len();
+    if n == 0 {
+        return;
+    }
+    let max_w = items.iter().map(|(_, w)| *w).fold(0.0f32, f32::max);
+    // Circumference must fit n·(max_w + spacing).
+    let radius = ((max_w + config.spacing) * n as f32 / (2.0 * std::f32::consts::PI)).max(600.0);
+    let step = 2.0 * std::f32::consts::PI / n as f32;
+    for (i, (vid, _w)) in items.iter().enumerate() {
+        let theta = i as f32 * step;
+        let x = radius * theta.sin();
+        let z = radius * theta.cos();
+        if let Some(v) = scene.get_mut(*vid) {
+            v.transform.position = Vector3::new(x, 0.0, z);
+            // Face the CENTER of the ring (origin).
+            v.transform.rotation = Quaternion::from_angle_y(cgmath::Rad(-theta));
+        }
     }
 }
 
@@ -676,4 +758,67 @@ mod tests {
             "a fresh workspace's first window must center, not append to another workspace's row"
         );
     }
+    #[test]
+    fn arc_arrangement_is_deterministic_and_camera_facing() {
+        let mut scene = Scene::default();
+        let a = crate::scene::Visual::new_test(300, 200);
+        let b = crate::scene::Visual::new_test(300, 200);
+        let (ida, idb) = (a.id, b.id);
+        scene.add(a);
+        scene.add(b);
+        let config = LayoutConfig { spacing: 40.0, ..LayoutConfig::default() };
+        apply_layout(&mut scene, LayoutMode::Arc, &config, &[], 1280.0, 720.0, &[ida, idb]);
+        let pa = scene.get(ida).unwrap().transform.position;
+        let pb = scene.get(idb).unwrap().transform.position;
+        assert!(pa.z >= 0.0 && pb.z >= 0.0, "arc recedes from camera: {pa:?} {pb:?}");
+        assert!(pa.x.abs() <= pb.x.abs() + 1.0, "symmetric about the origin");
+        let mut scene2 = Scene::default();
+        let c = crate::scene::Visual::new_test(300, 200);
+        let d = crate::scene::Visual::new_test(300, 200);
+        let (idc, idd) = (c.id, d.id);
+        scene2.add(c);
+        scene2.add(d);
+        apply_layout(&mut scene2, LayoutMode::Arc, &config, &[], 1280.0, 720.0, &[idc, idd]);
+        let t1 = &scene.get(ida).unwrap().transform;
+        let t2 = &scene2.get(idc).unwrap().transform;
+        assert_eq!(t1.position, t2.position);
+        assert_eq!(t1.rotation, t2.rotation);
+    }
+
+    #[test]
+    fn circle_arrangement_is_an_equal_ring_facing_center() {
+        let mut scene = Scene::default();
+        let mut ids = Vec::new();
+        for _ in 0..4 {
+            let v = crate::scene::Visual::new_test(300, 200);
+            ids.push(v.id);
+            scene.add(v);
+        }
+        let config = LayoutConfig { spacing: 40.0, ..LayoutConfig::default() };
+        apply_layout(&mut scene, LayoutMode::Circle, &config, &[], 1280.0, 720.0, &ids);
+        let radii: Vec<f32> = ids
+            .iter()
+            .map(|id| {
+                let p = scene.get(*id).unwrap().transform.position;
+                (p.x * p.x + p.z * p.z).sqrt()
+            })
+            .collect();
+        for r in &radii[1..] {
+            assert!((r - radii[0]).abs() < 0.5, "equal ring radii: {radii:?}");
+        }
+        assert!(radii[0] >= 600.0, "minimum radius floor: {}", radii[0]);
+        let mut scene2 = Scene::default();
+        let mut ids2 = Vec::new();
+        for _ in 0..4 {
+            let v = crate::scene::Visual::new_test(300, 200);
+            ids2.push(v.id);
+            scene2.add(v);
+        }
+        apply_layout(&mut scene2, LayoutMode::Circle, &config, &[], 1280.0, 720.0, &ids2);
+        let t1 = &scene.get(ids[2]).unwrap().transform;
+        let t2 = &scene2.get(ids2[2]).unwrap().transform;
+        assert_eq!(t1.position, t2.position);
+        assert_eq!(t1.rotation, t2.rotation);
+    }
+
 }

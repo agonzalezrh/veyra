@@ -273,6 +273,8 @@ fn layout_mode_to_string(mode: LayoutMode) -> String {
         LayoutMode::Freeform => "freeform".into(),
         LayoutMode::Flat => "flat".into(),
         LayoutMode::Grid { columns } => format!("grid:{}", columns),
+        LayoutMode::Arc => "arc".into(),
+        LayoutMode::Circle => "circle".into(),
     }
 }
 

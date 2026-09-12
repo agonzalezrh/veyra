@@ -70,4 +70,5 @@ pub const Q: u32 = 24;
 pub const T: u32 = 28;
 pub const U: u32 = 30; // KEY_U=22 evdev → XKB 30
 pub const W: u32 = 25;
+pub const L: u32 = 46; // KEY_L=38 evdev → XKB 46
 pub const SLASH: u32 = 61;
