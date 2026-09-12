@@ -4587,6 +4587,8 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
 
     /// Public entry point for a pointer button press.
     pub fn handle_pointer_down(&mut self, x: f64, y: f64, shift: bool, ctrl: bool, alt: bool) {
+        // G-E5.4: convert global-plane pointer px to output-local px.
+        let (_out, x, y) = self.resolve_pointer_output(x, y);
         self.press_pos = (x, y);
         self.event_serial = self.event_serial.wrapping_add(1);
         self.interaction.window_size = self.fb_size();
@@ -4737,6 +4739,8 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
 
     /// Public entry point for pointer button release.
     pub fn handle_pointer_up(&mut self, x: f64, y: f64) {
+        // G-E5.4: output-local conversion (identity single-output).
+        let (_out, x, y) = self.resolve_pointer_output(x, y);
         self.event_serial = self.event_serial.wrapping_add(1);
         self.last_down_vid = None;
         // Finish a pointer resize before any content routing (I3b).
@@ -4847,7 +4851,31 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     }
 
     /// Public entry point for pointer motion.
+    /// G-E5.4: resolve a pointer position to its output. Input arrives
+    /// in the PRESENTED framebuffer's pixel space; with N outputs that
+    /// space is the global desktop plane tiled by `outputs`. Returns
+    /// the output id and output-LOCAL coordinates (the coordinates all
+    /// downstream picking/unprojection consume). With the single nested
+    /// window the resolution is the identity (primary at (0,0)); the
+    /// conversion point is explicit so multi-output input never silently
+    /// assumes global == framebuffer (ARCHITECTURE §15).
+    fn resolve_pointer_output(&self, x: f64, y: f64) -> (Option<crate::outputs::OutputId>, f64, f64) {
+        match self.outputs.to_local(x as i32, y as i32) {
+            Some((id, lx, ly)) => (Some(id), lx as f64, ly as f64),
+            // Outside every output (possible mid-transition): clamp to
+            // the primary and let existing edge handling apply.
+            None => (
+                self.outputs.primary_id(),
+                x.clamp(0.0, (self.fb_size().0 - 1.0).max(0.0) as f64),
+                y.clamp(0.0, (self.fb_size().1 - 1.0).max(0.0) as f64),
+            ),
+        }
+    }
+
     pub fn handle_pointer_move(&mut self, x: f64, y: f64) {
+        // G-E5.4: output-local conversion; deltas stay RAW (global) —
+        // camera orbit/pan velocity must not change with output tiling.
+        let (_out, lx, ly) = self.resolve_pointer_output(x, y);
         let dx = x - self.last_mouse.0;
         let dy = y - self.last_mouse.1;
         self.last_mouse = (x, y);
@@ -4968,7 +4996,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
         // target follows its world transform; camera state is not
         // involved. Compositor window manipulation stays suppressed.
         if self.dnd_active {
-            self.route_hover(x, y);
+            self.route_hover(lx, ly);
             self.schedule_render();
             return;
         }
@@ -5041,8 +5069,9 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
             }
         }
         // If still not dragging after all checks, route hover events
+        // (output-local coordinates — the picking space).
         if !was_dragging && !self.interaction.is_dragging() {
-            self.route_hover(x, y);
+            self.route_hover(lx, ly);
         }
     }
 
@@ -5318,6 +5347,8 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     /// browsers scroll their content). Only when no client surface is under
     /// the cursor does the camera zoom (the pre-existing global behavior).
     pub fn handle_axis(&mut self, x: f64, y: f64, dx: f64, dy: f64) {
+        // G-E5.4: output-local conversion for the pick target.
+        let (_out, x, y) = self.resolve_pointer_output(x, y);
         let Some(ph) = self.pointer_handle.clone() else {
             self.camera.handle_zoom(dy);
             return;
