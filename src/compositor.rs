@@ -2240,6 +2240,8 @@ impl LookingGlass {
         // J4 shell plane: rebuild the taskbar model from live state
         // each frame (before the backend mutable borrow).
         let taskbar = self.build_taskbar();
+        // G-E5.2: framebuffer size read before the backend borrow.
+        let (w, h) = self.fb_size();
         // Step 4: Camera + render
         let back: &mut dyn PresentationBackend = match self.backend.as_mut() {
             Some(b) => b.as_mut(),
@@ -2273,7 +2275,6 @@ impl LookingGlass {
         let render_camera = self
             .focus_manager
             .interpolated_camera(&self.camera, &self.scene);
-        let (w, h) = self.window_size;
         let view = render_camera.view_matrix();
         let proj = Self::projection_for(self.spatial_mode, w, h);
         // In workspace overview mode, show all workspaces' visuals
@@ -2472,9 +2473,22 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     }
 }
 
-/// Compute proj × view matrix for the current camera.
+    /// G-E5.2: the framebuffer size of the output a frame presents to.
+    /// Registry-backed: the primary output's mode, falling back to the
+    /// legacy scalar while consumers migrate. The projection and picking
+    /// paths consume this so the framebuffer source is EXPLICIT —
+    /// G-E5.4 replaces "primary" with the output under the pointer per
+    /// query. Coordinate chain (ARCHITECTURE §15): surface → window-local
+    /// → workspace → world → camera → output-local → framebuffer.
+    pub fn fb_size(&self) -> (f32, f32) {
+        self.outputs
+            .primary_size()
+            .unwrap_or(self.window_size)
+    }
+
+    /// Compute proj × view matrix for the current camera.
     fn proj_view(&self) -> Matrix4<f32> {
-        let (w, h) = self.window_size;
+        let (w, h) = self.fb_size();
         Self::projection_for(self.spatial_mode, w, h) * self.camera.view_matrix()
     }
 
@@ -2895,7 +2909,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
             return ContentRouting::NoTarget;
         }
 
-        let (w, h) = self.window_size;
+        let (w, h) = self.fb_size();
         // P1 (audit): same degenerate-size guard as projection_for — a
         // 0-height framebuffer must not produce inf NDC coordinates.
         let (w, h) = (w.max(1.0), h.max(1.0));
@@ -5054,7 +5068,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
             0.0,
         );
         let corner_world = t.rotation * corner_local + t.position;
-        let (w, h) = self.window_size;
+        let (w, h) = self.fb_size();
         Some(
             (
                 (w / 2.0 + corner_world.x) as f64,
@@ -5077,7 +5091,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
         WlSurface,
         smithay::utils::Point<f64, smithay::utils::Logical>,
     )> {
-        let (w, h) = self.window_size;
+        let (w, h) = self.fb_size();
         if w <= 0.0 || h <= 0.0 {
             return None;
         }
