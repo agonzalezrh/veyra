@@ -23,6 +23,8 @@
 
 use std::collections::HashMap;
 
+use crate::input::Camera;
+
 /// Stable output identity. Assigned from a monotonic counter — ids are
 /// never recycled, so a removed and re-added output is a DIFFERENT
 /// output (matching X11/Wayland semantics where a hotplugged monitor
@@ -30,9 +32,14 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OutputId(pub u64);
 
-/// One output's state: identity, mode, scale, and its position on the
-/// global desktop plane.
-#[derive(Debug, Clone, PartialEq)]
+/// One output's state: identity, mode, scale, its position on the
+/// global desktop plane, and its PRESENTATION VIEW.
+///
+/// G-E5.3: the camera is per-output. Workspace/world state (scene,
+/// visual transforms, workspace membership) is shared; the view is
+/// output-local. A workspace's SAVED camera (WorkspaceState.camera)
+/// seeds an output's live view when that workspace activates.
+#[derive(Debug, Clone)]
 pub struct OutputState {
     /// Current mode in physical pixels.
     pub mode: (u32, u32),
@@ -45,6 +52,8 @@ pub struct OutputState {
     pub global_pos: (i32, i32),
     /// wl_output name (e.g. "DP-1") — diagnostic/UX label.
     pub name: String,
+    /// This output's live presentation view (G-E5.3).
+    pub camera: Camera,
 }
 
 impl OutputState {
@@ -153,6 +162,18 @@ impl OutputManager {
         self.primary.and_then(|id| self.states.get(&id))
     }
 
+    /// Mutable primary output state.
+    pub fn primary_mut(&mut self) -> Option<&mut OutputState> {
+        self.primary.and_then(|id| self.states.get_mut(&id))
+    }
+
+    /// Update the primary output's wl_output name (first real sync).
+    pub fn rename_primary(&mut self, name: String) {
+        if let Some(o) = self.primary_mut() {
+            o.name = name;
+        }
+    }
+
     /// Primary output mode — mirrors the existing `window_size`.
     pub fn primary_size(&self) -> Option<(f32, f32)> {
         self.primary().map(|o| (o.mode.0 as f32, o.mode.1 as f32))
@@ -223,6 +244,7 @@ mod tests {
             refresh_mhz: 60000,
             scale: 1.0,
             global_pos: (0, 0),
+            camera: Camera::new(),
         }
     }
 

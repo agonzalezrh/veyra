@@ -238,7 +238,8 @@ pub struct LookingGlass {
     pub toplevels: Vec<ToplevelInfo>,
     pub popups: Vec<PopupInfo>,
     pub scene: Scene,
-    pub camera: Camera,
+    // G-E5.3: the live camera moved into OutputState (per-output
+    // presentation view). Access with camera()/camera_mut().
     pub spatial_mode: bool,
     /// Spatial camera pose saved when entering normal (2D) mode: normal
     /// pins the camera to the ortho pose for 1:1 world↔screen mapping;
@@ -514,6 +515,18 @@ impl LookingGlass {
         backend: Box<dyn PresentationBackend>,
         config: Config,
     ) -> Self {
+        // G-E5.3: the camera is per-output — seed the registry with the
+        // default primary output up front; the real mode/name arrive via
+        // sync_output_mode at startup.
+        let mut outputs = crate::outputs::OutputManager::new();
+        outputs.add(crate::outputs::OutputState {
+            name: "default".into(),
+            mode: (1280, 720),
+            refresh_mhz: 60000,
+            scale: 1.0,
+            global_pos: (0, 0),
+            camera: Camera::new(),
+        });
         let compositor_state = CompositorState::new::<Self>(display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
         let shm_state = ShmState::new::<Self>(display_handle, vec![]);
@@ -618,7 +631,6 @@ impl LookingGlass {
             toplevels: Vec::new(),
             popups: Vec::new(),
             scene: Scene::default(),
-            camera: Camera::new(),
             spatial_mode: true,
             spatial_cam_pose: None,
             spatial_cam_adapted: false,
@@ -628,7 +640,7 @@ impl LookingGlass {
             perf: PerfStats::new(),
             output: Some(output),
             window_size: (1280.0, 720.0),
-            outputs: crate::outputs::OutputManager::new(),
+            outputs,
             last_mouse: (0.0, 0.0),
             last_dx: 0.0,
             last_dy: 0.0,
@@ -760,11 +772,11 @@ impl LookingGlass {
 
                 // Apply camera from first workspace to the compositor's active camera
                 if let Some(first) = state.workspace(0) {
-                    self.camera.position.x = first.camera.x;
-                    self.camera.position.y = first.camera.y;
-                    self.camera.position.z = first.camera.z;
-                    self.camera.yaw = first.camera.yaw;
-                    self.camera.pitch = first.camera.pitch;
+                    self.camera_mut().position.x = first.camera.x;
+                    self.camera_mut().position.y = first.camera.y;
+                    self.camera_mut().position.z = first.camera.z;
+                    self.camera_mut().yaw = first.camera.yaw;
+                    self.camera_mut().pitch = first.camera.pitch;
                 }
 
                 // Store saved visual state for surface remapping
@@ -802,8 +814,9 @@ impl LookingGlass {
         // last captured at workspace SWITCH, so a camera move followed
         // by shutdown restores a stale view.
         {
+            let cam = self.camera().clone();
             let ws = self.workspace_manager.active_mut();
-            ws.camera = self.camera.clone();
+            ws.camera = cam;
         }
         // Collect workspace data
         let n = self.workspace_manager.len();
@@ -1995,20 +2008,12 @@ impl LookingGlass {
         }
         output.change_current_state(Some(mode), None, None, None);
         output.set_preferred(mode);
-        // #14 phase 1: mirror the live output into the per-output
-        // registry — first sync registers it, later syncs update it.
-        if self.outputs.is_empty() {
-            self.outputs.add(crate::outputs::OutputState {
-                name: output.name(),
-                mode: (w as u32, h as u32),
-                refresh_mhz: refresh,
-                scale: self.preferred_scale,
-                global_pos: (0, 0),
-            });
-        } else {
-            self.outputs
-                .update_primary_mode(w as u32, h as u32, refresh);
-        }
+        // #14/G-E5.3: the registry is pre-seeded with the default
+        // primary output; the real sync updates mode and name. The
+        // camera is per-output state and is NOT touched here.
+        self.outputs
+            .update_primary_mode(w as u32, h as u32, refresh);
+        self.outputs.rename_primary(output.name());
         info!(w, h, refresh, "output mode synced with backend size");
     }
 
@@ -2285,19 +2290,14 @@ impl LookingGlass {
         // G-E5.2: framebuffer size read before the backend borrow.
         let (w, h) = self.fb_size();
         let fb_h = h;
-        // Step 4: Camera + render
-        let back: &mut dyn PresentationBackend = match self.backend.as_mut() {
-            Some(b) => b.as_mut(),
-            None => return,
-        };
         if !self.spatial_mode {
-            self.camera.position = cgmath::Point3::new(0.0, 0.0, 500.0);
-            self.camera.yaw = 0.0;
-            self.camera.pitch = 0.0;
+            self.camera_mut().position = cgmath::Point3::new(0.0, 0.0, 500.0);
+            self.camera_mut().yaw = 0.0;
+            self.camera_mut().pitch = 0.0;
         } else if self.workspace_manager.active().auto_orbit {
             let t = (self.perf.frame_count as f32) * 0.003;
-            self.camera.yaw = t.cos() * 0.8;
-            self.camera.pitch = (t * 0.5).sin() * 0.3 + 0.2;
+            self.camera_mut().yaw = t.cos() * 0.8;
+            self.camera_mut().pitch = (t * 0.5).sin() * 0.3 + 0.2;
         } else if !self.spatial_cam_adapted
             && self.spatial_cam_pose.is_none()
             && self.focus_manager.transition.is_none()
@@ -2309,17 +2309,23 @@ impl LookingGlass {
             // outside the frustum (invisible in spatial mode).
             self.spatial_cam_adapted = true;
             let d = (fb_h * 1.2071f32).max(600.0);
-            self.camera.position = cgmath::Point3::new(0.0, 0.0, d);
-            self.camera.yaw = 0.0;
-            self.camera.pitch = 0.0;
+            self.camera_mut().position = cgmath::Point3::new(0.0, 0.0, d);
+            self.camera_mut().yaw = 0.0;
+            self.camera_mut().pitch = 0.0;
             info!(distance = d, "spatial camera fitted to view");
         }
         // Focus/overview mode interpolates the camera toward the target
         let render_camera = self
             .focus_manager
-            .interpolated_camera(&self.camera, &self.scene);
+            .interpolated_camera(self.camera(), &self.scene);
         let view = render_camera.view_matrix();
         let proj = Self::projection_for(self.spatial_mode, w, h);
+        // Step 5: present
+        // Step 4: Camera + render
+        let back: &mut dyn PresentationBackend = match self.backend.as_mut() {
+            Some(b) => b.as_mut(),
+            None => return,
+        };
         // In workspace overview mode, show all workspaces' visuals
         let ws_visible = match self.focus_manager.camera_mode {
             CameraMode::WorkspaceOverview => None, // show all
@@ -2520,6 +2526,77 @@ impl LookingGlass {
         }
     }
 
+    /// G-E5.3: the live presentation camera of the PRIMARY output.
+    /// Workspace/world state is shared; the view is output-local.
+    /// With N outputs each OutputState carries its own Camera —
+    /// camera()/camera_mut() resolve the primary; per-query resolution
+    /// (the output under the pointer) arrives with G-E5.5/5.6.
+    pub fn camera(&self) -> &Camera {
+        &self
+            .outputs
+            .primary()
+            .expect("primary output registered at construction")
+            .camera
+    }
+
+    pub fn camera_mut(&mut self) -> &mut Camera {
+        &mut self
+            .outputs
+            .primary_mut()
+            .expect("primary output registered at construction")
+            .camera
+    }
+
+    /// Split borrow: focus manager + primary camera (the focus
+    /// transitions mutate the camera through the manager API).
+    fn focus_parts(&mut self) -> (&mut FocusManager, &mut Camera) {
+        let Self {
+            focus_manager,
+            outputs,
+            ..
+        } = self;
+        (
+            focus_manager,
+            &mut outputs
+                .primary_mut()
+                .expect("primary output registered at construction")
+                .camera,
+        )
+    }
+
+    /// Split borrow: primary camera + shared scene (Camera::frame_*
+    /// reads the scene while mutating the view).
+    fn camera_and_scene(&mut self) -> (&mut Camera, &Scene) {
+        let Self { scene, outputs, .. } = self;
+        (
+            &mut outputs
+                .primary_mut()
+                .expect("primary output registered at construction")
+                .camera,
+            scene,
+        )
+    }
+
+    /// Split borrow: focus manager + camera + scene — the focus exit
+    /// path mutates BOTH the manager and the camera while reading the
+    /// scene for the restore target.
+    fn focus_exit_parts(&mut self) -> (&mut FocusManager, &mut Camera, &Scene) {
+        let Self {
+            focus_manager,
+            scene,
+            outputs,
+            ..
+        } = self;
+        (
+            focus_manager,
+            &mut outputs
+                .primary_mut()
+                .expect("primary output registered at construction")
+                .camera,
+            scene,
+        )
+    }
+
     /// G-E5.2: the framebuffer size of the output a frame presents to.
     /// Registry-backed: the primary output's mode, falling back to the
     /// legacy scalar while consumers migrate. The projection and picking
@@ -2534,7 +2611,7 @@ impl LookingGlass {
     /// Compute proj × view matrix for the current camera.
     fn proj_view(&self) -> Matrix4<f32> {
         let (w, h) = self.fb_size();
-        Self::projection_for(self.spatial_mode, w, h) * self.camera.view_matrix()
+        Self::projection_for(self.spatial_mode, w, h) * self.camera().view_matrix()
     }
 
     /// Route a pointer event to the selected visual's InputSink.
@@ -2738,7 +2815,7 @@ impl LookingGlass {
         let (w, h) = self.fb_size();
         let aspect = if h > 0.0 { w / h } else { 1.0 };
         let dist = {
-            let p = self.camera.position;
+            let p = self.camera().position;
             (p.x * p.x + p.y * p.y + p.z * p.z).sqrt()
         };
         layout::VisibleBounds::for_camera(dist, 45.0, aspect)
@@ -2778,7 +2855,7 @@ impl LookingGlass {
             &rows,
             self.scene.focused_id,
             self.workspace_manager.active_id(),
-            self.camera.position.z,
+            self.camera().position.z,
         );
     }
 
@@ -2935,12 +3012,12 @@ impl LookingGlass {
         let need_w = (req_w + margin) / (tan_half * aspect);
         let need = need_h.max(need_w);
         let dist = {
-            let p = self.camera.position;
+            let p = self.camera().position;
             (p.x * p.x + p.y * p.y + p.z * p.z).sqrt()
         };
         if need > dist + 1.0 && need < 6000.0 {
             // Normal mode camera looks along -z from (x, y, z): push z.
-            self.camera.position.z = need;
+            self.camera_mut().position.z = need;
             info!(dist = need, prev = dist, req_w, req_h, "camera auto-fit");
             self.schedule_render();
         }
@@ -4510,7 +4587,8 @@ impl LookingGlass {
                 self.context_menu.dismiss();
             }
             MenuAction::Focus => {
-                self.focus_manager.enter(&self.camera, target, &self.scene);
+                let cam = self.camera().clone();
+                self.focus_manager.enter(&cam, target, &self.scene);
                 info!(?target, "context menu: focus");
             }
             MenuAction::Arrange => {
@@ -4698,11 +4776,12 @@ impl LookingGlass {
             return;
         }
         let ws_ids = self.workspace_manager.active().visual_ids.clone();
+        let cam = self.camera().clone();
         let mode = self.interaction.handle_pointer_down(
             x,
             y,
             &mut self.scene,
-            &self.camera,
+            &cam,
             self.spatial_mode,
             shift,
             ctrl,
@@ -4712,7 +4791,8 @@ impl LookingGlass {
         // In overview mode, clicking a visual should focus it
         if matches!(self.focus_manager.camera_mode, CameraMode::Overview) {
             if let Some(vid) = self.scene.selected_id {
-                self.focus_manager.enter(&self.camera, vid, &self.scene);
+                let cam = self.camera().clone();
+                self.focus_manager.enter(&cam, vid, &self.scene);
                 info!(?vid, "overview click -> focus");
             }
             return;
@@ -4725,7 +4805,8 @@ impl LookingGlass {
             if let Some(vid) = self.scene.selected_id {
                 if let Some(ws_id) = self.workspace_for_visual(vid) {
                     let _ = self.activate_workspace(ws_id);
-                    self.focus_manager.exit_overview(&mut self.camera);
+                    let (fm, cam) = self.focus_parts();
+                    fm.exit_overview(cam);
                     self.set_keyboard_focus(Some(vid));
                     info!(
                         ?vid,
@@ -4754,11 +4835,12 @@ impl LookingGlass {
                 {
                     // Start a translate drag from the title bar
                     let ws_ids = self.workspace_manager.active().visual_ids.clone();
+                    let cam = self.camera().clone();
                     self.interaction.handle_pointer_down(
                         x,
                         y,
                         &mut self.scene,
-                        &self.camera,
+                        &cam,
                         self.spatial_mode,
                         false,
                         false,
@@ -4766,11 +4848,12 @@ impl LookingGlass {
                         Some(ws_ids),
                     );
                     // Force translate even though no modifier
+                    let cam = self.camera().clone();
                     self.interaction.force_translate(
                         x,
                         y,
                         &mut self.scene,
-                        &self.camera,
+                        &cam,
                         self.spatial_mode,
                     );
                 }
@@ -5055,11 +5138,12 @@ impl LookingGlass {
         }
         self.interaction.window_size = self.fb_size();
         let was_dragging = self.interaction.is_dragging();
+        let cam = self.camera().clone();
         self.interaction.handle_pointer_move(
             x,
             y,
             &mut self.scene,
-            &self.camera,
+            &cam,
             self.spatial_mode,
         );
 
@@ -5103,11 +5187,12 @@ impl LookingGlass {
                     if (x - self.press_pos.0).abs() > threshold
                         || (y - self.press_pos.1).abs() > threshold
                     {
+                        let cam = self.camera().clone();
                         self.interaction.force_translate(
                             x,
                             y,
                             &mut self.scene,
-                            &self.camera,
+                            &cam,
                             self.spatial_mode,
                         );
                     }
@@ -5264,7 +5349,8 @@ impl LookingGlass {
         let Some(vid) = self.scene.selected_id else {
             return false;
         };
-        let result = self.camera.frame_visual(vid, &self.scene);
+        let (cam, scene) = self.camera_and_scene();
+        let result = cam.frame_visual(vid, scene);
         if result {
             info!(?vid, "camera framed on selected");
         }
@@ -5273,7 +5359,8 @@ impl LookingGlass {
 
     /// Frame all visuals in view.
     pub fn frame_all(&mut self) -> bool {
-        let result = self.camera.frame_all(&self.scene);
+        let (cam, scene) = self.camera_and_scene();
+        let result = cam.frame_all(scene);
         if result {
             info!("camera framed all visuals");
         }
@@ -5286,8 +5373,14 @@ impl LookingGlass {
             CameraMode::Focus(_) | CameraMode::Overview | CameraMode::WorkspaceOverview => {
                 // Exit — restore previous camera
                 match self.focus_manager.camera_mode {
-                    CameraMode::Focus(_) => self.focus_manager.exit(&mut self.camera, &self.scene),
-                    _ => self.focus_manager.exit_overview(&mut self.camera),
+                    CameraMode::Focus(_) => {
+                        let (fm, cam, scene) = self.focus_exit_parts();
+                        fm.exit(cam, scene)
+                    }
+                    _ => {
+                        let (fm, cam) = self.focus_parts();
+                        fm.exit_overview(cam)
+                    }
                 }
                 info!("focus mode off");
             }
@@ -5297,7 +5390,8 @@ impl LookingGlass {
                     info!("no focused visual to focus on");
                     return;
                 };
-                self.focus_manager.enter(&self.camera, vid, &self.scene);
+                let cam = self.camera().clone();
+                self.focus_manager.enter(&cam, vid, &self.scene);
                 info!(?vid, "focus mode on");
             }
         }
@@ -5308,7 +5402,7 @@ impl LookingGlass {
         let ws = self.workspace_manager.active();
         if let Some(overview_cam) = crate::focus::overview_camera(&self.scene, &ws.visual_ids) {
             self.focus_manager
-                .enter_overview(&self.camera, overview_cam);
+                .enter_overview(&self.camera().clone(), overview_cam);
             info!("overview mode on");
         }
     }
@@ -5324,7 +5418,7 @@ impl LookingGlass {
             ..Camera::new()
         };
         self.focus_manager
-            .enter_workspace_overview(&self.camera, overview_cam);
+            .enter_workspace_overview(&self.camera().clone(), overview_cam);
         info!("workspace overview mode on");
     }
 
@@ -5378,18 +5472,18 @@ impl LookingGlass {
 
     /// Orbit camera (right-drag).
     pub fn handle_orbit(&mut self, dx: f64, dy: f64) {
-        self.camera.handle_orbit(dx, dy);
+        self.camera_mut().handle_orbit(dx, dy);
     }
 
     /// Pan camera (middle-drag).
     pub fn handle_pan(&mut self, dx: f64, dy: f64) {
-        self.camera.handle_pan(dx, dy, 0.05);
+        self.camera_mut().handle_pan(dx, dy, 0.05);
     }
 
     /// Zoom camera (scroll).
     #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn handle_zoom(&mut self, delta: f64) {
-        self.camera.handle_zoom(delta);
+        self.camera_mut().handle_zoom(delta);
     }
 
     /// Handle a pointer axis (scroll) event at the given screen position.
@@ -5401,7 +5495,7 @@ impl LookingGlass {
         // G-E5.4: output-local conversion for the pick target.
         let (_out, x, y) = self.resolve_pointer_output(x, y);
         let Some(ph) = self.pointer_handle.clone() else {
-            self.camera.handle_zoom(dy);
+            self.camera_mut().handle_zoom(dy);
             return;
         };
 
@@ -5431,22 +5525,22 @@ impl LookingGlass {
             ph.frame(self);
         } else {
             if dx.abs() > dy.abs() {
-                self.camera.handle_zoom(dx);
+                self.camera_mut().handle_zoom(dx);
             } else {
-                self.camera.handle_zoom(dy);
+                self.camera_mut().handle_zoom(dy);
             }
         }
     }
 
     /// Save camera bookmark.
     pub fn save_bookmark(&mut self, slot: usize) {
-        self.camera.save_bookmark(slot);
+        self.camera_mut().save_bookmark(slot);
         info!(slot, "camera bookmark saved");
     }
 
     /// Restore camera bookmark.
     pub fn restore_bookmark(&mut self, slot: usize) -> bool {
-        let result = self.camera.restore_bookmark(slot);
+        let result = self.camera_mut().restore_bookmark(slot);
         if result {
             info!(slot, "camera bookmark restored");
         }
@@ -5480,8 +5574,9 @@ impl LookingGlass {
         let old_id = self.workspace_manager.active_id();
         // Save current state into the old workspace
         {
+            let cam = self.camera().clone();
             let ws = self.workspace_manager.active_mut();
-            ws.camera = self.camera.clone();
+            ws.camera = cam;
             ws.focused_id = self.scene.focused_id;
             ws.detached_set = self.scene.detached_set.clone();
             ws.focus_manager_state = self.focus_manager.clone();
@@ -5489,12 +5584,25 @@ impl LookingGlass {
         if !self.workspace_manager.switch(idx, &mut self.scene) {
             return false;
         }
-        // Sync camera, layout, focus from saved workspace state
-        let ws = self.workspace_manager.active();
-        self.camera = ws.camera.clone();
-        self.scene.detached_set = ws.detached_set.clone();
+        // Sync camera, layout, focus from saved workspace state.
+        // G-E5.3: capture everything the mutable camera write would
+        // overlap with BEFORE taking the mutable borrow (the camera
+        // lives in the output registry now).
+        let ws_snap = {
+            let ws = self.workspace_manager.active();
+            (
+                ws.camera.clone(),
+                ws.detached_set.clone(),
+                ws.focus_manager_state.clone(),
+                ws.focused_id,
+                ws.visual_ids.clone(),
+            )
+        };
+        let (ws_camera, ws_detached, ws_fm, saved, ws_visual_ids) = ws_snap;
+        *self.camera_mut() = ws_camera;
+        self.scene.detached_set = ws_detached;
         // Sync focus manager state
-        self.focus_manager = ws.focus_manager_state.clone();
+        self.focus_manager = ws_fm;
         // Reset camera mode on workspace switch (each workspace has its own view)
         self.focus_manager.camera_mode = CameraMode::Normal;
         self.focus_manager.transition = None;
@@ -5504,21 +5612,21 @@ impl LookingGlass {
         // the workspace was inactive, destroyed, etc.) is replaced by
         // the most recent MRU entry that belongs to the target
         // workspace — the focused visual must always be live and visible.
-        let saved = ws.focused_id;
+        // `saved` comes from the workspace snapshot captured above.
         let saved_ok = saved
-            .map(|vid| ws.contains(vid) && self.scene.is_visible(vid))
+            .map(|vid| self.workspace_manager.active().contains(vid) && self.scene.is_visible(vid))
             .unwrap_or(false)
             && saved.map(|vid| !self.is_minimized(vid)).unwrap_or(false);
         let focus_target = if saved_ok {
             saved
         } else {
             let this: &LookingGlass = self;
-            let fallback_ws = ws.visual_ids.clone();
+            let fallback_ws = ws_visual_ids.clone();
             this.focus_history
                 .next_after(None, &move |v| {
                     fallback_ws.contains(&v) && this.scene.is_visible(v)
                 })
-                .or_else(|| ws.visual_ids.first().copied())
+                .or_else(|| ws_visual_ids.first().copied())
         };
         self.set_keyboard_focus(focus_target);
         info!(workspace = idx, old = old_id, restored = ?focus_target, "switched workspace");
@@ -5553,11 +5661,15 @@ impl LookingGlass {
         // If destroying the active workspace, save current state and switch to 0 first
         if id == self.workspace_manager.active_id() {
             {
+                let cam = self.camera().clone();
+                let focused = self.scene.focused_id;
+                let detached = self.scene.detached_set.clone();
+                let fm_state = self.focus_manager.clone();
                 let ws = self.workspace_manager.active_mut();
-                ws.camera = self.camera.clone();
-                ws.focused_id = self.scene.focused_id;
-                ws.detached_set = self.scene.detached_set.clone();
-                ws.focus_manager_state = self.focus_manager.clone();
+                ws.camera = cam;
+                ws.focused_id = focused;
+                ws.detached_set = detached;
+                ws.focus_manager_state = fm_state;
             }
             self.switch_workspace(0);
         }
@@ -5760,7 +5872,7 @@ impl LookingGlass {
 
         // Camera keyboard controls only when no visual has focus
         if self.scene.focused_id.is_none() {
-            self.camera.handle_key(linux_key, pressed, 1.0);
+            self.camera_mut().handle_key(linux_key, pressed, 1.0);
         }
 
         if pressed {
@@ -5787,23 +5899,23 @@ impl LookingGlass {
                     // Leaving spatial: remember the pose, then let the
                     // render loop pin the ortho camera.
                     self.spatial_cam_pose =
-                        Some((self.camera.position, self.camera.yaw, self.camera.pitch));
+                        Some((self.camera().position, self.camera().yaw, self.camera().pitch));
                     self.spatial_mode = false;
                 } else {
                     // Re-entering spatial: restore the saved pose so the
                     // desktop looks exactly like before the toggle.
                     self.spatial_mode = true;
                     if let Some((pos, yaw, pitch)) = self.spatial_cam_pose.take() {
-                        self.camera.position = pos;
-                        self.camera.yaw = yaw;
-                        self.camera.pitch = pitch;
+                        self.camera_mut().position = pos;
+                        self.camera_mut().yaw = yaw;
+                        self.camera_mut().pitch = pitch;
                     } else if !self.spatial_cam_adapted {
                         // First spatial entry through the toggle: fit the
                         // frustum to the workspace view.
                         let d = (self.fb_size().1 * 1.2071f32).max(600.0);
-                        self.camera.position = cgmath::Point3::new(0.0, 0.0, d);
-                        self.camera.yaw = 0.0;
-                        self.camera.pitch = 0.0;
+                        self.camera_mut().position = cgmath::Point3::new(0.0, 0.0, d);
+                        self.camera_mut().yaw = 0.0;
+                        self.camera_mut().pitch = 0.0;
                     }
                     self.spatial_cam_adapted = true;
                 }
@@ -5814,7 +5926,8 @@ impl LookingGlass {
             }
             ToggleOverview => match self.focus_manager.camera_mode {
                 CameraMode::Overview | CameraMode::WorkspaceOverview => {
-                    self.focus_manager.exit_overview(&mut self.camera);
+                    let (fm, cam) = self.focus_parts();
+                    fm.exit_overview(cam);
                     info!("overview mode off");
                 }
                 _ => {
@@ -5823,7 +5936,8 @@ impl LookingGlass {
             },
             ToggleWorkspaceOverview => match self.focus_manager.camera_mode {
                 CameraMode::WorkspaceOverview => {
-                    self.focus_manager.exit_overview(&mut self.camera);
+                    let (fm, cam) = self.focus_parts();
+                    fm.exit_overview(cam);
                     info!("workspace overview off");
                 }
                 _ => {
@@ -5954,13 +6068,16 @@ impl LookingGlass {
                 self.interaction.handle_pointer_up();
             }
             EscapeAction::ExitWorkspaceOverview => {
-                self.focus_manager.exit_overview(&mut self.camera);
+                let (fm, cam) = self.focus_parts();
+                    fm.exit_overview(cam);
             }
             EscapeAction::ExitOverview => {
-                self.focus_manager.exit_overview(&mut self.camera);
+                let (fm, cam) = self.focus_parts();
+                    fm.exit_overview(cam);
             }
             EscapeAction::ExitFocus => {
-                self.focus_manager.exit(&mut self.camera, &self.scene);
+                let (fm, cam, scene) = self.focus_exit_parts();
+                fm.exit(cam, scene);
             }
             EscapeAction::ResetCamera => {
                 self.reset_camera();
@@ -6100,9 +6217,9 @@ impl LookingGlass {
 
     /// Reset the camera to its default position.
     pub fn reset_camera(&mut self) {
-        self.camera.position = cgmath::Point3::new(0.0, 0.0, 800.0);
-        self.camera.yaw = 0.0;
-        self.camera.pitch = 0.0;
+        self.camera_mut().position = cgmath::Point3::new(0.0, 0.0, 800.0);
+        self.camera_mut().yaw = 0.0;
+        self.camera_mut().pitch = 0.0;
         info!("camera reset");
     }
 
@@ -6156,7 +6273,8 @@ impl LookingGlass {
         self.cancel_interaction();
 
         if matches!(self.focus_manager.camera_mode, CameraMode::Focus(_)) {
-            self.focus_manager.exit(&mut self.camera, &self.scene);
+            let (fm, cam, scene) = self.focus_exit_parts();
+                fm.exit(cam, scene);
             info!("recovery: exited focus mode");
         }
 
@@ -6166,7 +6284,8 @@ impl LookingGlass {
                 CameraMode::WorkspaceOverview
             )
         {
-            self.focus_manager.exit_overview(&mut self.camera);
+            let (fm, cam) = self.focus_parts();
+                    fm.exit_overview(cam);
             info!("recovery: exited overview");
         }
 
@@ -6737,9 +6856,11 @@ fn cleanup_visual_permanently(state: &mut LookingGlass, vid: VisualId) {
     // Clean up focus manager
     if state.focus_manager.focus_target == Some(vid) {
         let mut saved = Camera::new();
-        std::mem::swap(&mut saved, &mut state.camera);
+        let cam = state.camera_mut();
+        std::mem::swap(&mut saved, cam);
         state.focus_manager.exit(&mut saved, &state.scene);
-        std::mem::swap(&mut saved, &mut state.camera);
+        let cam = state.camera_mut();
+        std::mem::swap(&mut saved, cam);
     }
     // Clean up overview if focused on that visual
     if matches!(state.focus_manager.camera_mode, CameraMode::Focus(t) if t == vid) {
