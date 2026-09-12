@@ -2217,7 +2217,7 @@ impl LookingGlass {
         );
 
         // Step 3: Apply layout
-        let (world_w, world_h) = self.window_size;
+        let (world_w, world_h) = self.fb_size();
         let detached = self.layout_detached();
         // Layout only speaks for the active workspace (audit: foreign
         // workspace transforms must not be rearranged every frame).
@@ -2242,6 +2242,7 @@ impl LookingGlass {
         let taskbar = self.build_taskbar();
         // G-E5.2: framebuffer size read before the backend borrow.
         let (w, h) = self.fb_size();
+        let fb_h = h;
         // Step 4: Camera + render
         let back: &mut dyn PresentationBackend = match self.backend.as_mut() {
             Some(b) => b.as_mut(),
@@ -2265,7 +2266,7 @@ impl LookingGlass {
             // fixed z=800 leaves windows along the placement spiral
             // outside the frustum (invisible in spatial mode).
             self.spatial_cam_adapted = true;
-            let d = (self.window_size.1 * 1.2071f32).max(600.0);
+            let d = (fb_h * 1.2071f32).max(600.0);
             self.camera.position = cgmath::Point3::new(0.0, 0.0, d);
             self.camera.yaw = 0.0;
             self.camera.pitch = 0.0;
@@ -2690,7 +2691,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     /// screen edge). Uses the camera's distance to the workspace origin
     /// and the standard 45° vertical FOV.
     fn visible_bounds(&self) -> layout::VisibleBounds {
-        let (w, h) = self.window_size;
+        let (w, h) = self.fb_size();
         let aspect = if h > 0.0 { w / h } else { 1.0 };
         let dist = {
             let p = self.camera.position;
@@ -2743,7 +2744,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     /// buttons, launcher pins. Pure projection of existing state; the
     /// shell owns nothing.
     fn build_taskbar(&self) -> crate::shell::TaskbarLayout {
-        let (w, h) = self.window_size;
+        let (w, h) = self.fb_size();
         // Window buttons: STABLE map order (toplevel registration
         // order), active workspace only. Selection is communicated by
         // highlighting, never by reordering.
@@ -2809,7 +2810,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     /// Handle a click inside the taskbar strip. Returns true when the
     /// click was consumed (caller must skip scene picking).
     fn handle_taskbar_click(&mut self, x: f64, y: f64) -> bool {
-        let (_, h) = self.window_size;
+        let (_, h) = self.fb_size();
         let layout = self.build_taskbar();
         let Some(item) = layout.hit(h, x, y) else {
             return false;
@@ -2867,7 +2868,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     /// (J1-fix follow-up: two default-size windows no longer overlap or
     /// clip; the view widens instead).
     fn auto_fit_camera(&mut self) {
-        let (w, h) = self.window_size;
+        let (w, h) = self.fb_size();
         let aspect = if h > 0.0 { w / h } else { 1.0 };
         let tan_half = (45.0f32.to_radians() / 2.0).tan();
         let ws_ids = self.workspace_manager.active().visual_ids.clone();
@@ -3527,7 +3528,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
         let Some(session) = self.resize_session.clone() else {
             return;
         };
-        let (w, h) = self.window_size;
+        let (w, h) = self.fb_size();
         if w <= 0.0 || h <= 0.0 {
             return;
         }
@@ -3602,7 +3603,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     /// The window quad grows around its spatial position when the client
     /// commits bigger buffers — the transform itself is never touched.
     fn maximize_target(&self) -> (i32, i32) {
-        let (w, h) = self.window_size;
+        let (w, h) = self.fb_size();
         ((w.round() as i32).max(1), (h.round() as i32).max(1))
     }
 
@@ -3669,7 +3670,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
             was_maximized,
         );
         // Size the client to the presentation area — nothing hardcoded.
-        let target = crate::fullscreen::PresentationArea::for_window_size(self.window_size).size();
+        let target = crate::fullscreen::PresentationArea::for_window_size(self.fb_size()).size();
 
         // Defer while the surface still owes an ACK for a prior configure.
         let wl_surface = self.wayland_surfaces.get(&vid).cloned();
@@ -4417,7 +4418,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
         self.context_menu.dismiss();
 
         // Pick the visual under cursor
-        let (w, h) = self.window_size;
+        let (w, h) = self.fb_size();
         let ndc_x = (x as f32 / w) * 2.0 - 1.0;
         let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
         let pv = self.proj_view();
@@ -4436,15 +4437,15 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
             self.context_menu.show(x, y, vid, ws_count);
             self.context_menu.set_maximize_label(self.is_maximized(vid));
             let m = crate::context_menu::MenuMetrics::for_framebuffer(
-                self.window_size.0,
-                self.window_size.1,
+                self.fb_size().0,
+                self.fb_size().1,
             );
             info!(
                 menu_width = m.menu_width,
                 item_height = m.item_height,
                 glyph_scale = m.glyph_scale,
-                fb_w = self.window_size.0,
-                fb_h = self.window_size.1,
+                fb_w = self.fb_size().0,
+                fb_h = self.fb_size().1,
                 "context menu metrics"
             );
             info!(?vid, "context menu opened");
@@ -4473,7 +4474,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
                 let mode = ws.layout_mode;
                 let detached = self.layout_detached();
                 let eligible = self.workspace_manager.active().visual_ids.clone();
-                let (ww, wh) = self.window_size;
+                let (ww, wh) = self.fb_size();
                 layout::apply_layout(
                     &mut self.scene,
                     mode,
@@ -4568,8 +4569,8 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     pub fn handle_menu_click(&mut self, x: f64, y: f64) -> bool {
         // Must match the renderer's metrics (MenuMetrics::for_framebuffer)
         let m = crate::context_menu::MenuMetrics::for_framebuffer(
-            self.window_size.0,
-            self.window_size.1,
+            self.fb_size().0,
+            self.fb_size().1,
         );
         if let Some(idx) =
             self.context_menu
@@ -4588,12 +4589,12 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     pub fn handle_pointer_down(&mut self, x: f64, y: f64, shift: bool, ctrl: bool, alt: bool) {
         self.press_pos = (x, y);
         self.event_serial = self.event_serial.wrapping_add(1);
-        self.interaction.window_size = self.window_size;
+        self.interaction.window_size = self.fb_size();
         // J4: the shell plane owns the bottom strip — clicks there route
         // to the taskbar (workspace switch, window activate/minimize,
         // launcher) and never reach the 3D scene.
         {
-            let (_, h) = self.window_size;
+            let (_, h) = self.fb_size();
             let bar_top = h - crate::shell::TaskbarLayout::bar_height(h);
             if y >= bar_top as f64 && self.handle_taskbar_click(x, y) {
                 self.schedule_render();
@@ -4978,7 +4979,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
             self.schedule_render();
             return;
         }
-        self.interaction.window_size = self.window_size;
+        self.interaction.window_size = self.fb_size();
         let was_dragging = self.interaction.is_dragging();
         self.interaction.handle_pointer_move(
             x,
@@ -5717,7 +5718,7 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
                     } else if !self.spatial_cam_adapted {
                         // First spatial entry through the toggle: fit the
                         // frustum to the workspace view.
-                        let d = (self.window_size.1 * 1.2071f32).max(600.0);
+                        let d = (self.fb_size().1 * 1.2071f32).max(600.0);
                         self.camera.position = cgmath::Point3::new(0.0, 0.0, d);
                         self.camera.yaw = 0.0;
                         self.camera.pitch = 0.0;
@@ -5888,23 +5889,21 @@ pub fn projection_for(spatial_mode: bool, w: f32, h: f32) -> Matrix4<f32> {
     /// Open context menu on the focused visual (triggered by Menu key).
     pub fn open_context_menu_on_focused(&mut self) {
         if let Some(vid) = self.scene.focused_id {
-            let (x, y) = (
-                self.window_size.0 as f64 * 0.5,
-                self.window_size.1 as f64 * 0.5,
-            );
+            let (fw, fh) = self.fb_size();
+            let (x, y) = (fw as f64 * 0.5, fh as f64 * 0.5);
             let ws_count = self.workspace_manager.len();
             self.context_menu.show(x, y, vid, ws_count);
             self.context_menu.set_maximize_label(self.is_maximized(vid));
             let m = crate::context_menu::MenuMetrics::for_framebuffer(
-                self.window_size.0,
-                self.window_size.1,
+                self.fb_size().0,
+                self.fb_size().1,
             );
             info!(
                 menu_width = m.menu_width,
                 item_height = m.item_height,
                 glyph_scale = m.glyph_scale,
-                fb_w = self.window_size.0,
-                fb_h = self.window_size.1,
+                fb_w = self.fb_size().0,
+                fb_h = self.fb_size().1,
                 "context menu metrics"
             );
             info!(?vid, "context menu opened via keyboard");
