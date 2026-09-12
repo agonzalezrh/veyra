@@ -784,13 +784,25 @@ Milestones landed:
 - **G-E5.2** registry-backed `fb_size()`; ALL single-output consumers
   migrated (projection, picking, layout, taskbar, menus, fullscreen,
   camera fits) — the scalar survives only as the write path + fallback
+- **G-E5.3** per-output cameras: the live presentation camera moved into
+  `OutputState` (workspace/world shared, view per-output); camera()/
+  camera_mut() resolve the primary; split-borrow helpers for focus
+  transitions; registry pre-seeded at construction; ~64 sites migrated
 - **G-E5.4 step 1** explicit pointer→output resolution at all four
   input entry points (identity single-output; output-local coords feed
   picking)
+- **G-F3 step 1** (pulled forward): EGL surface rebinding contained in
+  one SurfaceBinding type; the make_current expect() panic removed —
+  rebind failures surface as ContextLost into the G-E5 recovery path
+- **G-G1** (pulled forward): HashSet visible set in the draw loop
+  (was O(N·V) slice contains)
 
-Remaining: G-E5.3 per-output cameras (workspace/world shared, view
-per-output), G-E5.5 one-winit-window-per-output, G-E5.6 DRM
-multi-connector, G-E5.7 multi-monitor integration tests. Exit criteria:
+Remaining: G-E5.5 one-winit-window-per-output (**blocked: smithay 0.7's
+winit backend creates its own event loop per init and exposes no
+multi-window API — needs either an upstream API or the simulated-output
+abstraction the user deferred**), G-E5.6 DRM multi-connector
+(implementable; **validation hardware-gated** — VKMS exposes one
+connector), G-E5.7 multi-monitor integration tests (depend on 5.5/5.6). Exit criteria:
 two outputs w/ different resolutions+scales, cross-output picking,
 straddling windows, per-output fullscreen/shell/IME, hotplug without
 restart — and single-output tests pass unchanged.
