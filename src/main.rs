@@ -259,7 +259,8 @@ fn main() {
         tracing::info!("Starting native DRM/KMS backend");
         match native_backend::create_native_state(&display_handle, &config) {
             Ok((mut native_state, stack)) => {
-                if let Err(e) = native_backend::wire_native_input(&handle, &mut native_state, stack) {
+                if let Err(e) = native_backend::wire_native_input(&handle, &mut native_state, stack)
+                {
                     tracing::error!(e = %e, "native input setup failed");
                     std::process::exit(1);
                 }
@@ -403,10 +404,7 @@ fn main() {
                     // transitions; storing it verbatim poisons projection,
                     // picking, and the shell plane (aspect ∞). Clamp at the
                     // single storage point.
-                    state.window_size = (
-                        (size.w as f32).max(1.0),
-                        (size.h as f32).max(1.0),
-                    );
+                    state.window_size = ((size.w as f32).max(1.0), (size.h as f32).max(1.0));
                     // Same greppable shape as the startup log so consumers
                     // (harness) always see the CURRENT render size.
                     tracing::info!(window_size = ?state.window_size, "render size");

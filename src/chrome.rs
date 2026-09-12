@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn glyph_codes_match_atlas() {
         assert_eq!(TitleButton::Minimize.glyph_code(), 45); // '-'
-        // Custom PUA sentinel box — never collides with client text.
+                                                            // Custom PUA sentinel box — never collides with client text.
         assert_eq!(
             TitleButton::Maximize.glyph_code(),
             crate::renderer::MAXIMIZE_GLYPH_CODE

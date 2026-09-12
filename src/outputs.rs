@@ -155,8 +155,7 @@ impl OutputManager {
 
     /// Primary output mode — mirrors the existing `window_size`.
     pub fn primary_size(&self) -> Option<(f32, f32)> {
-        self.primary()
-            .map(|o| (o.mode.0 as f32, o.mode.1 as f32))
+        self.primary().map(|o| (o.mode.0 as f32, o.mode.1 as f32))
     }
 
     pub fn primary_scale(&self) -> f64 {
@@ -296,7 +295,11 @@ mod tests {
         m.remove(a);
         assert_eq!(m.len(), 1);
         assert_eq!(m.outputs()[0].1.global_pos, (0, 0));
-        assert_eq!(m.primary_id(), Some(b), "unrelated primary survives removal");
+        assert_eq!(
+            m.primary_id(),
+            Some(b),
+            "unrelated primary survives removal"
+        );
         m.remove(b);
         assert_eq!(m.primary_id(), None, "all removed → no primary");
         assert_eq!(m.primary_size(), None);

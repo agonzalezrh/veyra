@@ -795,7 +795,27 @@ two outputs w/ different resolutions+scales, cross-output picking,
 straddling windows, per-output fullscreen/shell/IME, hotplug without
 restart — and single-output tests pass unchanged.
 
-**Status: 🟡 G-E5 multi-output in progress (500 unit tests; protocol 111/0/0; input 110/0/0)**
+**Status: 🟡 G-E5 multi-output in progress (503 unit tests; protocol 111/0/0; input 110/0/0)**
+
+### G-E5 fix — subsurface ghost visuals (foot CSD)
+
+Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
+rendered as chrome-only ghosts scattered around the desktop. Two root
+causes, both in the #11 subsurface path:
+1. **top-left↔center mismatch**: child locals were computed as
+   `loc + size/2` (parent top-left frame) but the parent chain composes
+   `world = parent_matrix * child_local` with the parent anchored at its
+   CENTER — every subsurface displaced by exactly (+pw/2, −ph/2). Fixed
+   by `scene::surface_child_local_offset` (unit-tested: foot's exact CSD
+   layout), applied to subsurfaces AND IME popups, parent-scale
+   compensated.
+2. **chrome on presentation children**: the renderer drew ring + title
+   strip + buttons on EVERY visual — min-clamped 21px buttons overflowed
+   the 5px border subsurfaces (the "ghost buttons"). Chrome (and
+   u_edge ring/strip) is now gated on `visual.parent.is_none()`; child
+   visuals get `title_bar_height = 0`.
+Verified: Xvfb+foot repro clean in normal AND spatial modes (CSD frame
+hugs the window and follows rotation); t24 green; fmt/clippy clean.
 
 ---
 

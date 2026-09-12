@@ -7,8 +7,8 @@
 //! bookkeeping types live here first (incremental extraction — not a
 //! rewrite); lifecycle OPERATIONS follow in later steps.
 
-use smithay::wayland::compositor::with_states;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::{PositionerState, ToplevelSurface, XdgToplevelSurfaceData};
 
 use crate::scene::VisualId;

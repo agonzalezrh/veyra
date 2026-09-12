@@ -144,14 +144,11 @@ pub fn wire_native_input(
     // completed flip wakes the render loop immediately, so the next
     // frame's queue_buffer does not race the swapchain, and the flip
     // completion becomes the vblank tick future pacing builds on.
-    let flip_fd = state
-        .backend
-        .as_mut()
-        .and_then(|b| {
-            b.as_any()
-                .downcast_mut::<crate::drm_backend::DrmGraphicsBackend>()
-                .map(|d| d.event_device_fd())
-        });
+    let flip_fd = state.backend.as_mut().and_then(|b| {
+        b.as_any()
+            .downcast_mut::<crate::drm_backend::DrmGraphicsBackend>()
+            .map(|d| d.event_device_fd())
+    });
     if let Some(fdfd) = flip_fd {
         handle
             .insert_source(
