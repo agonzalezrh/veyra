@@ -137,7 +137,7 @@ interactions and multi-process window churn under long sessions.
 | Context-loss recovery | ✅ | DRM recreates via stashed libseat session; winit fails loudly (G-E5) |
 | Projection NaN guard | ✅ | Degenerate framebuffer sizes clamped (G-E5) |
 | Safe EGL/presentation boundary | ❌ | Raw-pointer surface-rebinding workaround remains (G-F3 planned) |
-| Multi-output | 🟡 | Phase 1 done: `outputs.rs` registry (mode/scale/global position, hit testing); single-output consumers not yet migrated (G-E5 phase 2/3) |
+| Multi-output | 🟡 | Output-aware compositor DONE: registry is the single source of truth (wl handle per output, G-E5.2 complete); per-output cameras (G-E5.3); explicit pointer→output at all entry points + synthetic multi-output geometry battery incl. straddling windows (G-E5.4). Remaining: per-output PRESENTATION (G-E5.5 winit simulated viewports, G-E5.6 DRM multi-connector, G-E5.7 integration/hotplug) |
 | Frame scheduling | ✅ | Demand-driven (dirty/animating), idle = no render, no timer wakeups |
 | Persistence | ✅ | v2 schema, atomic save/load, app_id identity |
 | Workspaces | ✅ | Per-workspace transforms/focus; destruction rehoming; multi-workspace lifecycle |
@@ -196,7 +196,7 @@ proven on hardware.
 
 ## 5. Remaining Gaps (ordered)
 
-1. **Multi-output phase 2/3** (G-E5) — migrate single-output consumers onto
+1. **Multi-output presentation** (G-E5.5–G-E5.7) — the compositor is output-aware (registry authoritative, per-output cameras, per-event output-local input); what remains is presenting
    the `outputs.rs` registry; per-output cameras; per-output winit/DRM
    presentation. The last architectural constraint.
 2. **Real-GPU native validation** (G-F1) — hardware soak of the full

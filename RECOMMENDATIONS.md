@@ -17,13 +17,22 @@ AGENTS.md §24 for the milestone log). State as of G-E5:
 - Real-GPU native validation: still outstanding (G-F1) — VKMS/llvmpipe
   cannot rasterize imported dma-bufs.
 - New platform focus adopted post-audit: multi-output architecture
-  (G-E5 phases 1–3; phase 1 `outputs.rs` registry landed), event-driven
+  (G-E5.2 consumers+singleton DONE, G-E5.3 cameras DONE, G-E5.4 input+geometry battery DONE; remaining G-E5.5–G-E5.7 presentation), event-driven
   DRM flip dispatch (#4 step 1), GL context-loss recovery, projection
   NaN guard, producer failure thresholds, popup serial hardening (#12),
   window-model extraction into window.rs, taskbar shell polish.
 
-Next recommended sequence: G-E5.2–G-E5.7 (multi-output), G-F1–G-F5
-(native hardening), then G-G/G-H/G-I per AGENTS.md §24.
+Next recommended sequence (revised master plan): G-E5.5 simulated
+multi-output (per-output viewports in one winit window) → G-E5.6 DRM
+multi-connector → G-E5.7 integration/hotplug → G-F3 safe presentation
+API (begin_frame(output_id)/render/end_frame(output_id)) → G-F1/F4/F5
+real-hardware validation matrix → G-I3/I4/I5/I6 → resume UX (H1/H2/H4)
+on the shipping architecture. G-G is CLOSED: scalability gate passed
+(draw_ms 0.064→0.123 for 10→1000 visuals); no further renderer
+optimization until multi-output + real hardware provide production
+measurements. No further damage/partial-present experimentation — the
+full-frame fallback on unsupported drivers is the correct final
+behavior.
 
 ## Remediation status (2026-09-08, post-review campaign)
 
