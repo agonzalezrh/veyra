@@ -796,6 +796,22 @@ Milestones landed:
   rebind failures surface as ContextLost into the G-E5 recovery path
 - **G-G1** (pulled forward): HashSet visible set in the draw loop
   (was O(N·V) slice contains)
+- **G-G2** conservative frustum culling (all-corners-outside-one-plane,
+  5% slack, selected/hovered exempt — regressions degrade to over-draw,
+  never to a hidden focused window)
+- **G-G3** hot-path allocation cleanup (per-visual chrome clone,
+  per-button glyph String, per-surface output clone)
+- **G-G4** render scalability gate (tests/harness/scripts/
+  run_scalability.sh): draw_ms 0.064 -> 0.123 for 10 -> 1000 visuals
+  (1.92x per 100x scene growth, llvmpipe/debug — culling effective)
+- **G-G5 step 1** output-damage accumulation (Scene::output_damage →
+  clipped framebuffer AABBs reported per frame; scissored present =
+  G-G6 waits on DRM buffer preservation)
+- **G-H3** Arc + Circle arrangements with Meta+L cycling
+  (deterministic, content-aware, persistent)
+- **G-I1/I2 lite** lifecycle torture runner
+  (tests/harness/scripts/run_torture.sh): 200-client churn +
+  workspace hammering + resize churn — 0 panics, 0 protocol failures
 
 Remaining: G-E5.5 one-winit-window-per-output (**blocked: smithay 0.7's
 winit backend creates its own event loop per init and exposes no
@@ -807,7 +823,7 @@ two outputs w/ different resolutions+scales, cross-output picking,
 straddling windows, per-output fullscreen/shell/IME, hotplug without
 restart — and single-output tests pass unchanged.
 
-**Status: 🟡 G-E5 multi-output in progress (503 unit tests; protocol 111/0/0; input 110/0/0)**
+**Status: 🟡 G-E5 multi-output in progress; G-G1–G-G5.1, G-H3, G-I1/I2-lite landed (509 unit tests; protocol 111/0/0; input 110/0/0)**
 
 ### G-E5 fix — subsurface ghost visuals (foot CSD)
 
