@@ -867,12 +867,73 @@ impl Scene {
         self.visuals.swap(idx, idx - 1);
         true
     }
-
     /// Clear damage after rendering.
     pub fn clear_damage(&mut self) {
         for v in &mut self.visuals {
             v.damage = DamageKind::default();
         }
+    }
+
+    /// G-G5 step 1: accumulate OUTPUT damage — the framebuffer-space
+    /// AABB of every damaged visual's world quad, clipped to the
+    /// framebuffer. This is the last stage of the
+    /// surface → window → scene → output damage pipeline (§17): the
+    /// rects are reported per frame (PROFILE) so the scissored present
+    /// (G-G6) lands on measured data once buffer-preservation exists.
+    /// Returns (rects, total_area_px); empty when nothing changed.
+    pub fn output_damage(
+        &self,
+        pv: &cgmath::Matrix4<f32>,
+        fb: (f32, f32),
+    ) -> (Vec<[f32; 4]>, f32) {
+        let mut rects = Vec::new();
+        let mut total = 0.0f32;
+        for v in &self.visuals {
+            if v.damage == DamageKind::None || v.window_state == WindowState::Minimized {
+                continue;
+            }
+            let (gw, gh) = (v.total_width(), v.total_height());
+            let mvp = pv * self.world_matrix(v.id);
+            // Clip-space AABB of the quad's corners → framebuffer px.
+            let mut min_x = f32::INFINITY;
+            let mut min_y = f32::INFINITY;
+            let mut max_x = f32::NEG_INFINITY;
+            let mut max_y = f32::NEG_INFINITY;
+            let mut inside = false;
+            for (cx, cy) in [
+                (-gw / 2.0, -gh / 2.0),
+                (gw / 2.0, -gh / 2.0),
+                (gw / 2.0, gh / 2.0),
+                (-gw / 2.0, gh / 2.0),
+            ] {
+                let p = mvp * cgmath::Vector4::new(cx, cy, 0.0, 1.0);
+                if p.w <= 0.0 {
+                    continue;
+                }
+                let inv_w = 1.0 / p.w;
+                let sx = (p.x * inv_w * 0.5 + 0.5) * fb.0;
+                let sy = (-p.y * inv_w * 0.5 + 0.5) * fb.1;
+                min_x = min_x.min(sx);
+                min_y = min_y.min(sy);
+                max_x = max_x.max(sx);
+                max_y = max_y.max(sy);
+                inside = true;
+            }
+            if !inside {
+                continue;
+            }
+            // Clip to the framebuffer.
+            let x0 = min_x.max(0.0);
+            let y0 = min_y.max(0.0);
+            let x1 = max_x.min(fb.0);
+            let y1 = max_y.min(fb.1);
+            if x1 <= x0 || y1 <= y0 {
+                continue;
+            }
+            total += (x1 - x0) * (y1 - y0);
+            rects.push([x0, y0, x1, y1]);
+        }
+        (rects, total)
     }
 
     /// Reset a visual's transform to identity (position 0,0,0, no rotation, scale 1).

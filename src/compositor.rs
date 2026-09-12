@@ -2320,6 +2320,11 @@ impl LookingGlass {
             .interpolated_camera(self.camera(), &self.scene);
         let view = render_camera.view_matrix();
         let proj = Self::projection_for(self.spatial_mode, w, h);
+        // G-G5 step 1: accumulate the frame's output damage (the last
+        // stage of surface -> window -> scene -> output) before
+        // clear_damage consumes the per-visual flags.
+        let pv_for_damage = proj * view;
+        let (damage_rects, damage_area) = self.scene.output_damage(&pv_for_damage, (w, h));
         // Step 5: present
         // Step 4: Camera + render
         let back: &mut dyn PresentationBackend = match self.backend.as_mut() {
@@ -2504,6 +2509,15 @@ impl LookingGlass {
         // (e.g. foot) stall until the next input event.
         let _ = self.display_handle.flush_clients();
 
+        if !damage_rects.is_empty() {
+            debug!(
+                rects = damage_rects.len(),
+                area_px = damage_area as u32,
+                fb = ?(w as u32, h as u32),
+                coverage_pct = format!("{:.1}", (damage_area / (w * h).max(1.0)) * 100.0),
+                "output damage"
+            );
+        }
         self.scene.clear_damage();
 
         self.perf
@@ -7279,6 +7293,96 @@ mod serial_ledger_tests {
         ledger_push(&mut l, 4);
         assert!(ledger_contains(Some(&l), u32::MAX - 2));
         assert!(ledger_contains(Some(&l), 4));
+    }
+}
+
+#[cfg(test)]
+mod output_damage_tests {
+    use super::*;
+
+    fn visual_at(vid: VisualId, x: f32, y: f32, w: u32, h: u32) -> Visual {
+        let mut v = Visual::new(
+            crate::scene::VisualContent::Test,
+            smithay::utils::Rectangle::new(
+                smithay::utils::Point::new(0, 0),
+                smithay::utils::Size::new(w as i32, h as i32),
+            ),
+        );
+        v.id = vid;
+        v.transform.position = cgmath::Vector3::new(x, y, 0.0);
+        v.damage = DamageKind::Content;
+        v
+    }
+
+    #[test]
+    fn no_damage_yields_no_rects() {
+        let mut scene = Scene::default();
+        let v = visual_at(VisualId(1), 0.0, 0.0, 200, 150);
+        scene.add(v);
+        scene.clear_damage();
+        let pv = ortho_pv(1280.0, 720.0);
+        let (rects, area) = scene.output_damage(&pv, (1280.0, 720.0));
+        assert!(rects.is_empty());
+        assert_eq!(area, 0.0);
+    }
+
+    fn ortho_pv(w: f32, h: f32) -> Matrix4<f32> {
+        // Ortho projection with the camera looking down -z from z=500
+        // (the normal-mode pin) — matches the live render path closely
+        // enough for AABB math (ortho: translation-only view).
+        LookingGlass::projection_for(false, w, h)
+    }
+
+    #[test]
+    fn damaged_visual_produces_clipped_rect() {
+        let mut scene = Scene::default();
+        let v = visual_at(VisualId(1), 0.0, 0.0, 200, 100);
+        scene.add(v);
+        let pv = ortho_pv(1280.0, 720.0);
+        let (rects, area) = scene.output_damage(&pv, (1280.0, 720.0));
+        assert_eq!(rects.len(), 1, "one damaged visual, one rect");
+        // The quad is the FULL decorated window: geometry + SSD title
+        // bar — derive the expected size from the visual itself.
+        let (tw, th) = {
+            let v = scene.get(VisualId(1)).unwrap();
+            (v.total_width(), v.total_height())
+        };
+        let [x0, y0, x1, y1] = rects[0];
+        assert!(((x1 - x0) - tw).abs() < 1.5, "width {} vs {}", x1 - x0, tw);
+        assert!(((y1 - y0) - th).abs() < 1.5, "height {} vs {}", y1 - y0, th);
+        assert!((area - tw * th).abs() < 300.0, "area {}", area);
+    }
+
+    #[test]
+    fn offscreen_damage_is_dropped() {
+        let mut scene = Scene::default();
+        // Far off the right edge.
+        let v = visual_at(VisualId(1), 5000.0, 0.0, 200, 100);
+        scene.add(v);
+        let pv = ortho_pv(1280.0, 720.0);
+        let (rects, area) = scene.output_damage(&pv, (1280.0, 720.0));
+        assert!(rects.is_empty(), "fully-offscreen damage must not report");
+        assert_eq!(area, 0.0);
+    }
+
+    #[test]
+    fn partial_overlap_reports_clipped_area() {
+        let mut scene = Scene::default();
+        // Half off the left edge.
+        let v = visual_at(VisualId(1), -640.0, 0.0, 200, 100);
+        scene.add(v);
+        let pv = ortho_pv(1280.0, 720.0);
+        let (rects, area) = scene.output_damage(&pv, (1280.0, 720.0));
+        assert_eq!(rects.len(), 1);
+        let [x0, _, _x1, _] = rects[0];
+        assert!(x0 < 0.5, "clipped to the left edge: {}", x0);
+        let th = scene.get(VisualId(1)).unwrap().total_height();
+        assert!(
+            (area - 100.0 * th).abs() < 400.0,
+            "half window area {} vs {}",
+            area,
+            100.0 * th
+        );
     }
 }
 
