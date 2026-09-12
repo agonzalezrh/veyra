@@ -807,6 +807,16 @@ Milestones landed:
 - **G-G5 step 1** output-damage accumulation (Scene::output_damage →
   clipped framebuffer AABBs reported per frame; scissored present =
   G-G6 waits on DRM buffer preservation)
+- **G-G6** partial-present machinery shipped dormant-and-correct:
+  query-only EGL preservation probe, gated on
+  PresentationBackend::preservation_probe_allowed() (default false —
+  llvmpipe quirk: extra unconditional GL calls between make_current
+  cycles intermittently BadAlloc the next swap; 8/8 clean after
+  gating); renderer-side prev-frame diff as damage authority
+  (matrix/size/focus/visibility/content, old+new footprints);
+  scissored clear/draw ≤70% coverage with identical-view guard;
+  PROFILE partial= counter. Activates on drivers that natively
+  preserve buffers; winit stays full-frame (correct fallback)
 - **G-H3** Arc + Circle arrangements with Meta+L cycling
   (deterministic, content-aware, persistent)
 - **G-I1/I2 lite** lifecycle torture runner
@@ -823,7 +833,7 @@ two outputs w/ different resolutions+scales, cross-output picking,
 straddling windows, per-output fullscreen/shell/IME, hotplug without
 restart — and single-output tests pass unchanged.
 
-**Status: 🟡 G-E5 multi-output in progress; G-G1–G-G5.1, G-H3, G-I1/I2-lite landed (509 unit tests; protocol 111/0/0; input 110/0/0)**
+**Status: 🟡 G-E5 multi-output in progress; G-G1–G-G6, G-H3, G-I1/I2-lite landed (509 unit tests; protocol 111/0/0; input 110/0/0)**
 
 ### G-E5 fix — subsurface ghost visuals (foot CSD)
 
