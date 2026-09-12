@@ -2,6 +2,29 @@
 
 Review date: 2026-09-08
 
+## Addendum — G-C → G-E campaign status (2026-09-12)
+
+The September 8–10 review's residuals were largely consumed by the G-C/G-D/G-E
+compatibility campaigns (see COMPATIBILITY_MATRIX.md §3 for the mapping and
+AGENTS.md §24 for the milestone log). State as of G-E5:
+
+- Clipboard/DnD/IME/XWayland/fractional-scale/presentation-feedback/subsurface
+  gaps from the original review: all implemented and suite-verified.
+- P2 #9 remainder (raw-pointer EGL surface-rebinding + `expect()` panic):
+  **still open** — scheduled as G-F3 (safe presentation API); not forgotten.
+- Pointer-constraints harness client: still absent (structural + protocol
+  coverage exists; no dedicated harness client).
+- Real-GPU native validation: still outstanding (G-F1) — VKMS/llvmpipe
+  cannot rasterize imported dma-bufs.
+- New platform focus adopted post-audit: multi-output architecture
+  (G-E5 phases 1–3; phase 1 `outputs.rs` registry landed), event-driven
+  DRM flip dispatch (#4 step 1), GL context-loss recovery, projection
+  NaN guard, producer failure thresholds, popup serial hardening (#12),
+  window-model extraction into window.rs, taskbar shell polish.
+
+Next recommended sequence: G-E5.2–G-E5.7 (multi-output), G-F1–G-F5
+(native hardening), then G-G/G-H/G-I per AGENTS.md §24.
+
 ## Remediation status (2026-09-08, post-review campaign)
 
 All findings addressed in commits R1-R13 (79a65c4..c546355):
