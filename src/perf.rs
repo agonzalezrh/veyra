@@ -23,6 +23,7 @@ pub struct PerfStats {
     // Instrumentation counters (reset every LOG_INTERVAL)
     pub frame_requested: u64, // schedule_render() called
     pub frame_rendered: u64,  // render() actually rendered
+    pub partial_frames: u64,  // G-G6: frames presented with scissored damage only
     pub frame_presented: u64, // eglSwapBuffers succeeded
     pub frame_dropped: u64,   // render() skipped (idle)
     pub damage_frames: u64,   // frames with real content change
@@ -46,6 +47,7 @@ impl PerfStats {
             total_drops: 0,
             frame_requested: 0,
             frame_rendered: 0,
+            partial_frames: 0,
             frame_presented: 0,
             frame_dropped: 0,
             damage_frames: 0,
@@ -94,6 +96,10 @@ impl PerfStats {
     #[allow(dead_code)] // reserved API surface; not yet wired
     pub fn record_idle(&mut self) {
         self.idle_frames += 1;
+    }
+
+    pub fn record_partial(&mut self) {
+        self.partial_frames += 1;
     }
 
     pub fn record_frame(&mut self) {
@@ -151,6 +157,7 @@ impl PerfStats {
             requested = %self.frame_requested,
             rendered = %self.frame_rendered,
             presented = %self.frame_presented,
+            partial = %self.partial_frames,
             dropped_stats = %self.frame_dropped,
             damage = %self.damage_frames,
             idle = %self.idle_frames,

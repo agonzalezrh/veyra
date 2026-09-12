@@ -20,6 +20,16 @@ pub trait PresentationBackend {
     /// Downcast hook for backend-specific plumbing (BUG_LIST #4: the
     /// DRM flip-event source reaches DrmGraphicsBackend through this).
     fn as_any(&mut self) -> &mut dyn std::any::Any;
+    /// G-G6: whether the renderer may query the EGL swap behavior on
+    /// this backend's surface. Default: NO. Rationale: on the nested
+    /// winit/llvmpipe stack even a read-only eglQuerySurface between
+    /// make_current cycles corrupts the next eglSwapBuffers (BadAlloc,
+    /// observed deterministically); nested is a development backend and
+    /// presents full-frame. The native DRM path (qualified drivers,
+    /// buffer-age aware) opts in.
+    fn preservation_probe_allowed(&self) -> bool {
+        false
+    }
 }
 
 /// Wrapper implementing PresentationBackend for Smithay's WinitGraphicsBackend.

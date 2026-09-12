@@ -47,6 +47,33 @@ pub fn upload_texture_sub_region(
 pub struct RenderCaches {
     draw: Option<DrawGl>,
     font_atlas: Option<FontAtlas>,
+    /// G-G6: EGL buffer preservation, probed once per context (caches
+    /// die with the context, so a recreated context re-probes).
+    preserved: Option<bool>,
+    /// G-G6: previous frame's per-visual state for the scene diff.
+    prev_frame: Option<PrevFrameState>,
+}
+
+/// G-G6: per-visual snapshot used to detect what changed since the
+/// last presented frame. Appearance-affecting fields are all included:
+/// a visual that changed in ANY of these must be redrawn (and its old
+/// footprint damaged, else partial present leaves ghosts).
+#[derive(Clone)]
+struct PrevEntry {
+    matrix: cgmath::Matrix4<f32>,
+    gw: f32,
+    gh: f32,
+    drawn: bool,
+    selected: bool,
+    focused: bool,
+    window_state: crate::scene::WindowState,
+}
+
+#[derive(Default)]
+struct PrevFrameState {
+    fb: (u32, u32),
+    view: Option<cgmath::Matrix4<f32>>,
+    entries: std::collections::HashMap<crate::scene::VisualId, PrevEntry>,
 }
 
 struct FontAtlas {
@@ -952,6 +979,113 @@ pub struct Overlays<'a> {
 /// each frame is made current and submitted exactly once, and
 /// presentation errors propagate to it.
 #[allow(clippy::too_many_arguments)] // wide GL/routing signatures are inherent
+/// G-G6: framebuffer-space rect [x0, y0, x1, y1] union. Empty input →
+/// None.
+fn union_rect(rects: &[[f32; 4]]) -> Option<[f32; 4]> {
+    let mut it = rects.iter();
+    let first = *it.next()?;
+    let mut u = first;
+    for r in it {
+        u[0] = u[0].min(r[0]);
+        u[1] = u[1].min(r[1]);
+        u[2] = u[2].max(r[2]);
+        u[3] = u[3].max(r[3]);
+    }
+    Some(u)
+}
+
+/// G-G6: whether the frame can present partially. Requires preserved
+/// buffers, a known previous frame at the same size with an unmoved
+/// camera (view identical), actual damage, and conservative coverage.
+fn decide_partial(
+    preserved: bool,
+    prev: Option<&PrevFrameState>,
+    view: &cgmath::Matrix4<f32>,
+    fb: (u32, u32),
+    damage: Option<[f32; 4]>,
+) -> bool {
+    if !preserved {
+        return false;
+    }
+    let Some(p) = prev else {
+        return false;
+    };
+    if p.fb != fb || fb.0 == 0 || fb.1 == 0 {
+        return false;
+    }
+    // Camera moved since the last present → parallax invalidates
+    // everything: full frame.
+    if p.view.as_ref() != Some(view) {
+        return false;
+    }
+    let Some(d) = damage else {
+        return false;
+    };
+    let area = (d[2] - d[0]) * (d[3] - d[1]);
+    let fb_area = (fb.0 as f32) * (fb.1 as f32);
+    // Conservative: only bother below 70% coverage; above that the
+    // scissor bookkeeping costs more than the fill it saves.
+    fb_area > 0.0 && area / fb_area <= 0.7
+}
+
+/// G-G6: screen-space AABB of a visual's quad under `mvp`, or None
+/// when fully behind the camera.
+fn quad_screen_aabb(mvp: &cgmath::Matrix4<f32>, gw: f32, gh: f32, w: f32, h: f32) -> Option<[f32; 4]> {
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    let mut any = false;
+    for (cx, cy) in [
+        (-gw / 2.0, -gh / 2.0),
+        (gw / 2.0, -gh / 2.0),
+        (gw / 2.0, gh / 2.0),
+        (-gw / 2.0, gh / 2.0),
+    ] {
+        let p = mvp * cgmath::Vector4::new(cx, cy, 0.0, 1.0);
+        if p.w <= 0.0 {
+            continue;
+        }
+        let inv_w = 1.0 / p.w;
+        let sx = (p.x * inv_w * 0.5 + 0.5) * w;
+        let sy = (-p.y * inv_w * 0.5 + 0.5) * h;
+        min_x = min_x.min(sx);
+        min_y = min_y.min(sy);
+        max_x = max_x.max(sx);
+        max_y = max_y.max(sy);
+        any = true;
+    }
+    if !any {
+        return None;
+    }
+    Some([min_x, min_y, max_x, max_y])
+}
+
+/// G-G6: query EGL buffer preservation on the presentation surface.
+/// READ-ONLY: the swap behavior is a property of the EGLConfig the
+/// surface was created with (EGL_SWAP_BEHAVIOR_PRESERVED_BIT). We must
+/// NOT eglSurfaceAttrib it on — setting it on an unqualified config is
+/// spec-invalid and breaks llvmpipe's first swap with BadAlloc.
+/// Drivers that natively preserve get partial presents; everyone else
+/// falls back to full-frame (always correct).
+fn probe_buffer_preserved(
+    renderer: &mut GlesRenderer,
+    surface_ptr: *const smithay::backend::egl::EGLSurface,
+) -> bool {
+    use smithay::backend::egl::ffi::egl as eglffi;
+    unsafe {
+        let ctx = renderer.egl_context();
+        let display = ctx.display().get_display_handle().handle;
+        let surface = (&*surface_ptr).get_surface_handle();
+        let mut v = 0i32;
+        let ok =
+            eglffi::QuerySurface(display, surface, eglffi::SWAP_BEHAVIOR as i32, &mut v)
+                == eglffi::TRUE;
+        ok && v == eglffi::BUFFER_PRESERVED as i32
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // one frame's inputs; grouping would obscure the GL call sites
 pub fn render_scene(
     backend: &mut dyn PresentationBackend,
     scene: &Scene,
@@ -961,6 +1095,7 @@ pub fn render_scene(
     visible_ids: Option<&[crate::scene::VisualId]>,
     overlays: &Overlays,
     caches: &mut RenderCaches,
+    updated_ids: &[crate::scene::VisualId],
 ) -> Result<(), SwapBuffersError> {
     use crate::perf::PipelineStage;
 
@@ -1008,6 +1143,9 @@ pub fn render_scene(
     // Stash the surface pointer BEFORE borrowing renderer (borrows backend).
     let surface_ptr: Option<*const smithay::backend::egl::EGLSurface> =
         backend.egl_surface().map(|s| s as *const _);
+    // G-G6: read the probe gate before the renderer borrow (the flag
+    // is backend-level state, needed later past the mutable borrow).
+    let probe_allowed = backend.preservation_probe_allowed();
     let renderer = backend.renderer();
     let binding = SurfaceBinding {
         ctx: renderer.egl_context(),
@@ -1029,7 +1167,12 @@ pub fn render_scene(
     // Initialize the per-context caches inside the current GL context
     // (P2 #9): DrawGl programs/VAOs and the font atlas live and die
     // with the context that created them.
-    let RenderCaches { draw, font_atlas } = &mut *caches;
+    let RenderCaches {
+        draw,
+        font_atlas,
+        preserved,
+        prev_frame,
+    } = &mut *caches;
     let _ = renderer.with_context(|gl| {
         rebind_surface(gl);
         if draw.is_none() {
@@ -1039,6 +1182,28 @@ pub fn render_scene(
             *font_atlas = Some(unsafe { new_font_atlas(gl) });
         }
     });
+    // G-G6: probe buffer preservation once per context (needs the
+    // context CURRENT? No — eglSurfaceAttrib/QuerySurface are context-
+    // independent; run outside with_context to keep the borrow simple).
+    if preserved.is_none() {
+        // Probe only where the backend opts in (native DRM). On the
+        // nested llvmpipe stack even read-only eglQuerySurface corrupts
+        // the next swap (BadAlloc) — winit presents full-frame.
+        let probed = if probe_allowed {
+            surface_ptr
+                .map(|ptr| probe_buffer_preserved(renderer, ptr))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        *preserved = Some(probed);
+        if probed {
+            tracing::info!("G-G6: EGL buffer preservation available natively — partial presents enabled");
+        } else {
+            tracing::debug!("G-G6: EGL buffer preservation unavailable — full-frame presents");
+        }
+    }
+    let preserved = preserved.unwrap_or(false);
     let (draw, atlas) = match (draw.as_ref(), font_atlas.as_ref()) {
         (Some(d), Some(a)) => (d, a),
         _ => {
@@ -1049,15 +1214,128 @@ pub fn render_scene(
 
     // Set up viewport, clear, and state in one with_context block
     let t_clear = std::time::Instant::now();
+    // G-G6 pre-pass: per-visual state diff against the previous frame.
+    // The renderer-side diff is authoritative for partial presents —
+    // it catches everything that changes appearance (transforms, size,
+    // selection, focus, visibility, content swaps) without relying on
+    // DamageKind discipline at every mutation site.
+    let pv = proj * view;
+    let visible_set: Option<std::collections::HashSet<crate::scene::VisualId>> =
+        visible_ids.map(|ids| ids.iter().copied().collect());
+    let content_changed: std::collections::HashSet<crate::scene::VisualId> =
+        updated_ids.iter().copied().collect();
+    let prev = prev_frame.take();
+    let mut entries: std::collections::HashMap<crate::scene::VisualId, PrevEntry> =
+        std::collections::HashMap::with_capacity(scene.visuals.len());
+    let mut pre: std::collections::HashMap<crate::scene::VisualId, cgmath::Matrix4<f32>> =
+        std::collections::HashMap::with_capacity(scene.visuals.len());
+    let mut damage_rects: Vec<[f32; 4]> = Vec::new();
+    for visual in scene.iter() {
+        let world = scene.world_matrix(visual.id);
+        let gw = visual.total_width();
+        let gh = visual.total_height();
+        let drawn = visual.window_state != crate::scene::WindowState::Minimized
+            && visible_set.as_ref().is_none_or(|s| s.contains(&visual.id))
+            && visual.texture().is_some();
+        let cur_aabb = if drawn {
+            quad_screen_aabb(&(pv * world), gw, gh, w, h)
+        } else {
+            None
+        };
+        if let Some(prev_state) = &prev {
+            match prev_state.entries.get(&visual.id) {
+                Some(old) => {
+                    let changed = old.matrix != world
+                        || old.gw != gw
+                        || old.gh != gh
+                        || old.selected != visual.selected
+                        || old.focused != visual.focused
+                        || old.window_state != visual.window_state
+                        || old.drawn != drawn
+                        || content_changed.contains(&visual.id);
+                    if changed {
+                        if old.drawn {
+                            if let Some(old_aabb) =
+                                quad_screen_aabb(&(pv * old.matrix), old.gw, old.gh, w, h)
+                            {
+                                damage_rects.push(old_aabb);
+                            }
+                        }
+                        if let Some(a) = cur_aabb {
+                            damage_rects.push(a);
+                        }
+                    }
+                }
+                None => {
+                    if let Some(a) = cur_aabb {
+                        damage_rects.push(a);
+                    }
+                }
+            }
+        }
+        entries.insert(
+            visual.id,
+            PrevEntry {
+                matrix: world,
+                gw,
+                gh,
+                drawn,
+                selected: visual.selected,
+                focused: visual.focused,
+                window_state: visual.window_state,
+            },
+        );
+        pre.insert(visual.id, world);
+    }
+    // Visuals present last frame and gone now: damage their footprint.
+    if let Some(prev_state) = &prev {
+        for (id, old) in &prev_state.entries {
+            if !entries.contains_key(id) && old.drawn {
+                if let Some(a) =
+                    quad_screen_aabb(&(pv * old.matrix), old.gw, old.gh, w, h)
+                {
+                    damage_rects.push(a);
+                }
+            }
+        }
+    }
+    let prev_valid = prev
+        .as_ref()
+        .map(|p| p.fb == (w as u32, h as u32) && p.view.as_ref() == Some(view))
+        .unwrap_or(false);
+    let damage_union = if prev_valid { union_rect(&damage_rects) } else { None };
+    let partial = decide_partial(preserved, prev.as_ref(), view, (w as u32, h as u32), damage_union);
     let _ = renderer.with_context(|gl| unsafe {
         rebind_surface(gl);
         gl.Viewport(0, 0, w as i32, h as i32);
         gl.ClearColor(0.15, 0.15, 0.15, 1.0);
+        if partial {
+            // Clear and draw ONLY the damaged region; the preserved
+            // back buffer retains the previous frame elsewhere.
+            let d = damage_union.unwrap();
+            let x = d[0].floor().max(0.0) as i32;
+            let y = d[1].floor().max(0.0) as i32;
+            let rw = (d[2].ceil().min(w) as i32 - x).max(0);
+            let rh = (d[3].ceil().min(h) as i32 - y).max(0);
+            if rw > 0 && rh > 0 {
+                gl.Enable(ffi::SCISSOR_TEST);
+                gl.Scissor(x, y, rw, rh);
+            }
+        }
         gl.Clear(ffi::COLOR_BUFFER_BIT | ffi::DEPTH_BUFFER_BIT);
         gl.Enable(ffi::BLEND);
         gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
         gl.Enable(ffi::DEPTH_TEST);
         gl.DepthFunc(ffi::LESS);
+    });
+    if partial {
+        perf.record_partial();
+    }
+    // G-G6: store this frame's state as the next diff baseline.
+    *prev_frame = Some(PrevFrameState {
+        fb: (w as u32, h as u32),
+        view: Some(*view),
+        entries,
     });
     perf.record_stage(
         PipelineStage::RenderDraw,
@@ -1066,12 +1344,6 @@ pub fn render_scene(
 
     // Draw all visuals
     let t_draw = std::time::Instant::now();
-    let pv = proj * view;
-    // G-G1: the visible set is a HashSet — the old slice `contains`
-    // made the draw loop O(N·V) (quadratic when all N visuals are
-    // visible).
-    let visible_set: Option<std::collections::HashSet<crate::scene::VisualId>> =
-        visible_ids.map(|ids| ids.iter().copied().collect());
     for visual in scene.iter() {
         if visual.window_state == crate::scene::WindowState::Minimized {
             continue;
@@ -1256,9 +1528,12 @@ pub fn render_scene(
     // Render the desktop shell taskbar (J4): 2D screen-space plane at
     // the bottom of the framebuffer, camera-independent. Same overlay
     // discipline as the context menu: depth off, px-space rects.
+    // Screen-space overlays draw OUTSIDE the damage scissor (G-G6):
+    // they are opaque and repaint fully every frame.
     if let Some(tb) = overlays.taskbar {
         let _ = renderer.with_context(|gl| unsafe {
             rebind_surface(gl);
+            gl.Disable(ffi::SCISSOR_TEST);
             gl.Disable(ffi::DEPTH_TEST);
             gl.Enable(ffi::BLEND);
             gl.BlendFunc(ffi::SRC_ALPHA, ffi::ONE_MINUS_SRC_ALPHA);
@@ -1573,7 +1848,95 @@ pub fn render_scene(
         }
     }
 
+    // G-G6: never leak scissor state into the next frame — a full
+    // clear under a stale scissor would leave the screen stale. Gated
+    // on `partial` so the dormant path issues no extra GL calls at all.
+    if partial {
+        let _ = renderer.with_context(|gl| unsafe {
+            gl.Disable(ffi::SCISSOR_TEST);
+        });
+    }
+
     Ok(())
+}
+
+#[cfg(test)]
+mod gg6_tests {
+    use super::*;
+
+    #[test]
+    fn union_rect_unions_all() {
+        assert_eq!(union_rect(&[]), None);
+        let u = union_rect(&[[10.0, 10.0, 50.0, 40.0], [30.0, 0.0, 90.0, 20.0]]).unwrap();
+        assert_eq!(u, [10.0, 0.0, 90.0, 40.0]);
+    }
+
+    fn prev_state(view: cgmath::Matrix4<f32>, fb: (u32, u32)) -> PrevFrameState {
+        PrevFrameState {
+            fb,
+            view: Some(view),
+            entries: Default::default(),
+        }
+    }
+
+    fn ident() -> cgmath::Matrix4<f32> {
+        cgmath::Matrix4::from_scale(1.0)
+    }
+
+    #[test]
+    fn partial_requires_preservation() {
+        let v = ident();
+        assert!(!decide_partial(false, Some(&prev_state(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
+        assert!(decide_partial(true, Some(&prev_state(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
+    }
+
+    #[test]
+    fn partial_requires_matching_view_and_fb() {
+        let v = ident();
+        let v2 = cgmath::Matrix4::from_scale(2.0);
+        // Camera moved.
+        assert!(!decide_partial(true, Some(&prev_state(v, (100, 100))), &v2, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
+        // First frame (no prev).
+        assert!(!decide_partial(true, None, &v, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
+        // Framebuffer resized.
+        assert!(!decide_partial(true, Some(&prev_state(v, (200, 100))), &v, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
+        // Degenerate fb.
+        assert!(!decide_partial(true, Some(&prev_state(v, (0, 0))), &v, (0, 0), Some([0.0, 0.0, 10.0, 10.0])));
+        // No damage → full (nothing to do anyway).
+        assert!(!decide_partial(true, Some(&prev_state(v, (100, 100))), &v, (100, 100), None));
+    }
+
+    #[test]
+    fn partial_rejects_excessive_coverage() {
+        let v = ident();
+        // 90% of a 100x100 frame.
+        assert!(!decide_partial(true, Some(&prev_state(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 90.0, 100.0])));
+        // 25%.
+        assert!(decide_partial(true, Some(&prev_state(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 50.0, 50.0])));
+    }
+
+    #[test]
+    fn quad_aabb_maps_through_ortho() {
+        // Ortho projection mapping world (±100, ±50) to a 1280x720
+        // framebuffer centered at the origin: expect a 200x100 px box
+        // at the center.
+        let proj = crate::compositor::LookingGlass::projection_for(false, 1280.0, 720.0);
+        let mvp = proj * cgmath::Matrix4::from_translation(cgmath::Vector3::new(0.0, 0.0, -1.0));
+        let aabb = quad_screen_aabb(&mvp, 200.0, 100.0, 1280.0, 720.0).unwrap();
+        assert!(((aabb[2] - aabb[0]) - 200.0).abs() < 1.0, "{}", aabb[2] - aabb[0]);
+        assert!(((aabb[3] - aabb[1]) - 100.0).abs() < 1.0, "{}", aabb[3] - aabb[1]);
+        assert!((aabb[0] - 540.0).abs() < 1.5, "centered: {}", aabb[0]);
+        assert!((aabb[1] - 310.0).abs() < 1.5, "centered: {}", aabb[1]);
+    }
+
+    #[test]
+    fn quad_aabb_behind_camera_is_none() {
+        // Perspective camera; the quad sits fully BEHIND the camera
+        // plane (w <= 0 for every corner) → no screen footprint.
+        let proj = crate::compositor::LookingGlass::projection_for(true, 1280.0, 720.0);
+        let mvp = proj * cgmath::Matrix4::from_translation(cgmath::Vector3::new(0.0, 0.0, 50.0));
+        assert_eq!(quad_screen_aabb(&mvp, 200.0, 100.0, 1280.0, 720.0), None);
+    }
 }
 
 #[cfg(test)]

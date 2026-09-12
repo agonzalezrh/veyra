@@ -2383,6 +2383,8 @@ impl LookingGlass {
             context_menu,
             taskbar: Some(&taskbar),
         };
+        let updated_ids: Vec<crate::scene::VisualId> =
+            updates.iter().map(|(vid, _)| *vid).collect();
         let context_lost = match renderer::render_scene(
             back,
             &self.scene,
@@ -2392,6 +2394,7 @@ impl LookingGlass {
             ws_visible,
             &overlays,
             &mut self.render_caches,
+            &updated_ids,
         ) {
             Err(SwapBuffersError::ContextLost(e)) => {
                 error!(?e, "Context lost");
