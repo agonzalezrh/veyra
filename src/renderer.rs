@@ -1087,6 +1087,64 @@ pub fn render_scene(
         let tex_id = texture.tex_id();
         let gw = visual.total_width();
         let gh = visual.total_height();
+        // G-G2: conservative frustum cull. Transform the quad's corners
+        // to clip space; cull only when ALL corners fall outside the
+        // SAME plane — never culls a partially visible visual. The
+        // selected/hovered visuals are exempt as belt-and-braces: a
+        // math regression must degrade to "everything drawn", not hide
+        // the focused window.
+        {
+            let world = scene.world_matrix(visual.id);
+            let mvp = pv * world;
+            let mut left = 0usize;
+            let mut right = 0usize;
+            let mut bottom = 0usize;
+            let mut top = 0usize;
+            let mut far = 0usize;
+            let mut behind = 0usize;
+            for (cx, cy) in [
+                (-gw / 2.0, -gh / 2.0),
+                (gw / 2.0, -gh / 2.0),
+                (gw / 2.0, gh / 2.0),
+                (-gw / 2.0, gh / 2.0),
+            ] {
+                let p = mvp * cgmath::Vector4::new(cx, cy, 0.0, 1.0);
+                if p.w <= 0.0 {
+                    behind += 1;
+                    continue;
+                }
+                let inv_w = 1.0 / p.w;
+                let ndc_x = p.x * inv_w;
+                let ndc_y = p.y * inv_w;
+                // 5% slack so edge-hugging quads never flicker.
+                if ndc_x < -1.05 {
+                    left += 1;
+                } else if ndc_x > 1.05 {
+                    right += 1;
+                }
+                if ndc_y < -1.05 {
+                    bottom += 1;
+                } else if ndc_y > 1.05 {
+                    top += 1;
+                }
+                if p.z * inv_w > 1.05 {
+                    far += 1;
+                }
+            }
+            let culled = left == 4
+                || right == 4
+                || bottom == 4
+                || top == 4
+                || far == 4
+                || behind == 4;
+            if culled
+                && scene.selected_id != Some(visual.id)
+                && scene.hovered_id != Some(visual.id)
+            {
+                perf.record_stage(PipelineStage::RenderDraw, 0);
+                continue;
+            }
+        }
         let title_h =
             visual.decoration.title_bar_height / (1.0 + visual.decoration.title_bar_height);
         let world = scene.world_matrix(visual.id);
@@ -1109,7 +1167,9 @@ pub fn render_scene(
             * Matrix4::from(rot)
             * Matrix4::from_nonuniform_scale(gw, gh, 1.0);
         let mvp = proj * view * model;
-        let chrome = visual.chrome.clone();
+        // G-G3: borrow the title instead of cloning the whole chrome
+        // state per visual per frame (the closure only reads it).
+        let chrome_title: &str = &visual.chrome.title;
         let focused = visual.focused;
         let _ = renderer.with_context(|gl| unsafe {
             rebind_surface(gl);
@@ -1142,7 +1202,7 @@ pub fn render_scene(
                 // left margin and the button region.
                 let left_margin = strip_px * 0.35;
                 let avail = min_zone.u_lo * gw - left_margin - strip_px * 0.25;
-                let title = crate::chrome::fit_title(&chrome.title, avail.max(0.0), char_h);
+                let title = crate::chrome::fit_title(chrome_title, avail.max(0.0), char_h);
                 if !title.is_empty() {
                     let (tr, tg, tb) = if focused {
                         (0.95, 0.95, 0.95)
@@ -1170,11 +1230,15 @@ pub fn render_scene(
                     let glyph = char::from_u32(button.glyph_code()).unwrap_or(' ');
                     let cw = char_h * 0.9 * 5.0 / 7.0;
                     let cx_px = (u_center - 0.5) * gw;
+                    // G-G3: stack-encoded glyph — no String per button
+                    // per window per frame.
+                    let mut glyph_buf = [0u8; 4];
+                    let glyph_str = glyph.encode_utf8(&mut glyph_buf);
                     draw_text_in_window(
                         gl,
                         draw,
                         atlas,
-                        &glyph.to_string(),
+                        glyph_str,
                         (&model, &pv),
                         (gw, gh),
                         (cx_px - cw * 0.5, gh * 0.5 - strip_px * 0.5, char_h * 0.9),

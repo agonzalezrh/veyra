@@ -2471,8 +2471,8 @@ impl LookingGlass {
         };
         let (psec, pnsec) = monotonic_since_boot();
         let ptime = Duration::new(psec as u64, pnsec);
+        let output = self.output.clone();
         for surface in self.wayland_surfaces.values() {
-            let output = self.output.clone();
             let feedbacks = with_states(surface, |states| {
                 std::mem::take(
                     &mut states
