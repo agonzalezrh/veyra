@@ -837,10 +837,26 @@ Milestones landed:
   viewport origin (top-left→GL conversion), sync_output_mode clobbering
   seeded modes with simulation extents.
 
-Remaining: G-E5.6 DRM multi-connector
-(implementable; **validation hardware-gated** — VKMS exposes one
-connector), G-E5.7 multi-monitor integration tests (depend on 5.6 /
-real hardware). Exit criteria:
+- **G-E5.6.1** DRM topology model (pure): ConnectorState/TopologyMode/
+  TopologyConnector/TopologyCrtc; deterministic assignment (ascending
+  connector ids → lowest compatible free CRTC via encoder-candidate
+  overlap); unassigned reasons (Disconnected / NoCompatibleEncoder /
+  NoFreeCrtc — the hotplug hook); preferred-mode selection; 11 tests
+- **G-E5.6.2** per-output presentation state + topology-driven init:
+  OutputPresentation { crtc, gbm_surface, fb_cache, flip_pending,
+  current_buffer, size } extracted from the backend (renderer stays
+  per device); discover_topology() maps the REAL device onto the
+  model (encoder→CRTC via filter_crtcs); init replaces the
+  first-connected-display scan with topology.assign(). VKMS-validated:
+  connector 38 → crtc 37 @1024x768; the probe's dmabuf-mmap
+  permission failure is PRE-EXISTING (identical on pre-change HEAD).
+
+Remaining: G-E5.6.3–6.7 (per-output frame lifecycle, buffer ownership,
+KMS geometry, lifecycle tests), G-E5.7 integration matrix — the
+compositor-side semantics are proven (E5.5); what E5.6 must prove is
+two real KMS outputs executing them without sharing the wrong buffer,
+CRTC, viewport, or completion state. Validation beyond VKMS's single
+connector remains hardware-gated. Exit criteria:
 two outputs w/ different resolutions+scales, cross-output picking,
 straddling windows, per-output fullscreen/shell/IME, hotplug without
 restart — and single-output tests pass unchanged.
