@@ -71,9 +71,14 @@ struct PrevEntry {
 
 #[derive(Default)]
 struct PrevFrameState {
-    fb: (u32, u32),
-    view: Option<cgmath::Matrix4<f32>>,
-    entries: std::collections::HashMap<crate::scene::VisualId, PrevEntry>,
+    /// Per-output (view, fb w, fb h) — the partial-present camera/size
+    /// guard is per output view, not per framebuffer.
+    views: std::collections::HashMap<
+        crate::outputs::OutputId,
+        (cgmath::Matrix4<f32>, u32, u32),
+    >,
+    entries:
+        std::collections::HashMap<(crate::outputs::OutputId, crate::scene::VisualId), PrevEntry>,
 }
 
 struct FontAtlas {
@@ -999,7 +1004,7 @@ fn union_rect(rects: &[[f32; 4]]) -> Option<[f32; 4]> {
 /// camera (view identical), actual damage, and conservative coverage.
 fn decide_partial(
     preserved: bool,
-    prev: Option<&PrevFrameState>,
+    prev_view: Option<&(cgmath::Matrix4<f32>, u32, u32)>,
     view: &cgmath::Matrix4<f32>,
     fb: (u32, u32),
     damage: Option<[f32; 4]>,
@@ -1007,15 +1012,15 @@ fn decide_partial(
     if !preserved {
         return false;
     }
-    let Some(p) = prev else {
+    let Some((prev_m, pw, ph)) = prev_view else {
         return false;
     };
-    if p.fb != fb || fb.0 == 0 || fb.1 == 0 {
+    if (*pw, *ph) != fb || fb.0 == 0 || fb.1 == 0 {
         return false;
     }
     // Camera moved since the last present → parallax invalidates
     // everything: full frame.
-    if p.view.as_ref() != Some(view) {
+    if prev_m != view {
         return false;
     }
     let Some(d) = damage else {
@@ -1028,9 +1033,19 @@ fn decide_partial(
     fb_area > 0.0 && area / fb_area <= 0.7
 }
 
-/// G-G6: screen-space AABB of a visual's quad under `mvp`, or None
-/// when fully behind the camera.
-fn quad_screen_aabb(mvp: &cgmath::Matrix4<f32>, gw: f32, gh: f32, w: f32, h: f32) -> Option<[f32; 4]> {
+/// G-G6/E5.5: screen-space AABB of a visual's quad under `mvp`, or
+/// None when fully behind the camera. Coordinates land in the output's
+/// VIEWPORT rect (vx, vy offset, vw/vh extent) — the mapping is the
+/// exact inverse of the input path's fb→output-local conversion.
+fn quad_screen_aabb(
+    mvp: &cgmath::Matrix4<f32>,
+    gw: f32,
+    gh: f32,
+    vx: i32,
+    vy: i32,
+    vw: f32,
+    vh: f32,
+) -> Option<[f32; 4]> {
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
@@ -1047,8 +1062,8 @@ fn quad_screen_aabb(mvp: &cgmath::Matrix4<f32>, gw: f32, gh: f32, w: f32, h: f32
             continue;
         }
         let inv_w = 1.0 / p.w;
-        let sx = (p.x * inv_w * 0.5 + 0.5) * w;
-        let sy = (-p.y * inv_w * 0.5 + 0.5) * h;
+        let sx = vx as f32 + (p.x * inv_w * 0.5 + 0.5) * vw;
+        let sy = vy as f32 + (-p.y * inv_w * 0.5 + 0.5) * vh;
         min_x = min_x.min(sx);
         min_y = min_y.min(sy);
         max_x = max_x.max(sx);
@@ -1089,13 +1104,13 @@ fn probe_buffer_preserved(
 pub fn render_scene(
     backend: &mut dyn PresentationBackend,
     scene: &Scene,
-    view: &Matrix4<f32>,
-    proj: &Matrix4<f32>,
+    plans: &[crate::outputs::OutputFramePlan],
     perf: &mut PerfStats,
     visible_ids: Option<&[crate::scene::VisualId]>,
     overlays: &Overlays,
     caches: &mut RenderCaches,
     updated_ids: &[crate::scene::VisualId],
+    reports: &mut Vec<crate::outputs::OutputFrameReport>,
 ) -> Result<(), SwapBuffersError> {
     use crate::perf::PipelineStage;
 
@@ -1212,318 +1227,361 @@ pub fn render_scene(
         }
     };
 
-    // Set up viewport, clear, and state in one with_context block
-    let t_clear = std::time::Instant::now();
-    // G-G6 pre-pass: per-visual state diff against the previous frame.
-    // The renderer-side diff is authoritative for partial presents —
-    // it catches everything that changes appearance (transforms, size,
-    // selection, focus, visibility, content swaps) without relying on
-    // DamageKind discipline at every mutation site.
-    let pv = proj * view;
-    let visible_set: Option<std::collections::HashSet<crate::scene::VisualId>> =
-        visible_ids.map(|ids| ids.iter().copied().collect());
-    let content_changed: std::collections::HashSet<crate::scene::VisualId> =
-        updated_ids.iter().copied().collect();
-    let prev = prev_frame.take();
-    let mut entries: std::collections::HashMap<crate::scene::VisualId, PrevEntry> =
-        std::collections::HashMap::with_capacity(scene.visuals.len());
-    let mut pre: std::collections::HashMap<crate::scene::VisualId, cgmath::Matrix4<f32>> =
-        std::collections::HashMap::with_capacity(scene.visuals.len());
-    let mut damage_rects: Vec<[f32; 4]> = Vec::new();
-    for visual in scene.iter() {
-        let world = scene.world_matrix(visual.id);
-        let gw = visual.total_width();
-        let gh = visual.total_height();
-        let drawn = visual.window_state != crate::scene::WindowState::Minimized
-            && visible_set.as_ref().is_none_or(|s| s.contains(&visual.id))
-            && visual.texture().is_some();
-        let cur_aabb = if drawn {
-            quad_screen_aabb(&(pv * world), gw, gh, w, h)
-        } else {
-            None
-        };
-        if let Some(prev_state) = &prev {
-            match prev_state.entries.get(&visual.id) {
-                Some(old) => {
-                    let changed = old.matrix != world
-                        || old.gw != gw
-                        || old.gh != gh
-                        || old.selected != visual.selected
-                        || old.focused != visual.focused
-                        || old.window_state != visual.window_state
-                        || old.drawn != drawn
-                        || content_changed.contains(&visual.id);
-                    if changed {
-                        if old.drawn {
-                            if let Some(old_aabb) =
-                                quad_screen_aabb(&(pv * old.matrix), old.gw, old.gh, w, h)
-                            {
-                                damage_rects.push(old_aabb);
+    // G-E5.5.2: one shared scene, N output views. Each plan sets its
+    // own viewport (confines all drawing), clears ONLY its own rect
+    // (scissored — one output's clear must never erase another), and
+    // draws the scene through ITS camera and ITS viewport-size
+    // projection. Viewports derive from the registry (OutputFramePlan);
+    // nothing here derives geometry ad hoc.
+    let mut any_partial = false;
+    for plan in plans {
+        // Set up viewport, clear, and state in one with_context block
+        let t_clear = std::time::Instant::now();
+        // G-G6 pre-pass: per-visual state diff against the previous frame.
+        // The renderer-side diff is authoritative for partial presents —
+        // it catches everything that changes appearance (transforms, size,
+        // selection, focus, visibility, content swaps) without relying on
+        // DamageKind discipline at every mutation site.
+        let pv = plan.proj * plan.view;
+        let (vx, vy, vw, vh) = (
+            plan.viewport.x,
+            plan.viewport.y,
+            plan.viewport.width as f32,
+            plan.viewport.height as f32,
+        );
+        let visible_set: Option<std::collections::HashSet<crate::scene::VisualId>> =
+            visible_ids.map(|ids| ids.iter().copied().collect());
+        let content_changed: std::collections::HashSet<crate::scene::VisualId> =
+            updated_ids.iter().copied().collect();
+        let prev = prev_frame.take();
+        let mut entries: std::collections::HashMap<
+            (crate::outputs::OutputId, crate::scene::VisualId),
+            PrevEntry,
+        > = std::collections::HashMap::with_capacity(scene.visuals.len());
+        let mut pre: std::collections::HashMap<crate::scene::VisualId, cgmath::Matrix4<f32>> =
+            std::collections::HashMap::with_capacity(scene.visuals.len());
+        let mut damage_rects: Vec<[f32; 4]> = Vec::new();
+        for visual in scene.iter() {
+            let world = scene.world_matrix(visual.id);
+            let gw = visual.total_width();
+            let gh = visual.total_height();
+            let drawn = visual.window_state != crate::scene::WindowState::Minimized
+                && visible_set.as_ref().is_none_or(|s| s.contains(&visual.id))
+                && visual.texture().is_some();
+            let cur_aabb = if drawn {
+                quad_screen_aabb(&(pv * world), gw, gh, vx, vy, vw, vh)
+            } else {
+                None
+            };
+            if let Some(prev_state) = &prev {
+                match prev_state.entries.get(&(plan.output_id, visual.id)) {
+                    Some(old) => {
+                        let changed = old.matrix != world
+                            || old.gw != gw
+                            || old.gh != gh
+                            || old.selected != visual.selected
+                            || old.focused != visual.focused
+                            || old.window_state != visual.window_state
+                            || old.drawn != drawn
+                            || content_changed.contains(&visual.id);
+                        if changed {
+                            if old.drawn {
+                                if let Some(old_aabb) =
+                                    quad_screen_aabb(&(pv * old.matrix), old.gw, old.gh, vx, vy, vw, vh)
+                                {
+                                    damage_rects.push(old_aabb);
+                                }
+                            }
+                            if let Some(a) = cur_aabb {
+                                damage_rects.push(a);
                             }
                         }
+                    }
+                    None => {
                         if let Some(a) = cur_aabb {
                             damage_rects.push(a);
                         }
                     }
                 }
-                None => {
-                    if let Some(a) = cur_aabb {
+            }
+            entries.insert(
+                (plan.output_id, visual.id),
+                PrevEntry {
+                    matrix: world,
+                    gw,
+                    gh,
+                    drawn,
+                    selected: visual.selected,
+                    focused: visual.focused,
+                    window_state: visual.window_state,
+                },
+            );
+            pre.insert(visual.id, world);
+        }
+        // Visuals present last frame and gone now: damage their footprint.
+        if let Some(prev_state) = &prev {
+            for ((out_id, vid), old) in &prev_state.entries {
+                if *out_id == plan.output_id && !entries.contains_key(&(*out_id, *vid)) && old.drawn {
+                    if let Some(a) =
+                        quad_screen_aabb(&(pv * old.matrix), old.gw, old.gh, vx, vy, vw, vh)
+                    {
                         damage_rects.push(a);
                     }
                 }
             }
         }
-        entries.insert(
-            visual.id,
-            PrevEntry {
-                matrix: world,
-                gw,
-                gh,
-                drawn,
-                selected: visual.selected,
-                focused: visual.focused,
-                window_state: visual.window_state,
-            },
-        );
-        pre.insert(visual.id, world);
-    }
-    // Visuals present last frame and gone now: damage their footprint.
-    if let Some(prev_state) = &prev {
-        for (id, old) in &prev_state.entries {
-            if !entries.contains_key(id) && old.drawn {
-                if let Some(a) =
-                    quad_screen_aabb(&(pv * old.matrix), old.gw, old.gh, w, h)
-                {
-                    damage_rects.push(a);
-                }
-            }
-        }
-    }
-    let prev_valid = prev
-        .as_ref()
-        .map(|p| p.fb == (w as u32, h as u32) && p.view.as_ref() == Some(view))
-        .unwrap_or(false);
-    let damage_union = if prev_valid { union_rect(&damage_rects) } else { None };
-    let partial = decide_partial(preserved, prev.as_ref(), view, (w as u32, h as u32), damage_union);
-    let _ = renderer.with_context(|gl| unsafe {
-        rebind_surface(gl);
-        gl.Viewport(0, 0, w as i32, h as i32);
-        gl.ClearColor(0.15, 0.15, 0.15, 1.0);
-        if partial {
-            // Clear and draw ONLY the damaged region; the preserved
-            // back buffer retains the previous frame elsewhere.
-            let d = damage_union.unwrap();
-            let x = d[0].floor().max(0.0) as i32;
-            let y = d[1].floor().max(0.0) as i32;
-            let rw = (d[2].ceil().min(w) as i32 - x).max(0);
-            let rh = (d[3].ceil().min(h) as i32 - y).max(0);
-            if rw > 0 && rh > 0 {
-                gl.Enable(ffi::SCISSOR_TEST);
-                gl.Scissor(x, y, rw, rh);
-            }
-        }
-        gl.Clear(ffi::COLOR_BUFFER_BIT | ffi::DEPTH_BUFFER_BIT);
-        gl.Enable(ffi::BLEND);
-        gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
-        gl.Enable(ffi::DEPTH_TEST);
-        gl.DepthFunc(ffi::LESS);
-    });
-    if partial {
-        perf.record_partial();
-    }
-    // G-G6: store this frame's state as the next diff baseline.
-    *prev_frame = Some(PrevFrameState {
-        fb: (w as u32, h as u32),
-        view: Some(*view),
-        entries,
-    });
-    perf.record_stage(
-        PipelineStage::RenderDraw,
-        t_clear.elapsed().as_nanos() as u64,
-    );
-
-    // Draw all visuals
-    let t_draw = std::time::Instant::now();
-    for visual in scene.iter() {
-        if visual.window_state == crate::scene::WindowState::Minimized {
-            continue;
-        }
-        if let Some(set) = &visible_set {
-            if !set.contains(&visual.id) {
-                continue;
-            }
-        }
-        let Some(texture) = visual.texture() else {
-            continue;
+        let prev_view = prev
+            .as_ref()
+            .and_then(|p| p.views.get(&plan.output_id));
+        let damage_union = if prev_view.is_some() {
+            union_rect(&damage_rects)
+        } else {
+            None
         };
-        let tex_id = texture.tex_id();
-        let gw = visual.total_width();
-        let gh = visual.total_height();
-        // G-G2: conservative frustum cull. Transform the quad's corners
-        // to clip space; cull only when ALL corners fall outside the
-        // SAME plane — never culls a partially visible visual. The
-        // selected/hovered visuals are exempt as belt-and-braces: a
-        // math regression must degrade to "everything drawn", not hide
-        // the focused window.
-        {
-            let world = scene.world_matrix(visual.id);
-            let mvp = pv * world;
-            let mut left = 0usize;
-            let mut right = 0usize;
-            let mut bottom = 0usize;
-            let mut top = 0usize;
-            let mut far = 0usize;
-            let mut behind = 0usize;
-            for (cx, cy) in [
-                (-gw / 2.0, -gh / 2.0),
-                (gw / 2.0, -gh / 2.0),
-                (gw / 2.0, gh / 2.0),
-                (-gw / 2.0, gh / 2.0),
-            ] {
-                let p = mvp * cgmath::Vector4::new(cx, cy, 0.0, 1.0);
-                if p.w <= 0.0 {
-                    behind += 1;
-                    continue;
-                }
-                let inv_w = 1.0 / p.w;
-                let ndc_x = p.x * inv_w;
-                let ndc_y = p.y * inv_w;
-                // 5% slack so edge-hugging quads never flicker.
-                if ndc_x < -1.05 {
-                    left += 1;
-                } else if ndc_x > 1.05 {
-                    right += 1;
-                }
-                if ndc_y < -1.05 {
-                    bottom += 1;
-                } else if ndc_y > 1.05 {
-                    top += 1;
-                }
-                if p.z * inv_w > 1.05 {
-                    far += 1;
-                }
-            }
-            let culled = left == 4
-                || right == 4
-                || bottom == 4
-                || top == 4
-                || far == 4
-                || behind == 4;
-            if culled
-                && scene.selected_id != Some(visual.id)
-                && scene.hovered_id != Some(visual.id)
-            {
-                perf.record_stage(PipelineStage::RenderDraw, 0);
-                continue;
-            }
-        }
-        let title_h =
-            visual.decoration.title_bar_height / (1.0 + visual.decoration.title_bar_height);
-        let world = scene.world_matrix(visual.id);
-        let wx = world[3][0];
-        let wy = world[3][1];
-        let wz = world[3][2];
-        let m3 = cgmath::Matrix3::new(
-            world[0][0],
-            world[0][1],
-            world[0][2],
-            world[1][0],
-            world[1][1],
-            world[1][2],
-            world[2][0],
-            world[2][1],
-            world[2][2],
+        let partial = decide_partial(
+            preserved,
+            prev_view,
+            &plan.view,
+            (vw as u32, vh as u32),
+            damage_union,
         );
-        let rot = cgmath::Quaternion::from(m3);
-        let model = Matrix4::from_translation(cgmath::Vector3::new(wx, wy, wz))
-            * Matrix4::from(rot)
-            * Matrix4::from_nonuniform_scale(gw, gh, 1.0);
-        let mvp = proj * view * model;
-        // G-G3: borrow the title instead of cloning the whole chrome
-        // state per visual per frame (the closure only reads it).
-        let chrome_title: &str = &visual.chrome.title;
-        let focused = visual.focused;
         let _ = renderer.with_context(|gl| unsafe {
             rebind_surface(gl);
-            draw_textured_quad(
-                gl,
-                draw,
-                &mvp,
-                tex_id,
-                visual.selected,
-                visual.focused,
-                title_h,
-                gw,
-                gh,
-                visual.src_uv,
-                visual.parent.is_none(),
-            );
-
-            // J3 chrome: title text + window buttons ride the SAME model
-            // matrix as the client surface (one spatial object). Scope:
-            // toplevel visuals only — parented visuals (subsurfaces, IME
-            // popups) are raw client content and must not grow veyra
-            // chrome (a chrome strip carved from a 5px CSD border reads
-            // as ghost buttons floating on the desktop).
-            if visual.parent.is_none() {
-                let strip_px = title_h * gh;
-                let char_h = strip_px * 0.62;
-                let layout = crate::chrome::ButtonLayout::for_window(gw, gh, title_h);
-                let [_, _, min_zone] = layout.zones();
-                // Title text: left-aligned in the strip, fitting between the
-                // left margin and the button region.
-                let left_margin = strip_px * 0.35;
-                let avail = min_zone.u_lo * gw - left_margin - strip_px * 0.25;
-                let title = crate::chrome::fit_title(chrome_title, avail.max(0.0), char_h);
-                if !title.is_empty() {
-                    let (tr, tg, tb) = if focused {
-                        (0.95, 0.95, 0.95)
-                    } else {
-                        (0.55, 0.58, 0.60)
-                    };
-                    draw_text_in_window(
-                        gl,
-                        draw,
-                        atlas,
-                        &title,
-                        (&model, &pv),
-                        (gw, gh),
-                        (-gw * 0.5 + left_margin, gh * 0.5 - strip_px * 0.5, char_h),
-                        (tr, tg, tb),
-                    );
-                }
-                // Buttons: right-aligned glyphs, slightly brighter on focus.
-                let (br, bg, bb) = if focused {
-                    (0.92, 0.92, 0.92)
-                } else {
-                    (0.52, 0.55, 0.57)
-                };
-                for (button, u_center) in layout.centers() {
-                    let glyph = char::from_u32(button.glyph_code()).unwrap_or(' ');
-                    let cw = char_h * 0.9 * 5.0 / 7.0;
-                    let cx_px = (u_center - 0.5) * gw;
-                    // G-G3: stack-encoded glyph — no String per button
-                    // per window per frame.
-                    let mut glyph_buf = [0u8; 4];
-                    let glyph_str = glyph.encode_utf8(&mut glyph_buf);
-                    draw_text_in_window(
-                        gl,
-                        draw,
-                        atlas,
-                        glyph_str,
-                        (&model, &pv),
-                        (gw, gh),
-                        (cx_px - cw * 0.5, gh * 0.5 - strip_px * 0.5, char_h * 0.9),
-                        (br, bg, bb),
-                    );
+            // E5.5.4: this output's viewport confines ALL of its
+            // drawing (GL viewport); its clear is SCISSORED to the
+            // same rect so one output's clear can never erase
+            // another's pixels.
+            gl.Viewport(vx, vy, vw as i32, vh as i32);
+            gl.Enable(ffi::SCISSOR_TEST);
+            gl.Scissor(vx, vy, vw as i32, vh as i32);
+            gl.ClearColor(0.15, 0.15, 0.15, 1.0);
+            if partial {
+                // Clear and draw ONLY the damaged region; the preserved
+                // back buffer retains the previous frame elsewhere.
+                let d = damage_union.unwrap();
+                let x = d[0].floor().max(vx as f32) as i32;
+                let y = d[1].floor().max(vy as f32) as i32;
+                let rw = (d[2].ceil().min(vx as f32 + vw) as i32 - x).max(0);
+                let rh = (d[3].ceil().min(vy as f32 + vh) as i32 - y).max(0);
+                if rw > 0 && rh > 0 {
+                    gl.Scissor(x, y, rw, rh);
                 }
             }
+            gl.Clear(ffi::COLOR_BUFFER_BIT | ffi::DEPTH_BUFFER_BIT);
+            // Drawing is confined by the VIEWPORT; the scissor only
+            // governs the clear. Release it before the draw loop.
+            gl.Disable(ffi::SCISSOR_TEST);
+            gl.Enable(ffi::BLEND);
+            gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
+            gl.Enable(ffi::DEPTH_TEST);
+            gl.DepthFunc(ffi::LESS);
+        });
+        if partial {
+            perf.record_partial();
+        }
+        // G-G6: store this frame's per-output state as the next diff
+        // baseline.
+        let pf = prev_frame.get_or_insert_with(Default::default);
+        pf.views
+            .insert(plan.output_id, (plan.view, vw as u32, vh as u32));
+        for ((oid, vid), entry) in entries {
+            pf.entries.insert((oid, vid), entry);
+        }
+        perf.record_stage(
+            PipelineStage::RenderDraw,
+            t_clear.elapsed().as_nanos() as u64,
+        );
+
+        // Draw all visuals
+        let t_draw = std::time::Instant::now();
+        for visual in scene.iter() {
+            if visual.window_state == crate::scene::WindowState::Minimized {
+                continue;
+            }
+            if let Some(set) = &visible_set {
+                if !set.contains(&visual.id) {
+                    continue;
+                }
+            }
+            let Some(texture) = visual.texture() else {
+                continue;
+            };
+            let tex_id = texture.tex_id();
+            let gw = visual.total_width();
+            let gh = visual.total_height();
+            // G-G2: conservative frustum cull. Transform the quad's corners
+            // to clip space; cull only when ALL corners fall outside the
+            // SAME plane — never culls a partially visible visual. The
+            // selected/hovered visuals are exempt as belt-and-braces: a
+            // math regression must degrade to "everything drawn", not hide
+            // the focused window.
+            {
+                let world = scene.world_matrix(visual.id);
+                let mvp = pv * world;
+                let mut left = 0usize;
+                let mut right = 0usize;
+                let mut bottom = 0usize;
+                let mut top = 0usize;
+                let mut far = 0usize;
+                let mut behind = 0usize;
+                for (cx, cy) in [
+                    (-gw / 2.0, -gh / 2.0),
+                    (gw / 2.0, -gh / 2.0),
+                    (gw / 2.0, gh / 2.0),
+                    (-gw / 2.0, gh / 2.0),
+                ] {
+                    let p = mvp * cgmath::Vector4::new(cx, cy, 0.0, 1.0);
+                    if p.w <= 0.0 {
+                        behind += 1;
+                        continue;
+                    }
+                    let inv_w = 1.0 / p.w;
+                    let ndc_x = p.x * inv_w;
+                    let ndc_y = p.y * inv_w;
+                    // 5% slack so edge-hugging quads never flicker.
+                    if ndc_x < -1.05 {
+                        left += 1;
+                    } else if ndc_x > 1.05 {
+                        right += 1;
+                    }
+                    if ndc_y < -1.05 {
+                        bottom += 1;
+                    } else if ndc_y > 1.05 {
+                        top += 1;
+                    }
+                    if p.z * inv_w > 1.05 {
+                        far += 1;
+                    }
+                }
+                let culled = left == 4
+                    || right == 4
+                    || bottom == 4
+                    || top == 4
+                    || far == 4
+                    || behind == 4;
+                if culled
+                    && scene.selected_id != Some(visual.id)
+                    && scene.hovered_id != Some(visual.id)
+                {
+                    perf.record_stage(PipelineStage::RenderDraw, 0);
+                    continue;
+                }
+            }
+            let title_h =
+                visual.decoration.title_bar_height / (1.0 + visual.decoration.title_bar_height);
+            let world = scene.world_matrix(visual.id);
+            let wx = world[3][0];
+            let wy = world[3][1];
+            let wz = world[3][2];
+            let m3 = cgmath::Matrix3::new(
+                world[0][0],
+                world[0][1],
+                world[0][2],
+                world[1][0],
+                world[1][1],
+                world[1][2],
+                world[2][0],
+                world[2][1],
+                world[2][2],
+            );
+            let rot = cgmath::Quaternion::from(m3);
+            let model = Matrix4::from_translation(cgmath::Vector3::new(wx, wy, wz))
+                * Matrix4::from(rot)
+                * Matrix4::from_nonuniform_scale(gw, gh, 1.0);
+            let mvp = plan.proj * plan.view * model;
+            // G-G3: borrow the title instead of cloning the whole chrome
+            // state per visual per frame (the closure only reads it).
+            let chrome_title: &str = &visual.chrome.title;
+            let focused = visual.focused;
+            let _ = renderer.with_context(|gl| unsafe {
+                rebind_surface(gl);
+                draw_textured_quad(
+                    gl,
+                    draw,
+                    &mvp,
+                    tex_id,
+                    visual.selected,
+                    visual.focused,
+                    title_h,
+                    gw,
+                    gh,
+                    visual.src_uv,
+                    visual.parent.is_none(),
+                );
+
+                // J3 chrome: title text + window buttons ride the SAME model
+                // matrix as the client surface (one spatial object). Scope:
+                // toplevel visuals only — parented visuals (subsurfaces, IME
+                // popups) are raw client content and must not grow veyra
+                // chrome (a chrome strip carved from a 5px CSD border reads
+                // as ghost buttons floating on the desktop).
+                if visual.parent.is_none() {
+                    let strip_px = title_h * gh;
+                    let char_h = strip_px * 0.62;
+                    let layout = crate::chrome::ButtonLayout::for_window(gw, gh, title_h);
+                    let [_, _, min_zone] = layout.zones();
+                    // Title text: left-aligned in the strip, fitting between the
+                    // left margin and the button region.
+                    let left_margin = strip_px * 0.35;
+                    let avail = min_zone.u_lo * gw - left_margin - strip_px * 0.25;
+                    let title = crate::chrome::fit_title(chrome_title, avail.max(0.0), char_h);
+                    if !title.is_empty() {
+                        let (tr, tg, tb) = if focused {
+                            (0.95, 0.95, 0.95)
+                        } else {
+                            (0.55, 0.58, 0.60)
+                        };
+                        draw_text_in_window(
+                            gl,
+                            draw,
+                            atlas,
+                            &title,
+                            (&model, &pv),
+                            (gw, gh),
+                            (-gw * 0.5 + left_margin, gh * 0.5 - strip_px * 0.5, char_h),
+                            (tr, tg, tb),
+                        );
+                    }
+                    // Buttons: right-aligned glyphs, slightly brighter on focus.
+                    let (br, bg, bb) = if focused {
+                        (0.92, 0.92, 0.92)
+                    } else {
+                        (0.52, 0.55, 0.57)
+                    };
+                    for (button, u_center) in layout.centers() {
+                        let glyph = char::from_u32(button.glyph_code()).unwrap_or(' ');
+                        let cw = char_h * 0.9 * 5.0 / 7.0;
+                        let cx_px = (u_center - 0.5) * gw;
+                        // G-G3: stack-encoded glyph — no String per button
+                        // per window per frame.
+                        let mut glyph_buf = [0u8; 4];
+                        let glyph_str = glyph.encode_utf8(&mut glyph_buf);
+                        draw_text_in_window(
+                            gl,
+                            draw,
+                            atlas,
+                            glyph_str,
+                            (&model, &pv),
+                            (gw, gh),
+                            (cx_px - cw * 0.5, gh * 0.5 - strip_px * 0.5, char_h * 0.9),
+                            (br, bg, bb),
+                        );
+                    }
+                }
+            });
+        }
+        perf.record_stage(
+            PipelineStage::RenderDraw,
+            t_draw.elapsed().as_nanos() as u64,
+        );
+
+        any_partial |= partial;
+        reports.push(crate::outputs::OutputFrameReport {
+            output_id: plan.output_id,
+            viewport: plan.viewport,
+            presented: true,
         });
     }
-    perf.record_stage(
-        PipelineStage::RenderDraw,
-        t_draw.elapsed().as_nanos() as u64,
-    );
 
     // Render the desktop shell taskbar (J4): 2D screen-space plane at
     // the bottom of the framebuffer, camera-independent. Same overlay
@@ -1850,8 +1908,8 @@ pub fn render_scene(
 
     // G-G6: never leak scissor state into the next frame — a full
     // clear under a stale scissor would leave the screen stale. Gated
-    // on `partial` so the dormant path issues no extra GL calls at all.
-    if partial {
+    // on `any_partial` so the dormant path issues no extra GL calls.
+    if any_partial {
         let _ = renderer.with_context(|gl| unsafe {
             gl.Disable(ffi::SCISSOR_TEST);
         });
@@ -1871,12 +1929,8 @@ mod gg6_tests {
         assert_eq!(u, [10.0, 0.0, 90.0, 40.0]);
     }
 
-    fn prev_state(view: cgmath::Matrix4<f32>, fb: (u32, u32)) -> PrevFrameState {
-        PrevFrameState {
-            fb,
-            view: Some(view),
-            entries: Default::default(),
-        }
+    fn prev_view(view: cgmath::Matrix4<f32>, fb: (u32, u32)) -> (cgmath::Matrix4<f32>, u32, u32) {
+        (view, fb.0, fb.1)
     }
 
     fn ident() -> cgmath::Matrix4<f32> {
@@ -1886,8 +1940,8 @@ mod gg6_tests {
     #[test]
     fn partial_requires_preservation() {
         let v = ident();
-        assert!(!decide_partial(false, Some(&prev_state(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
-        assert!(decide_partial(true, Some(&prev_state(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
+        assert!(!decide_partial(false, Some(&prev_view(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
+        assert!(decide_partial(true, Some(&prev_view(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
     }
 
     #[test]
@@ -1895,24 +1949,24 @@ mod gg6_tests {
         let v = ident();
         let v2 = cgmath::Matrix4::from_scale(2.0);
         // Camera moved.
-        assert!(!decide_partial(true, Some(&prev_state(v, (100, 100))), &v2, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
+        assert!(!decide_partial(true, Some(&prev_view(v, (100, 100))), &v2, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
         // First frame (no prev).
         assert!(!decide_partial(true, None, &v, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
         // Framebuffer resized.
-        assert!(!decide_partial(true, Some(&prev_state(v, (200, 100))), &v, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
+        assert!(!decide_partial(true, Some(&prev_view(v, (200, 100))), &v, (100, 100), Some([0.0, 0.0, 10.0, 10.0])));
         // Degenerate fb.
-        assert!(!decide_partial(true, Some(&prev_state(v, (0, 0))), &v, (0, 0), Some([0.0, 0.0, 10.0, 10.0])));
+        assert!(!decide_partial(true, Some(&prev_view(v, (0, 0))), &v, (0, 0), Some([0.0, 0.0, 10.0, 10.0])));
         // No damage → full (nothing to do anyway).
-        assert!(!decide_partial(true, Some(&prev_state(v, (100, 100))), &v, (100, 100), None));
+        assert!(!decide_partial(true, Some(&prev_view(v, (100, 100))), &v, (100, 100), None));
     }
 
     #[test]
     fn partial_rejects_excessive_coverage() {
         let v = ident();
         // 90% of a 100x100 frame.
-        assert!(!decide_partial(true, Some(&prev_state(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 90.0, 100.0])));
+        assert!(!decide_partial(true, Some(&prev_view(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 90.0, 100.0])));
         // 25%.
-        assert!(decide_partial(true, Some(&prev_state(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 50.0, 50.0])));
+        assert!(decide_partial(true, Some(&prev_view(v, (100, 100))), &v, (100, 100), Some([0.0, 0.0, 50.0, 50.0])));
     }
 
     #[test]
@@ -1922,7 +1976,7 @@ mod gg6_tests {
         // at the center.
         let proj = crate::compositor::LookingGlass::projection_for(false, 1280.0, 720.0);
         let mvp = proj * cgmath::Matrix4::from_translation(cgmath::Vector3::new(0.0, 0.0, -1.0));
-        let aabb = quad_screen_aabb(&mvp, 200.0, 100.0, 1280.0, 720.0).unwrap();
+        let aabb = quad_screen_aabb(&mvp, 200.0, 100.0, 0, 0, 1280.0, 720.0).unwrap();
         assert!(((aabb[2] - aabb[0]) - 200.0).abs() < 1.0, "{}", aabb[2] - aabb[0]);
         assert!(((aabb[3] - aabb[1]) - 100.0).abs() < 1.0, "{}", aabb[3] - aabb[1]);
         assert!((aabb[0] - 540.0).abs() < 1.5, "centered: {}", aabb[0]);
@@ -1935,7 +1989,7 @@ mod gg6_tests {
         // plane (w <= 0 for every corner) → no screen footprint.
         let proj = crate::compositor::LookingGlass::projection_for(true, 1280.0, 720.0);
         let mvp = proj * cgmath::Matrix4::from_translation(cgmath::Vector3::new(0.0, 0.0, 50.0));
-        assert_eq!(quad_screen_aabb(&mvp, 200.0, 100.0, 1280.0, 720.0), None);
+        assert_eq!(quad_screen_aabb(&mvp, 200.0, 100.0, 0, 0, 1280.0, 720.0), None);
     }
 }
 

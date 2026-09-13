@@ -527,6 +527,33 @@ impl LookingGlass {
             camera: Camera::new(),
             wl: None,
         });
+        // G-E5.5: simulated multi-output — VEYRA_SIM_OUTPUTS=N renders N
+        // logical outputs inside the ONE winit surface. Each gets its
+        // own mode and its own camera (seeded with a small yaw offset so
+        // the views are visibly independent: one scene, N views). The
+        // wl_output global stays primary-only until G-E5.6.
+        if let Ok(n) = std::env::var("VEYRA_SIM_OUTPUTS") {
+            if let Ok(n) = n.parse::<u32>() {
+                if n > 1 {
+                    let x = (1280.0 + 64.0) as i32;
+                    let _y = (720.0 + 64.0) as i32; // row tiling: all outputs on y=0 (per-output placement lands with G-E5.6 hotplug)
+                    for i in 1..n {
+                        let mut cam = Camera::new();
+                        cam.yaw = i as f32 * 0.26;
+                        outputs.add(crate::outputs::OutputState {
+                            name: format!("SIM-{i}"),
+                            mode: (1024, 768),
+                            refresh_mhz: 60000,
+                            scale: 1.0,
+                            global_pos: (x * i as i32, 0),
+                            camera: cam,
+                            wl: None,
+                        });
+                    }
+                    info!(outputs = n, "G-E5.5: simulated multi-output enabled");
+                }
+            }
+        }
         let compositor_state = CompositorState::new::<Self>(display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
         let shm_state = ShmState::new::<Self>(display_handle, vec![]);
@@ -2320,13 +2347,33 @@ impl LookingGlass {
         let render_camera = self
             .focus_manager
             .interpolated_camera(self.camera(), &self.scene);
-        let view = render_camera.view_matrix();
-        let proj = Self::projection_for(self.spatial_mode, w, h);
+        // G-E5.5.2: one shared scene, one plan per output. Each plan
+        // carries its own viewport + camera + viewport-size projection;
+        // the focus/overview INTERPOLATED camera overrides the focus
+        // output's plan (the primary today) so transitions keep their
+        // single-output semantics.
+        let mut plans =
+            self.outputs
+                .build_frame_plans(&Self::projection_for, self.spatial_mode);
+        if let Some(primary_id) = self.outputs.primary_id() {
+            if let Some(p) = plans.iter_mut().find(|p| p.output_id == primary_id) {
+                p.view = render_camera.view_matrix();
+            }
+        }
         // G-G5 step 1: accumulate the frame's output damage (the last
         // stage of surface -> window -> scene -> output) before
-        // clear_damage consumes the per-visual flags.
-        let pv_for_damage = proj * view;
-        let (damage_rects, damage_area) = self.scene.output_damage(&pv_for_damage, (w, h));
+        // clear_damage consumes the per-visual flags. Reported against
+        // the focus output's plan.
+        let (damage_rects, damage_area) = match plans.iter().find(|p| Some(p.output_id) == self.outputs.primary_id()) {
+            Some(p) => {
+                let pv_for_damage = p.proj * p.view;
+                let vw = p.viewport.width as f32;
+                let vh = p.viewport.height as f32;
+                let (rects, area) = self.scene.output_damage(&pv_for_damage, (vw, vh));
+                (rects.len(), area)
+            }
+            None => (0, 0.0),
+        };
         // Step 5: present
         // Step 4: Camera + render
         let back: &mut dyn PresentationBackend = match self.backend.as_mut() {
@@ -2387,16 +2434,17 @@ impl LookingGlass {
         };
         let updated_ids: Vec<crate::scene::VisualId> =
             updates.iter().map(|(vid, _)| *vid).collect();
+        let mut frame_reports: Vec<crate::outputs::OutputFrameReport> = Vec::new();
         let context_lost = match renderer::render_scene(
             back,
             &self.scene,
-            &view,
-            &proj,
+            &plans,
             &mut self.perf,
             ws_visible,
             &overlays,
             &mut self.render_caches,
             &updated_ids,
+            &mut frame_reports,
         ) {
             Err(SwapBuffersError::ContextLost(e)) => {
                 error!(?e, "Context lost");
@@ -2404,6 +2452,18 @@ impl LookingGlass {
             }
             _ => false,
         };
+        // G-E5.5.5: per-output presentation bookkeeping — one swap
+        // presents N output views; the reports make that explicit.
+        if !frame_reports.is_empty() {
+            debug!(
+                outputs = frame_reports.len(),
+                viewports = ?frame_reports
+                    .iter()
+                    .map(|r| (r.output_id.0, (r.viewport.x, r.viewport.y, r.viewport.width, r.viewport.height)))
+                    .collect::<Vec<_>>(),
+                "frame presented"
+            );
+        }
         if context_lost {
             self.backend = None;
             // P2 #9: the GPU caches die with the context.
@@ -2514,9 +2574,9 @@ impl LookingGlass {
         // (e.g. foot) stall until the next input event.
         let _ = self.display_handle.flush_clients();
 
-        if !damage_rects.is_empty() {
+        if damage_rects > 0 {
             debug!(
-                rects = damage_rects.len(),
+                rects = damage_rects,
                 area_px = damage_area as u32,
                 fb = ?(w as u32, h as u32),
                 coverage_pct = format!("{:.1}", (damage_area / (w * h).max(1.0)) * 100.0),
@@ -2630,12 +2690,6 @@ impl LookingGlass {
         // cold-start guard only. `window_size` remains the resize WRITE
         // input (line ~2128), never a read path.
         self.outputs.primary_size().unwrap_or((1280.0, 720.0))
-    }
-
-    /// Compute proj × view matrix for the current camera.
-    fn proj_view(&self) -> Matrix4<f32> {
-        let (w, h) = self.fb_size();
-        Self::projection_for(self.spatial_mode, w, h) * self.camera().view_matrix()
     }
 
     /// Route a pointer event to the selected visual's InputSink.
@@ -3055,13 +3109,12 @@ impl LookingGlass {
             return ContentRouting::NoTarget;
         }
 
-        let (w, h) = self.fb_size();
-        // P1 (audit): same degenerate-size guard as projection_for — a
-        // 0-height framebuffer must not produce inf NDC coordinates.
-        let (w, h) = (w.max(1.0), h.max(1.0));
-        let ndc_x = (x as f32 / w) * 2.0 - 1.0;
-        let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
-        let pv = self.proj_view();
+        // G-E5.5.3: pick through the POINTER'S output view (its camera,
+        // its viewport-size projection) — consistent with how that
+        // output renders.
+        let Some((pv, ndc_x, ndc_y)) = self.pointer_view(x, y) else {
+            return ContentRouting::NoTarget;
+        };
 
         // R12: the title-bar fraction of the full quad comes from the
         // visual's single conversion API (was recomputed inline here).
@@ -3673,13 +3726,9 @@ impl LookingGlass {
         let Some(session) = self.resize_session.clone() else {
             return;
         };
-        let (w, h) = self.fb_size();
-        if w <= 0.0 || h <= 0.0 {
+        let Some((pv, ndc_x, ndc_y)) = self.pointer_view(x, y) else {
             return;
-        }
-        let ndc_x = (x as f32 / w) * 2.0 - 1.0;
-        let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
-        let pv = self.proj_view();
+        };
         // Unproject against the FROZEN start transform: the session frame
         // does not follow the visual as its geometry evolves.
         let Some(local) = input_router::screen_to_visual_local_point(
@@ -4562,11 +4611,11 @@ impl LookingGlass {
         // Dismiss any existing menu first
         self.context_menu.dismiss();
 
-        // Pick the visual under cursor
-        let (w, h) = self.fb_size();
-        let ndc_x = (x as f32 / w) * 2.0 - 1.0;
-        let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
-        let pv = self.proj_view();
+        // Pick the visual under cursor — through the pointer's output
+        // view (G-E5.5.3).
+        let Some((pv, ndc_x, ndc_y)) = self.pointer_view(x, y) else {
+            return false;
+        };
         let ws_ids: Vec<VisualId> = self
             .workspace_manager
             .active()
@@ -5013,7 +5062,11 @@ impl LookingGlass {
         x: f64,
         y: f64,
     ) -> (Option<crate::outputs::OutputId>, f64, f64) {
-        match self.outputs.to_local(x as i32, y as i32) {
+        // Input arrives in the SIMULATION framebuffer's pixel space;
+        // the desktop origin is the single offset to the global plane
+        // (identity for the default row tiling).
+        let (gx, gy) = self.outputs.fb_to_global(x as i32, y as i32);
+        match self.outputs.to_local(gx, gy) {
             Some((id, lx, ly)) => (Some(id), lx as f64, ly as f64),
             // Outside every output (possible mid-transition): clamp to
             // the primary and let existing edge handling apply.
@@ -5267,6 +5320,36 @@ impl LookingGlass {
     /// Returns (visual id, surface, surface-local content position).
     /// Returns None when the cursor is over empty space, a title bar, or a
     /// non-Wayland visual.
+    /// G-E5.5.3: the pointer's output view — (proj·view, NDC x/y) for
+    /// the output UNDER THE POINTER, using that output's OWN camera and
+    /// ITS viewport-size projection: the exact inverse of how that
+    /// output renders (plan viewport confines drawing; plan projection
+    /// matches). The focus output renders through the INTERPOLATED
+    /// camera during transitions — picking must match its render.
+    fn pointer_view(&self, x: f64, y: f64) -> Option<(Matrix4<f32>, f32, f32)> {
+        let (out_id, lx, ly) = self.resolve_pointer_output(x, y);
+        let id = out_id?;
+        let state = self.outputs.get(id)?;
+        let (mw, mh) = (state.mode.0 as f32, state.mode.1 as f32);
+        if mw <= 0.0 || mh <= 0.0 {
+            return None;
+        }
+        let ndc_x = (lx as f32 / mw) * 2.0 - 1.0;
+        let ndc_y = -((ly as f32 / mh) * 2.0 - 1.0);
+        let view = if Some(id) == self.outputs.primary_id() {
+            self.focus_manager
+                .interpolated_camera(self.camera(), &self.scene)
+                .view_matrix()
+        } else {
+            state.camera.view_matrix()
+        };
+        Some((
+            Self::projection_for(self.spatial_mode, mw, mh) * view,
+            ndc_x,
+            ndc_y,
+        ))
+    }
+
     fn pick_wayland_target(
         &self,
         x: f64,
@@ -5276,13 +5359,7 @@ impl LookingGlass {
         WlSurface,
         smithay::utils::Point<f64, smithay::utils::Logical>,
     )> {
-        let (w, h) = self.fb_size();
-        if w <= 0.0 || h <= 0.0 {
-            return None;
-        }
-        let ndc_x = (x as f32 / w) * 2.0 - 1.0;
-        let ndc_y = -((y as f32 / h) * 2.0 - 1.0);
-        let pv = self.proj_view();
+        let (pv, ndc_x, ndc_y) = self.pointer_view(x, y)?;
 
         let ws_visible: Vec<VisualId> = self
             .workspace_manager
