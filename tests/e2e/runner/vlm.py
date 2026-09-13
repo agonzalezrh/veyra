@@ -51,17 +51,21 @@ class Vlm:
         self.model = (os.environ.get("VLM_MODEL")
                       or os.environ.get("VEYRA_VLM_MODEL")
                       or "GLM-5.3-Flash-EXL3")
-        self.timeout_s = int(os.environ.get("VLM_TIMEOUT_S", "120"))
+        self.timeout_s = int(os.environ.get("VLM_TIMEOUT_S", "300"))
         self.max_tokens = int(os.environ.get("VLM_MAX_TOKENS", "1200"))
+        self.thinking = os.environ.get("VLM_THINKING", "0") == "1"
+        self.image_width = int(os.environ.get("VLM_IMAGE_WIDTH", "960"))
 
     @property
     def available(self):
         return self.key is not None
 
-    def _call(self, images, prompt):
-        content = [{"type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,%s" % _b64(p)}}
-                   for p in images]
+    def _call(self, images, prompt, scale_width=None):
+        width = self.image_width if scale_width is None else scale_width
+        content = []
+        for p in images:
+            url = "data:image/png;base64,%s" % _b64(_scaled(p, width))
+            content.append({"type": "image_url", "image_url": {"url": url}})
         content.append({"type": "text", "text": prompt})
         body = {
             "model": self.model,
@@ -69,12 +73,27 @@ class Vlm:
             "temperature": 0,
             "messages": [{"role": "user", "content": content}],
         }
+        if not self.thinking:
+            body["chat_template_kwargs"] = {"enable_thinking": False}
         req = urllib.request.Request(
             self.url, data=json.dumps(body).encode(),
             headers={"Authorization": "Bearer %s" % self.key,
                      "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
-            return json.load(resp)["choices"][0]["message"].get("content") or ""
+            return json.load(resp)["choices"][0]["message"]
+
+
+def _scaled(path, width):
+    if width <= 0:
+        return path
+    key = "%s_%d" % (os.path.basename(str(path)).replace(".", "_"),
+                     int(os.path.getmtime(path)))
+    out = os.path.join("/tmp/opencode", "vlm_%s_%d.png" % (key, width))
+    if not os.path.exists(out):
+        import subprocess
+        subprocess.run(["convert", str(path), "-resize", "%dx" % width, out],
+                       check=True, capture_output=True, timeout=30)
+    return out
 
 
 def _b64(path):
@@ -265,7 +284,11 @@ def inspect(vlm, images, template, raw_dir, raw_name, expected=None, ignore=None
     with open(req_path, "w") as f:
         json.dump(request_body, f, indent=2)
     try:
-        content = vlm._call(images, prompt)
+        msg = vlm._call(images, prompt,
+                        scale_width=0 if template == "text" else None)
+        content = msg.get("content") or ""
+        if not content.strip():
+            content = msg.get("reasoning") or ""
     except Exception as e:
         res.error = "endpoint failure: %s" % e
         with open(resp_path, "w") as f:
@@ -282,9 +305,11 @@ def inspect(vlm, images, template, raw_dir, raw_name, expected=None, ignore=None
             parse_error = str(e)
             if attempt == 0:
                 try:
-                    content = vlm._call(
+                    msg = vlm._call(
                         images, prompt + "\n\nYour previous reply was not valid "
-                        "JSON. Reply with ONLY the JSON object.")
+                        "JSON. Reply with ONLY the JSON object.",
+                        scale_width=0 if template == "text" else None)
+                    content = msg.get("content") or msg.get("reasoning") or ""
                 except Exception as e2:
                     res.error = "endpoint failure on retry: %s" % e2
                     break

@@ -243,8 +243,10 @@ class ScenarioRun:
         }
         deadline = time.time() + self.sc["timeout_s"]
         for step in self.sc["steps"]:
-            if time.time() > deadline:
-                raise TimeoutAbort("scenario timeout (%ds)" % self.sc["timeout_s"])
+            active = time.time() - self.started_mono - getattr(self, "paused", 0.0)
+            if active > self.sc["timeout_s"]:
+                raise TimeoutAbort("scenario timeout (%ds active)"
+                                   % self.sc["timeout_s"])
             key = next(iter(step))
             handler = handlers.get(key)
             if handler is None:
@@ -620,12 +622,14 @@ class ScenarioRun:
                 return
             images = [ref_path, final]
         expected = vspec.get("expected")
+        t0 = time.time()
         res = vlm_mod.inspect(
             self.vlm, images, template, str(self.raw_vlm_dir),
             "%03d-%s" % (seq, name),
             expected=expected, ignore=(expected or {}).get("ignore"),
             question=vspec.get("question"), text=vspec.get("text"),
             min_conf=min_conf, required=required)
+        self.paused = getattr(self, "paused", 0.0) + (time.time() - t0)
         self.vlm_results.append({
             "checkpoint": "%03d-%s" % (seq, name),
             "template": template,
@@ -797,7 +801,10 @@ class ScenarioRun:
         return out
 
     def compose_result(self):
-        machine_fail = any(c["status"] == "FAIL" for c in self.checks)
+        machine_fail = any(
+            c["status"] == "FAIL"
+            and not (c["name"].startswith("vlm:") and c["detail"].startswith("INFRA"))
+            for c in self.checks)
         status = "PASS"
         failure_class = None
         block_reason = None

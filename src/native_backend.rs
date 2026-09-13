@@ -82,7 +82,28 @@ pub fn create_native_state(
     let drm = DrmGraphicsBackend::try_new_with_session(&session)
         .map_err(|e| NativeError::Drm(e.to_string()))?;
 
+    // G-E5.6.5: adopt the REAL outputs — modes/positions from the DRM
+    // topology assignment (the E5.5 row-tiling oracle), with explicit
+    // OutputId → backend-index bindings. The assignment order IS the
+    // backend vec order. Read from the concrete type before it is
+    // boxed into the compositor.
+    let assignment = drm.assignment().clone();
+    use crate::drm_topology::global_positions;
+    let positions = global_positions(&assignment.outputs);
+    let specs: Vec<crate::outputs::NativeOutputSpec> = positions
+        .iter()
+        .zip(&assignment.outputs)
+        .map(|((conn_id, pos), assigned)| {
+            (
+                format!("DP-{conn_id}"),
+                (assigned.mode.width, assigned.mode.height),
+                assigned.mode.refresh_mhz,
+                *pos,
+            )
+        })
+        .collect();
     let mut state = LookingGlass::new(display_handle, Box::new(drm), config.clone());
+    state.adopt_native_outputs(specs);
     // P1 (audit): remember how this backend was built so a lost GL
     // context can genuinely be recovered — the session-owned device is
     // re-opened through a clone of the libseat session.

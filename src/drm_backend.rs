@@ -195,6 +195,9 @@ pub struct DrmGraphicsBackend {
     renderer: GlesRenderer,
     /// G-E5.6.2: one presentation state per assigned output.
     outputs: Vec<OutputPresentation>,
+    /// G-E5.6.5: the topology assignment this backend was built from —
+    /// the authoritative OutputId→connector/CRTC/mode record.
+    assignment: crate::drm_topology::TopologyAssignment,
     frame_seq: u64,
 }
 
@@ -537,8 +540,16 @@ impl DrmGraphicsBackend {
                 width: w,
                 height: h,
             }],
+            assignment: assignment.clone(),
             frame_seq: 0,
         })
+    }
+
+    /// G-E5.6.5: the topology assignment (connector/CRTC/mode per
+    /// backend output index — index i of outputs[] corresponds to
+    /// assignment.outputs[i]).
+    pub fn assignment(&self) -> &crate::drm_topology::TopologyAssignment {
+        &self.assignment
     }
 
     /// Re-export a dmabuf with write access through the device's PRIME

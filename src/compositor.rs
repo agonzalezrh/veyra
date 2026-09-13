@@ -260,6 +260,8 @@ pub struct LookingGlass {
     producer_error_counts: HashMap<VisualId, u32>,
     pub perf: PerfStats,
     pub window_size: (f32, f32),
+    /// G-E5.6.5: OutputId → backend output index (explicit binding).
+    pub output_bindings: crate::outputs::OutputBindings,
     /// #14 phase 1: the per-output state registry. The live single
     /// output registers here so the multi-monitor data layer is
     /// exercised; later phases migrate consumers off the scalar
@@ -670,6 +672,7 @@ impl LookingGlass {
             producer_error_counts: HashMap::new(),
             perf: PerfStats::new(),
             window_size: (1280.0, 720.0),
+            output_bindings: crate::outputs::OutputBindings::new(),
             outputs,
             last_mouse: (0.0, 0.0),
             last_dx: 0.0,
@@ -2052,6 +2055,55 @@ impl LookingGlass {
             .update_primary_mode(w as u32, h as u32, refresh);
         self.outputs.rename_primary(output.name());
         info!(w, h, refresh, "output mode synced with backend size");
+    }
+
+    /// G-E5.6.5: adopt the REAL outputs discovered by the DRM topology
+    /// assignment. One OutputState per assigned output (real mode,
+    /// row-tiling positions from the E5.5 oracle `global_positions`),
+    /// and an explicit OutputId → backend-index binding — the only link
+    /// between the compositor's output world and the backend's Vec.
+    pub fn adopt_native_outputs(
+        &mut self,
+        outputs: Vec<crate::outputs::NativeOutputSpec>,
+    ) {
+        for (i, (name, mode, refresh, pos)) in outputs.into_iter().enumerate() {
+            if i == 0 {
+                // The pre-seeded primary gets the real values.
+                if let Some(o) = self.outputs.primary_mut() {
+                    o.name = name;
+                    o.mode = mode;
+                    o.refresh_mhz = refresh;
+                    o.global_pos = pos;
+                }
+                let id = self.outputs.primary_id();
+                if let Some(id) = id {
+                    self.output_bindings.bind(id, 0);
+                }
+            } else {
+                let id = self.outputs.add(crate::outputs::OutputState {
+                    name,
+                    mode,
+                    refresh_mhz: refresh,
+                    scale: 1.0,
+                    global_pos: pos,
+                    camera: Camera::new(),
+                    wl: None,
+                });
+                self.output_bindings.bind(id, i);
+            }
+        }
+        info!(
+            outputs = self.outputs.outputs().len(),
+            "native outputs adopted (real KMS modes, explicit bindings)"
+        );
+    }
+
+    /// G-E5.6.5: backend index presenting this output (the explicit
+    /// binding — never a positional assumption). The per-output frame
+    /// path consumes this from G-E5.6.6 onward.
+    #[allow(dead_code)]
+    pub fn backend_index_for(&self, id: crate::outputs::OutputId) -> Option<usize> {
+        self.output_bindings.index_for(id)
     }
 
     /// G-D1/#9: update the advertised output scale at runtime — changes

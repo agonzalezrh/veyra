@@ -422,6 +422,9 @@ impl OutputManager {
 /// One simulated output's spec: (name, physical mode, global position).
 pub type SimulatedOutputSpec = (String, (u32, u32), (i32, i32));
 
+/// One adopted native output's spec: (name, mode, refresh mHz, global position).
+pub type NativeOutputSpec = (String, (u32, u32), i32, (i32, i32));
+
 pub fn simulated_layout(n: u32) -> Vec<SimulatedOutputSpec> {
     let mut v = vec![("default".to_string(), (1280u32, 720u32), (0i32, 0i32))];
     for i in 1..n {
@@ -443,6 +446,66 @@ pub fn simulated_extents(n: u32) -> (u32, u32) {
         h = h.max(y as u32 + mh);
     }
     (w, h)
+}
+
+/// G-E5.6.5: the explicit OutputId → backend-output-index binding.
+///
+/// The DRM backend stores its presentation states in a Vec; the
+/// compositor addresses outputs by OutputId. Positional assumptions
+/// (`outputs[id]`, `outputs[position]`) are exactly the class of bug
+/// the E5.6.4 attribution tests exposed — this mapping is the ONLY
+/// link between the two worlds, and it survives reordering, removal,
+/// and non-contiguous ids.
+#[derive(Debug, Default, Clone)]
+pub struct OutputBindings {
+    map: std::collections::HashMap<OutputId, usize>,
+}
+
+impl OutputBindings {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Bind an output to its backend index.
+    pub fn bind(&mut self, id: OutputId, backend_index: usize) {
+        self.map.insert(id, backend_index);
+    }
+
+    /// The backend index presenting this output, if bound.
+    pub fn index_for(&self, id: OutputId) -> Option<usize> {
+        self.map.get(&id).copied()
+    }
+
+    /// Unbind (hotplug removal). The OutputId stays valid in the
+    /// registry if windows remain on it — only the PRESENTATION link
+    /// is severed.
+    pub fn unbind(&mut self, id: OutputId) -> bool {
+        self.map.remove(&id).is_some()
+    }
+
+    /// A backend output was removed: detach the binding that pointed
+    /// at it and compact the indices of everything past it. Returns
+    /// the affected OutputIds (their presentation is gone).
+    pub fn backend_removed(&mut self, removed_index: usize) -> Vec<OutputId> {
+        let mut affected = Vec::new();
+        for (id, idx) in self.map.iter_mut() {
+            if *idx == removed_index {
+                affected.push(*id);
+                *idx = usize::MAX; // detached — presentation gone
+            } else if *idx > removed_index {
+                *idx -= 1;
+            }
+        }
+        affected
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -825,5 +888,128 @@ mod tests {
         };
         assert_eq!(by_id(&plans1, a1), by_id(&plans2, a2));
         assert_eq!(by_id(&plans1, b1), by_id(&plans2, b2));
+    }
+
+    // ---- G-E5.6.5: OutputId ↔ backend index binding + KMS geometry
+    // agreement with the E5.5 mapping (the simulation is the oracle).
+
+    #[test]
+    fn bindings_map_ids_to_indices() {
+        let mut b = OutputBindings::new();
+        b.bind(OutputId(100), 0);
+        b.bind(OutputId(207), 1);
+        // Non-contiguous OutputIds, positional backend indices.
+        assert_eq!(b.index_for(OutputId(100)), Some(0));
+        assert_eq!(b.index_for(OutputId(207)), Some(1));
+        assert_eq!(b.index_for(OutputId(999)), None, "unknown OutputId");
+    }
+
+    #[test]
+    fn bindings_survive_reordering() {
+        // The same ids bound to SWAPPED backend indices — the binding
+        // must follow whatever the real device reports, not the
+        // registry order.
+        let mut b = OutputBindings::new();
+        b.bind(OutputId(100), 1);
+        b.bind(OutputId(207), 0);
+        assert_eq!(b.index_for(OutputId(100)), Some(1));
+        assert_eq!(b.index_for(OutputId(207)), Some(0));
+    }
+
+    #[test]
+    fn bindings_compact_on_backend_removal() {
+        let mut b = OutputBindings::new();
+        b.bind(OutputId(100), 0);
+        b.bind(OutputId(207), 1);
+        b.bind(OutputId(305), 2);
+        // Backend output 1 (B) unplugged.
+        let affected = b.backend_removed(1);
+        assert_eq!(affected, vec![OutputId(207)]);
+        assert_eq!(b.index_for(OutputId(207)), Some(usize::MAX), "detached");
+        assert_eq!(b.index_for(OutputId(305)), Some(1), "compacted down");
+        assert_eq!(b.index_for(OutputId(100)), Some(0), "untouched");
+    }
+
+    #[test]
+    fn bindings_unbind_is_explicit() {
+        let mut b = OutputBindings::new();
+        b.bind(OutputId(100), 0);
+        assert!(b.unbind(OutputId(100)));
+        assert!(!b.unbind(OutputId(100)), "already gone");
+        assert_eq!(b.index_for(OutputId(100)), None);
+    }
+
+    #[test]
+    fn drm_assignment_geometry_agrees_with_e55_oracle() {
+        // The bridge contract: a DRM topology assignment turned into
+        // OutputStates (positions from global_positions — the E5.5
+        // row tiling) must produce frame plans whose viewports tile
+        // the global desktop exactly like the nested simulation does.
+        use crate::drm_topology::{
+            global_positions, AssignedOutput, ConnectorState, DrmTopology, TopologyConnector,
+            TopologyCrtc, TopologyMode,
+        };
+        let mut t = DrmTopology::new();
+        t.add_connector(TopologyConnector {
+            id: 31,
+            state: ConnectorState::Connected,
+            modes: vec![TopologyMode { width: 1920, height: 1080, refresh_mhz: 60000, preferred: true }],
+            encoder_candidates: vec![10],
+        });
+        t.add_connector(TopologyConnector {
+            id: 34,
+            state: ConnectorState::Connected,
+            modes: vec![TopologyMode { width: 2560, height: 1440, refresh_mhz: 144000, preferred: true }],
+            encoder_candidates: vec![11],
+        });
+        t.add_crtc(TopologyCrtc { id: 50, encoder_candidates: vec![10] });
+        t.add_crtc(TopologyCrtc { id: 51, encoder_candidates: vec![11] });
+        let assignment = t.assign();
+        assert_eq!(assignment.outputs.len(), 2);
+
+        // 1. The compositor registers one OutputState per assigned
+        //    output (positions from the SAME global_positions the
+        //    simulation uses).
+        let positions = global_positions(&assignment.outputs);
+        let mut m = OutputManager::new();
+        for ((conn_id, pos), assigned) in positions.iter().zip(&assignment.outputs) {
+            m.add(OutputState {
+                name: format!("DP-{conn_id}"),
+                mode: (assigned.mode.width, assigned.mode.height),
+                refresh_mhz: assigned.mode.refresh_mhz,
+                scale: 1.0,
+                global_pos: *pos,
+                camera: Camera::new(),
+                wl: None,
+            });
+        }
+        // 2. Frame plans through the E5.5 mapping.
+        let plans = m.build_frame_plans(
+            &|_, w, h| cgmath::Matrix4::from_nonuniform_scale(w, h, 1.0),
+            false,
+        );
+        assert_eq!(plans.len(), 2);
+        assert_eq!(
+            plans[0].viewport,
+            OutputViewport { x: 0, y: 0, width: 1920, height: 1080 }
+        );
+        assert_eq!(
+            plans[1].viewport,
+            OutputViewport { x: 1920, y: 0, width: 2560, height: 1440 }
+        );
+        // 3. The bindings link each output to its backend index
+        //    (assignment order = backend vec order).
+        let mut bindings = OutputBindings::new();
+        for (i, assigned) in assignment.outputs.iter().enumerate() {
+            let oid = m
+                .outputs()
+                .iter()
+                .find(|(_, s)| s.name == format!("DP-{}", assigned.connector_id))
+                .map(|(id, _)| *id)
+                .unwrap();
+            bindings.bind(oid, i);
+        }
+        assert_eq!(bindings.index_for(plans[0].output_id), Some(0));
+        assert_eq!(bindings.index_for(plans[1].output_id), Some(1));
     }
 }
