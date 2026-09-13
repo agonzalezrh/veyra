@@ -851,12 +851,21 @@ Milestones landed:
   connector 38 → crtc 37 @1024x768; the probe's dmabuf-mmap
   permission failure is PRE-EXISTING (identical on pre-change HEAD).
 
-Remaining: G-E5.6.3–6.7 (per-output frame lifecycle, buffer ownership,
-KMS geometry, lifecycle tests), G-E5.7 integration matrix — the
-compositor-side semantics are proven (E5.5); what E5.6 must prove is
-two real KMS outputs executing them without sharing the wrong buffer,
-CRTC, viewport, or completion state. Validation beyond VKMS's single
-connector remains hardware-gated. Exit criteria:
+- **G-E5.6.3/6.4** per-output frame lifecycle + buffer ownership:
+  OutputFrameState (Idle/Rendering/Submitted/FlipPending) with PURE
+  transitions (begin rejects double-begin/begin-during-flip;
+  submit/arm_flip chain armed only on queue_buffer success; spurious
+  flips are no-ops; force_idle = the 6.6 disconnect hook);
+  begin_output/finish_output(idx) seam (begin_frame/finish_frame
+  delegate to 0 until 6.5 wires OutputId→index); flip events
+  ATTRIBUTED BY CRTC — flip(A) retires only A, unknown-CRTC events
+  dropped; 11 lifecycle tests. VKMS re-validated through the new path.
+
+Remaining: G-E5.6.5 (KMS geometry ↔ OutputViewport via the E5.5
+oracle), G-E5.6.6 (hotplug lifecycle — model hooks shipped: unassigned
+reasons + force_idle), G-E5.6.7 (DRM regression suite), G-E5.7
+integration matrix. Validation beyond VKMS's single connector remains
+hardware-gated (G-F1). Exit criteria:
 two outputs w/ different resolutions+scales, cross-output picking,
 straddling windows, per-output fullscreen/shell/IME, hotplug without
 restart — and single-output tests pass unchanged.
