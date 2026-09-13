@@ -46,7 +46,7 @@ steps:
       step_delay_ms: 150
 
   - capture:
-      name: mid-resize
+      name: post-drag
       category: S1
       stability: null
       image_checks: [not_black, not_white, size_matches_display]

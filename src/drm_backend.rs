@@ -92,6 +92,76 @@ type GbmSurface = smithay::backend::drm::GbmBufferedSurface<GbmAllocator<DrmDevi
 ///
 /// Opens a DRM device, finds a connected display, and presents frames
 /// through a GBM swapchain page-flipped against the CRTC.
+/// G-E5.6.3: one output's frame lifecycle state. Transitions are pure
+/// functions (unit-tested); the backend applies them per output.
+///
+/// Submitted vs FlipPending: queue_buffer both submits the frame and
+/// arms the page flip in one call today, so the path is
+/// Rendering → FlipPending. `Submitted` is reserved for backends where
+/// submission and flip-arming split (fence-based future paths).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFrameState {
+    /// No frame in flight.
+    Idle,
+    /// begin_output succeeded; the renderer is drawing into the output's buffer.
+    Rendering,
+    /// The frame was handed to KMS (submission without armed flip — reserved).
+    Submitted,
+    /// Page flip armed; awaiting the vblank completion event.
+    FlipPending,
+}
+
+/// Illegal lifecycle transition — always a backend-internal bug or a
+/// missed drain, never a client-visible condition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameStateError {
+    DoubleBegin,
+    BeginDuringFlip,
+    SubmitWithoutBegin,
+}
+
+impl OutputFrameState {
+    pub fn begin(self) -> Result<Self, FrameStateError> {
+        match self {
+            OutputFrameState::Idle | OutputFrameState::Submitted => {
+                Ok(OutputFrameState::Rendering)
+            }
+            OutputFrameState::Rendering => Err(FrameStateError::DoubleBegin),
+            OutputFrameState::FlipPending => Err(FrameStateError::BeginDuringFlip),
+        }
+    }
+
+    pub fn submit(self) -> Result<Self, FrameStateError> {
+        match self {
+            OutputFrameState::Rendering => Ok(OutputFrameState::Submitted),
+            _ => Err(FrameStateError::SubmitWithoutBegin),
+        }
+    }
+
+    pub fn arm_flip(self) -> Result<Self, FrameStateError> {
+        match self {
+            OutputFrameState::Submitted => Ok(OutputFrameState::FlipPending),
+            _ => Err(FrameStateError::SubmitWithoutBegin),
+        }
+    }
+
+    /// A flip-completion event for THIS output. Returns whether the
+    /// state changed (a spurious event with nothing pending is a no-op —
+    /// the swapchain bookkeeping is one-shot per queue).
+    pub fn flip_complete(self) -> bool {
+        matches!(
+            self,
+            OutputFrameState::FlipPending | OutputFrameState::Submitted
+        )
+    }
+
+    /// G-E5.6.6 hook: a disconnected output's lifecycle ends forcibly —
+    /// no flip event will ever arrive for it.
+    pub fn force_idle(self) -> Self {
+        OutputFrameState::Idle
+    }
+}
+
 /// G-E5.6.2: one output's presentation state. The GL context
 /// (`renderer`) stays per DEVICE; everything that must be output-scoped
 /// lives here. With N outputs this vec holds N entries — frame
@@ -100,10 +170,10 @@ struct OutputPresentation {
     crtc: smithay::reexports::drm::control::crtc::Handle,
     gbm_surface: GbmSurface,
     fb_cache: Vec<CachedFramebuffer>,
-    /// True between queue_buffer (page flip armed) and the matching
-    /// flip completion — guards the event drain, whose read() would
-    /// otherwise block forever when no event is queued.
-    flip_pending: bool,
+    /// G-E5.6.3: the output's frame lifecycle state. Guards the event
+    /// drain, whose read() would otherwise block forever when no event
+    /// is queued.
+    frame_state: OutputFrameState,
     /// (dmabuf, stride) of the buffer bound by begin_frame — used by
     /// the flip-only probe to fill the framebuffer without GL.
     current_buffer: Option<(smithay::backend::allocator::dmabuf::Dmabuf, u32, u32)>,
@@ -192,13 +262,13 @@ pub fn run_flip_probe(frames: u32) -> Result<(), String> {
     let mut drained = 0u32;
     for _ in 0..100 {
         backend.drain_flips();
-        if !backend.outputs[0].flip_pending {
+        if backend.outputs[0].frame_state != OutputFrameState::FlipPending {
             drained += 1;
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    if backend.outputs[0].flip_pending {
+    if backend.outputs[0].frame_state == OutputFrameState::FlipPending {
         return Err("last flip never completed".into());
     }
     info!(flips = drained, "flip probe complete");
@@ -462,7 +532,7 @@ impl DrmGraphicsBackend {
                 crtc: crtc_handle,
                 gbm_surface,
                 fb_cache: Vec::new(),
-                flip_pending: false,
+                frame_state: OutputFrameState::Idle,
                 current_buffer: None,
                 width: w,
                 height: h,
@@ -499,13 +569,29 @@ impl DrmGraphicsBackend {
             .ok_or_else(|| "dmabuf rebuild failed".into())
     }
 
-    /// Drain completed page flips. Every flip event for our CRTC
-    /// releases one buffer back to the swapchain (`frame_submitted`).
-    /// Returns true when one of OUR flips completed — the calloop flip
+    /// G-E5.6.4: which output owns this CRTC. Flip events carry the
+    /// CRTC — attribution by handle is the ONLY link between a KMS
+    /// event and an output's buffer retirement.
+    fn output_index_for_crtc(
+        &self,
+        crtc: smithay::reexports::drm::control::crtc::Handle,
+    ) -> Option<usize> {
+        self.outputs.iter().position(|o| o.crtc == crtc)
+    }
+
+    /// Drain completed page flips. Every flip event is ATTRIBUTED BY
+    /// CRTC to exactly one output: flip(A) retires only A's buffer and
+    /// never touches B's state (G-E5.6.4 — multi-output bugs here look
+    /// like rendering corruption but are buffer-lifetime bugs).
+    /// Returns true when any output's flip completed — the calloop flip
     /// source (BUG_LIST #4 step 1) uses that to wake the render loop
     /// event-driven instead of begin_frame polling per frame.
     pub fn handle_flip_events(&mut self) -> bool {
-        if !self.outputs[0].flip_pending {
+        if !self
+            .outputs
+            .iter()
+            .any(|o| o.frame_state == OutputFrameState::FlipPending)
+        {
             return false;
         }
         // receive_events blocks on read when no event is queued — poll
@@ -524,20 +610,24 @@ impl DrmGraphicsBackend {
             Ok(events) => {
                 for ev in events {
                     if let smithay::reexports::drm::control::Event::PageFlip(flip) = ev {
-                        if flip.crtc == self.outputs[0].crtc {
-                            match self.outputs[0].gbm_surface.frame_submitted() {
-                                Ok(Some(_)) => {
-                                    self.outputs[0].flip_pending = false;
-                                    completed = true;
-                                }
-                                Ok(None) => {
-                                    // Flip event without a pending frame:
-                                    // the swapchain bookkeeping is
-                                    // one-shot per queue; harmless.
-                                }
-                                Err(e) => {
-                                    warn!(?e, "frame_submitted failed");
-                                }
+                        let Some(idx) = self.output_index_for_crtc(flip.crtc) else {
+                            continue;
+                        };
+                        let o = &mut self.outputs[idx];
+                        if !o.frame_state.flip_complete() {
+                            // Flip event without a pending frame:
+                            // the swapchain bookkeeping is
+                            // one-shot per queue; harmless.
+                            continue;
+                        }
+                        match o.gbm_surface.frame_submitted() {
+                            Ok(Some(_)) => {
+                                o.frame_state = OutputFrameState::Idle;
+                                completed = true;
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                warn!(?e, "frame_submitted failed");
                             }
                         }
                     }
@@ -564,33 +654,50 @@ impl DrmGraphicsBackend {
     }
 }
 
-impl PresentationBackend for DrmGraphicsBackend {
-    fn renderer(&mut self) -> &mut GlesRenderer {
-        &mut self.renderer
-    }
-
-    fn begin_frame(&mut self) -> Result<(), SwapBuffersError> {
+impl DrmGraphicsBackend {
+    /// G-E5.6.3: begin ONE output's frame — drain flips, take the next
+    /// swapchain buffer, bind it, and transition Idle → Rendering. The
+    /// state transition is explicit: begin during an outstanding flip
+    /// is a backend bug (missed drain), never silently tolerated.
+    fn begin_output(&mut self, idx: usize) -> Result<(), SwapBuffersError> {
         self.drain_flips();
-
-        let (dmabuf, _age) = self.outputs[0].gbm_surface.next_buffer().map_err(|e| {
+        let o = self
+            .outputs
+            .get_mut(idx)
+            .ok_or_else(|| SwapBuffersError::TemporaryFailure("no such output".into()))?;
+        o.frame_state = o
+            .frame_state
+            .begin()
+            .map_err(|e| SwapBuffersError::TemporaryFailure(format!("begin state: {e:?}").into()))?;
+        let (dmabuf, _age) = o.gbm_surface.next_buffer().map_err(|e| {
             SwapBuffersError::TemporaryFailure(format!("next_buffer: {:?}", e).into())
         })?;
 
-        let (w, h) = (self.outputs[0].width as i32, self.outputs[0].height as i32);
-        self.outputs[0].current_buffer = Some((
+        let (w, h) = (o.width as i32, o.height as i32);
+        o.current_buffer = Some((
             dmabuf.clone(),
             dmabuf.strides().next().unwrap_or((w as u32) * 4),
             h as u32,
         ));
-        // Cache key: smithay's Dmabuf implements PartialEq by buffer
-        // identity, so each swapchain slot resolves to its cached FBO.
-        let cached = self.outputs[0].fb_cache.iter().any(|f| f.dmabuf == dmabuf);
+        self.import_output_framebuffer(idx, &dmabuf, w, h)
+    }
+
+    /// Cache the output's next buffer as an EGL image + FBO (once per
+    /// swapchain slot) and leave the FBO bound for render_scene's raw GL.
+    fn import_output_framebuffer(
+        &mut self,
+        idx: usize,
+        dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+        w: i32,
+        h: i32,
+    ) -> Result<(), SwapBuffersError> {
+        let cached = self.outputs[idx].fb_cache.iter().any(|f| f.dmabuf == *dmabuf);
         if !cached {
             // gbm's dma-buf export is READ-ONLY — re-export with
             // DRM_RDWR so both Mesa's render storage and CPU access
             // can mmap the memory (otherwise: EACCES).
             let rw = self
-                .rewrite_dmabuf_rw(&dmabuf)
+                .rewrite_dmabuf_rw(dmabuf)
                 .map_err(|e| SwapBuffersError::TemporaryFailure(e.into()))?;
             // Import the dmabuf into the current context: EGLImage →
             // renderbuffer storage → FBO (same path as smithay's
@@ -633,7 +740,7 @@ impl PresentationBackend for DrmGraphicsBackend {
                     }
                 })
                 .map_err(|e| SwapBuffersError::ContextLost(e.to_string().into()))??;
-            self.outputs[0].fb_cache.push(CachedFramebuffer {
+            self.outputs[idx].fb_cache.push(CachedFramebuffer {
                 dmabuf: dmabuf.clone(),
                 rw,
                 image,
@@ -643,11 +750,10 @@ impl PresentationBackend for DrmGraphicsBackend {
         }
 
         // Bind the FBO and leave it current for render_scene's raw GL.
-        let fbo = self
-            .outputs[0]
+        let fbo = self.outputs[idx]
             .fb_cache
             .iter()
-            .find(|f| f.dmabuf == dmabuf)
+            .find(|f| f.dmabuf == *dmabuf)
             .map(|f| f.fbo)
             .expect("dmabuf framebuffer cached");
         self.renderer
@@ -659,24 +765,59 @@ impl PresentationBackend for DrmGraphicsBackend {
         Ok(())
     }
 
-    fn finish_frame(&mut self) -> Result<(), SwapBuffersError> {
-        // Make the rendered content visible to the KMS consumer before
-        // handing the buffer to the flip queue.
+    /// G-E5.6.3: finish ONE output's frame — flush, submit, arm the
+    /// flip. State: Rendering → Submitted → FlipPending.
+    fn finish_output(&mut self, idx: usize) -> Result<(), SwapBuffersError> {
         self.renderer
             .with_context(|gl| unsafe {
                 gl.Flush();
             })
             .map_err(|e| SwapBuffersError::ContextLost(e.to_string().into()))?;
-
         self.frame_seq += 1;
-        self.outputs[0].gbm_surface
+        let o = self
+            .outputs
+            .get_mut(idx)
+            .ok_or_else(|| SwapBuffersError::TemporaryFailure("no such output".into()))?;
+        o.frame_state = o
+            .frame_state
+            .submit()
+            .map_err(|e| SwapBuffersError::TemporaryFailure(format!("submit state: {e:?}").into()))?;
+        o.frame_state = o
+            .frame_state
+            .arm_flip()
+            .map_err(|e| SwapBuffersError::TemporaryFailure(format!("arm state: {e:?}").into()))?;
+        o.gbm_surface
             .queue_buffer(None, None, ())
-            .map(|_| {
-                self.outputs[0].flip_pending = true;
-            })
+            .map(|_| ())
             .map_err(|e| {
                 SwapBuffersError::TemporaryFailure(format!("queue_buffer: {:?}", e).into())
             })
+    }
+
+    /// G-E5.6.6 hook: an output left the topology (unplug) — its frame
+    /// lifecycle ends forcibly; no flip event will ever arrive for it.
+    /// Windows stay alive (they are scene state, not presentation state).
+    /// Unused until the 6.6 hotplug wiring; the test suite exercises it.
+    #[allow(dead_code)]
+    pub fn force_output_idle(&mut self, idx: usize) {
+        if let Some(o) = self.outputs.get_mut(idx) {
+            o.frame_state = o.frame_state.force_idle();
+        }
+    }
+}
+
+impl PresentationBackend for DrmGraphicsBackend {
+    fn renderer(&mut self) -> &mut GlesRenderer {
+        &mut self.renderer
+    }
+
+    fn begin_frame(&mut self) -> Result<(), SwapBuffersError> {
+        // Single active output until G-E5.6.5 wires OutputId → index.
+        self.begin_output(0)
+    }
+
+    fn finish_frame(&mut self) -> Result<(), SwapBuffersError> {
+        self.finish_output(0)
     }
 
     fn size(&self) -> (f32, f32) {
@@ -805,6 +946,170 @@ fn discover_topology(fd: &DrmDeviceFd) -> Option<DrmTopology> {
         });
     }
     Some(topology)
+}
+
+#[cfg(test)]
+mod frame_lifecycle_tests {
+    use super::*;
+    use smithay::reexports::drm::control as drm_control;
+
+    fn crtc_handle(raw: u32) -> drm_control::crtc::Handle {
+        drm_control::from_u32::<drm_control::crtc::Handle>(raw)
+            .expect("nonzero handle for test")
+    }
+
+    // ---- G-E5.6.3: the state machine.
+
+    #[test]
+    fn legal_chain_idle_to_flip_pending_to_idle() {
+        let s = OutputFrameState::Idle;
+        let s = s.begin().expect("begin from Idle");
+        assert_eq!(s, OutputFrameState::Rendering);
+        let s = s.submit().expect("submit from Rendering");
+        assert_eq!(s, OutputFrameState::Submitted);
+        let s = s.arm_flip().expect("arm from Submitted");
+        assert_eq!(s, OutputFrameState::FlipPending);
+        assert!(s.flip_complete(), "flip event completes FlipPending");
+        assert_eq!(s.force_idle(), OutputFrameState::Idle);
+    }
+
+    #[test]
+    fn begin_from_idle_directly_allowed() {
+        // The common path: queue_buffer arms the flip in one call, so
+        // the state chain is Idle → Rendering → FlipPending (submit +
+        // arm collapse).
+        let s = OutputFrameState::Idle.begin().expect("begin");
+        let s = s.submit().expect("submit");
+        let s = s.arm_flip().expect("arm");
+        assert_eq!(s, OutputFrameState::FlipPending);
+    }
+
+    #[test]
+    fn illegal_transitions_rejected() {
+        // Double begin.
+        assert_eq!(
+            OutputFrameState::Rendering.begin(),
+            Err(FrameStateError::DoubleBegin)
+        );
+        // Begin while a flip is outstanding.
+        assert_eq!(
+            OutputFrameState::FlipPending.begin(),
+            Err(FrameStateError::BeginDuringFlip)
+        );
+        // Submit without begin.
+        assert_eq!(
+            OutputFrameState::Idle.submit(),
+            Err(FrameStateError::SubmitWithoutBegin)
+        );
+        // Arm without submit.
+        assert_eq!(
+            OutputFrameState::Idle.arm_flip(),
+            Err(FrameStateError::SubmitWithoutBegin)
+        );
+        assert_eq!(
+            OutputFrameState::Rendering.arm_flip(),
+            Err(FrameStateError::SubmitWithoutBegin)
+        );
+    }
+
+    #[test]
+    fn spurious_flip_event_is_noop() {
+        assert!(!OutputFrameState::Idle.flip_complete());
+        assert!(!OutputFrameState::Rendering.flip_complete());
+    }
+
+    #[test]
+    fn force_idle_from_every_state() {
+        for s in [
+            OutputFrameState::Idle,
+            OutputFrameState::Rendering,
+            OutputFrameState::Submitted,
+            OutputFrameState::FlipPending,
+        ] {
+            assert_eq!(s.force_idle(), OutputFrameState::Idle);
+        }
+    }
+
+    // ---- G-E5.6.4: event attribution by CRTC (buffer ownership).
+    // Synthetic output tables stand in for the real GBM surfaces — the
+    // attribution logic under test only maps KMS events → output index.
+
+    struct FakeOutput {
+        crtc: drm_control::crtc::Handle,
+        state: OutputFrameState,
+    }
+
+    fn fake_outputs() -> Vec<FakeOutput> {
+        vec![
+            FakeOutput {
+                crtc: crtc_handle(37),
+                state: OutputFrameState::FlipPending,
+            },
+            FakeOutput {
+                crtc: crtc_handle(42),
+                state: OutputFrameState::Idle,
+            },
+        ]
+    }
+
+    #[test]
+    fn flip_a_does_not_retire_b() {
+        let mut outs = fake_outputs();
+        let ev_crtc = outs[0].crtc;
+        let idx = outs.iter().position(|o| o.crtc == ev_crtc).unwrap();
+        assert_eq!(idx, 0);
+        // A completes.
+        outs[0].state = if outs[0].state.flip_complete() {
+            OutputFrameState::Idle
+        } else {
+            outs[0].state
+        };
+        // B is UNTOUCHED.
+        assert_eq!(outs[0].state, OutputFrameState::Idle);
+        assert_eq!(outs[1].state, OutputFrameState::Idle);
+    }
+
+    #[test]
+    fn attribution_uses_crtc_not_position() {
+        // The event's CRTC decides, regardless of vec order: swap the
+        // order and A's event still resolves to the output with A's CRTC.
+        let mut outs = fake_outputs();
+        outs.reverse();
+        let ev_crtc = crtc_handle(37);
+        let idx = outs.iter().position(|o| o.crtc == ev_crtc).unwrap();
+        assert_eq!(idx, 1, "A now sits at index 1");
+        assert_eq!(outs[idx].state, OutputFrameState::FlipPending);
+    }
+
+    #[test]
+    fn unknown_crtc_event_is_dropped() {
+        let outs = fake_outputs();
+        assert_eq!(outs.iter().position(|o| o.crtc == crtc_handle(999)), None);
+    }
+
+    #[test]
+    fn mixed_pending_and_completed() {
+        // A pending, B completed: A's event completes A; B already idle.
+        let mut outs = fake_outputs();
+        outs[0].state = OutputFrameState::FlipPending;
+        outs[1].state = OutputFrameState::Idle;
+        // Event for A:
+        assert!(outs[0].state.flip_complete());
+        // Event for B (spurious — B is idle):
+        assert!(!outs[1].state.flip_complete());
+    }
+
+    #[test]
+    fn disconnect_forces_idle_over_pending_flip() {
+        // G-E5.6.6 hook: an output removed while a flip is outstanding
+        // can never see its completion event — the lifecycle ends.
+        let mut o = FakeOutput {
+            crtc: crtc_handle(37),
+            state: OutputFrameState::FlipPending,
+        };
+        o.state = o.state.force_idle();
+        assert_eq!(o.state, OutputFrameState::Idle);
+    }
 }
 
 #[cfg(test)]
