@@ -29,10 +29,13 @@ use smithay::backend::egl::ffi::egl::types::EGLImage;
 use smithay::backend::egl::EGLSurface;
 use smithay::backend::renderer::gles::ffi;
 use smithay::backend::renderer::gles::GlesRenderer;
+
+use crate::drm_topology::{
+    ConnectorState, DrmTopology, TopologyConnector, TopologyCrtc, TopologyMode,
+};
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::Session;
 use smithay::backend::SwapBuffersError;
-use smithay::reexports::drm::control::Mode;
 use smithay::reexports::drm::control::{connector, Device as ControlDevice};
 use smithay::utils::DeviceFd;
 use tracing::{info, warn};
@@ -89,19 +92,12 @@ type GbmSurface = smithay::backend::drm::GbmBufferedSurface<GbmAllocator<DrmDevi
 ///
 /// Opens a DRM device, finds a connected display, and presents frames
 /// through a GBM swapchain page-flipped against the CRTC.
-pub struct DrmGraphicsBackend {
-    /// Optional: provides VT control + DRM master on real hardware.
-    /// Held (not read) so the session — and its DRM master — survives
-    /// for the compositor's lifetime; dropped on exit releases it.
-    #[allow(dead_code)]
-    session: Option<LibSeatSession>,
-    #[allow(dead_code)]
-    device: DrmDevice,
-    /// Clone of the device fd used for non-blocking event polling
-    /// (page-flip/vblank completions).
-    event_fd: DrmDeviceFd,
+/// G-E5.6.2: one output's presentation state. The GL context
+/// (`renderer`) stays per DEVICE; everything that must be output-scoped
+/// lives here. With N outputs this vec holds N entries — frame
+/// lifecycle generalization is G-E5.6.3/6.4; today one entry is active.
+struct OutputPresentation {
     crtc: smithay::reexports::drm::control::crtc::Handle,
-    renderer: GlesRenderer,
     gbm_surface: GbmSurface,
     fb_cache: Vec<CachedFramebuffer>,
     /// True between queue_buffer (page flip armed) and the matching
@@ -113,6 +109,22 @@ pub struct DrmGraphicsBackend {
     current_buffer: Option<(smithay::backend::allocator::dmabuf::Dmabuf, u32, u32)>,
     width: f32,
     height: f32,
+}
+
+pub struct DrmGraphicsBackend {
+    /// Optional: provides VT control + DRM master on real hardware.
+    /// Held (not read) so the session — and its DRM master — survives
+    /// for the compositor's lifetime; dropped on exit releases it.
+    #[allow(dead_code)]
+    session: Option<LibSeatSession>,
+    #[allow(dead_code)]
+    device: DrmDevice,
+    /// Clone of the device fd used for non-blocking event polling
+    /// (page-flip/vblank completions).
+    event_fd: DrmDeviceFd,
+    renderer: GlesRenderer,
+    /// G-E5.6.2: one presentation state per assigned output.
+    outputs: Vec<OutputPresentation>,
     frame_seq: u64,
 }
 
@@ -180,13 +192,13 @@ pub fn run_flip_probe(frames: u32) -> Result<(), String> {
     let mut drained = 0u32;
     for _ in 0..100 {
         backend.drain_flips();
-        if !backend.flip_pending {
+        if !backend.outputs[0].flip_pending {
             drained += 1;
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    if backend.flip_pending {
+    if backend.outputs[0].flip_pending {
         return Err("last flip never completed".into());
     }
     info!(flips = drained, "flip probe complete");
@@ -197,11 +209,12 @@ impl DrmGraphicsBackend {
     /// Flip probe helper: paint an identifiable pattern into the bound
     /// scanout buffer through a direct dma-buf mmap (no GL involved).
     fn fill_current_pattern(&mut self, frame: u32) -> Result<(), String> {
-        let Some((dmabuf, stride, height)) = self.current_buffer.take() else {
+        let Some((dmabuf, stride, height)) = self.outputs[0].current_buffer.take() else {
             return Err("no current buffer".into());
         };
-        self.current_buffer = Some((dmabuf.clone(), stride, height));
+        self.outputs[0].current_buffer = Some((dmabuf.clone(), stride, height));
         let rw = self
+            .outputs[0]
             .fb_cache
             .iter()
             .find(|f| f.dmabuf == dmabuf)
@@ -311,20 +324,66 @@ impl DrmGraphicsBackend {
         let (mut device, _dev_notifier) = DrmDevice::new(drm_fd.clone(), false)
             .map_err(|e| DrmBackendError::Drm(format!("{:?}", e)))?;
 
+        // G-E5.6.2: topology DISCOVERY + deterministic ASSIGNMENT —
+        // the backend no longer implicitly means "the first connected
+        // display". The full assignment is recorded; outputs[0] drives
+        // the (single-output) frame path until G-E5.6.3/6.4 generalize
+        // the per-output lifecycle.
         let crtcs = device.crtcs().to_vec();
         if crtcs.is_empty() {
             return Err(DrmBackendError::Drm("no CRTCs available".into()));
         }
-        let first_crtc = crtcs[0];
+        let topology = discover_topology(&drm_fd)
+            .ok_or_else(|| DrmBackendError::Drm("topology discovery failed".into()))?;
+        let assignment = topology.assign();
+        for u in &assignment.unassigned {
+            info!(connector = u.connector_id, reason = ?u.reason, "connector unassigned");
+        }
+        let first = assignment
+            .outputs
+            .first()
+            .ok_or_else(|| DrmBackendError::Drm("no connected connector with a usable CRTC".into()))?;
+        info!(
+            outputs = assignment.outputs.len(),
+            connector = first.connector_id,
+            crtc = first.crtc_id,
+            mode = ?(first.mode.width, first.mode.height, first.mode.refresh_mhz),
+            "DRM topology assigned"
+        );
 
-        let (conn_handle, mode) = find_connector_with_mode(&device)
-            .ok_or_else(|| DrmBackendError::Drm("no connected connector found".into()))?;
+        // Resolve the assignment back to KMS handles.
+        let fd_for_handles = &drm_fd;
+        let res_handles = fd_for_handles
+            .resource_handles()
+            .map_err(|e| DrmBackendError::Drm(format!("resources: {:?}", e)))?;
+        use smithay::reexports::drm::control::Device as _;
+        let conn_handle = *res_handles
+            .connectors()
+            .iter()
+            .find(|c| u32::from(**c) == first.connector_id)
+            .ok_or_else(|| DrmBackendError::Drm("assigned connector vanished".into()))?;
+        let crtc_handle = *crtcs
+            .iter()
+            .find(|c| u32::from(**c) == first.crtc_id)
+            .ok_or_else(|| DrmBackendError::Drm("assigned CRTC vanished".into()))?;
+        let conn_info = fd_for_handles
+            .get_connector(conn_handle, true)
+            .map_err(|e| DrmBackendError::Drm(format!("connector info: {:?}", e)))?;
+        let mode = *conn_info
+            .modes()
+            .iter()
+            .find(|m| {
+                m.size().0 as u32 == first.mode.width
+                    && m.size().1 as u32 == first.mode.height
+                    && (m.vrefresh() as i32) * 1000 == first.mode.refresh_mhz
+            })
+            .ok_or_else(|| DrmBackendError::Drm("assigned mode not found".into()))?;
 
         let (w, h) = (mode.size().0 as f32, mode.size().1 as f32);
-        info!(crtc = ?first_crtc, width = w, height = h, "found connected display");
+        info!(crtc = ?crtc_handle, width = w, height = h, "found connected display");
 
         let surface = device
-            .create_surface(first_crtc, mode, &[conn_handle])
+            .create_surface(crtc_handle, mode, &[conn_handle])
             .map_err(|e| DrmBackendError::Drm(format!("surface: {:?}", e)))?;
 
         // GBM device FIRST, and the EGL display lives ON it
@@ -398,14 +457,16 @@ impl DrmGraphicsBackend {
             session,
             device,
             event_fd: drm_fd,
-            crtc: first_crtc,
             renderer,
-            gbm_surface,
-            fb_cache: Vec::new(),
-            flip_pending: false,
-            current_buffer: None,
-            width: w,
-            height: h,
+            outputs: vec![OutputPresentation {
+                crtc: crtc_handle,
+                gbm_surface,
+                fb_cache: Vec::new(),
+                flip_pending: false,
+                current_buffer: None,
+                width: w,
+                height: h,
+            }],
             frame_seq: 0,
         })
     }
@@ -444,7 +505,7 @@ impl DrmGraphicsBackend {
     /// source (BUG_LIST #4 step 1) uses that to wake the render loop
     /// event-driven instead of begin_frame polling per frame.
     pub fn handle_flip_events(&mut self) -> bool {
-        if !self.flip_pending {
+        if !self.outputs[0].flip_pending {
             return false;
         }
         // receive_events blocks on read when no event is queued — poll
@@ -463,10 +524,10 @@ impl DrmGraphicsBackend {
             Ok(events) => {
                 for ev in events {
                     if let smithay::reexports::drm::control::Event::PageFlip(flip) = ev {
-                        if flip.crtc == self.crtc {
-                            match self.gbm_surface.frame_submitted() {
+                        if flip.crtc == self.outputs[0].crtc {
+                            match self.outputs[0].gbm_surface.frame_submitted() {
                                 Ok(Some(_)) => {
-                                    self.flip_pending = false;
+                                    self.outputs[0].flip_pending = false;
                                     completed = true;
                                 }
                                 Ok(None) => {
@@ -511,19 +572,19 @@ impl PresentationBackend for DrmGraphicsBackend {
     fn begin_frame(&mut self) -> Result<(), SwapBuffersError> {
         self.drain_flips();
 
-        let (dmabuf, _age) = self.gbm_surface.next_buffer().map_err(|e| {
+        let (dmabuf, _age) = self.outputs[0].gbm_surface.next_buffer().map_err(|e| {
             SwapBuffersError::TemporaryFailure(format!("next_buffer: {:?}", e).into())
         })?;
 
-        let (w, h) = (self.width as i32, self.height as i32);
-        self.current_buffer = Some((
+        let (w, h) = (self.outputs[0].width as i32, self.outputs[0].height as i32);
+        self.outputs[0].current_buffer = Some((
             dmabuf.clone(),
             dmabuf.strides().next().unwrap_or((w as u32) * 4),
             h as u32,
         ));
         // Cache key: smithay's Dmabuf implements PartialEq by buffer
         // identity, so each swapchain slot resolves to its cached FBO.
-        let cached = self.fb_cache.iter().any(|f| f.dmabuf == dmabuf);
+        let cached = self.outputs[0].fb_cache.iter().any(|f| f.dmabuf == dmabuf);
         if !cached {
             // gbm's dma-buf export is READ-ONLY — re-export with
             // DRM_RDWR so both Mesa's render storage and CPU access
@@ -572,7 +633,7 @@ impl PresentationBackend for DrmGraphicsBackend {
                     }
                 })
                 .map_err(|e| SwapBuffersError::ContextLost(e.to_string().into()))??;
-            self.fb_cache.push(CachedFramebuffer {
+            self.outputs[0].fb_cache.push(CachedFramebuffer {
                 dmabuf: dmabuf.clone(),
                 rw,
                 image,
@@ -583,6 +644,7 @@ impl PresentationBackend for DrmGraphicsBackend {
 
         // Bind the FBO and leave it current for render_scene's raw GL.
         let fbo = self
+            .outputs[0]
             .fb_cache
             .iter()
             .find(|f| f.dmabuf == dmabuf)
@@ -607,10 +669,10 @@ impl PresentationBackend for DrmGraphicsBackend {
             .map_err(|e| SwapBuffersError::ContextLost(e.to_string().into()))?;
 
         self.frame_seq += 1;
-        self.gbm_surface
+        self.outputs[0].gbm_surface
             .queue_buffer(None, None, ())
             .map(|_| {
-                self.flip_pending = true;
+                self.outputs[0].flip_pending = true;
             })
             .map_err(|e| {
                 SwapBuffersError::TemporaryFailure(format!("queue_buffer: {:?}", e).into())
@@ -618,7 +680,7 @@ impl PresentationBackend for DrmGraphicsBackend {
     }
 
     fn size(&self) -> (f32, f32) {
-        (self.width, self.height)
+        (self.outputs[0].width, self.outputs[0].height)
     }
 
     fn egl_surface(&self) -> Option<&EGLSurface> {
@@ -674,19 +736,75 @@ fn open_drm_device() -> Option<(std::path::PathBuf, OwnedFd)> {
 }
 
 /// Find the first connected connector and its mode.
-fn find_connector_with_mode(device: &DrmDevice) -> Option<(connector::Handle, Mode)> {
-    let fd = device.device_fd();
+/// G-E5.6.2: map the real device's connector/CRTC/encoder structure
+/// onto the pure topology model (drm_topology.rs). The encoder→CRTC
+/// adjacency comes from each encoder's `possible_crtcs` bitmask
+/// (bit i = resource list index i).
+fn discover_topology(fd: &DrmDeviceFd) -> Option<DrmTopology> {
+    use smithay::reexports::drm::control::{self, Device as _};
     let res_handles = fd.resource_handles().ok()?;
-    for conn_handle in res_handles.connectors() {
-        if let Ok(info) = fd.get_connector(*conn_handle, true) {
-            if info.state() == connector::State::Connected {
-                if let Some(mode) = info.modes().first() {
-                    return Some((*conn_handle, *mode));
+    let crtc_handles = res_handles.crtcs();
+    let mut topology = DrmTopology::new();
+    // encoder handle id → possible_crtcs bitmask
+    // encoder handle id → the CRTCs it can feed (via KMS's
+    // possible_crtcs filter resolved against the resource list).
+    let mut encoder_crtcs: std::collections::HashMap<u32, Vec<u32>> =
+        std::collections::HashMap::new();
+    for conn in res_handles.connectors() {
+        let info = fd.get_connector(*conn, true).ok()?;
+        let state = match info.state() {
+            connector::State::Connected => ConnectorState::Connected,
+            connector::State::Disconnected => ConnectorState::Disconnected,
+            _ => ConnectorState::Unknown,
+        };
+        let modes = info
+            .modes()
+            .iter()
+            .map(|m| TopologyMode {
+                width: m.size().0 as u32,
+                height: m.size().1 as u32,
+                refresh_mhz: (m.vrefresh() as i32) * 1000,
+                preferred: m.mode_type().contains(control::ModeTypeFlags::PREFERRED),
+            })
+            .collect();
+        let mut enc_candidates = Vec::new();
+        for eh in info.encoders() {
+            if let Ok(ei) = fd.get_encoder(*eh) {
+                let eid = u32::from(*eh);
+                if !enc_candidates.contains(&eid) {
+                    enc_candidates.push(eid);
                 }
+                let feeds: Vec<u32> = res_handles
+                    .filter_crtcs(ei.possible_crtcs())
+                    .iter()
+                    .map(|c| u32::from(*c))
+                    .collect();
+                encoder_crtcs.entry(eid).or_insert(feeds);
             }
         }
+        topology.add_connector(TopologyConnector {
+            id: u32::from(*conn),
+            state,
+            modes,
+            encoder_candidates: enc_candidates,
+        });
     }
-    None
+    // CRTC encoder candidates: every encoder whose possible_crtcs set
+    // contains this CRTC.
+    for ch in crtc_handles.iter() {
+        let cid = u32::from(*ch);
+        let mut enc_candidates = Vec::new();
+        for (eid, feeds) in &encoder_crtcs {
+            if feeds.contains(&cid) && !enc_candidates.contains(eid) {
+                enc_candidates.push(*eid);
+            }
+        }
+        topology.add_crtc(TopologyCrtc {
+            id: cid,
+            encoder_candidates: enc_candidates,
+        });
+    }
+    Some(topology)
 }
 
 #[cfg(test)]
