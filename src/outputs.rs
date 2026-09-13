@@ -32,6 +32,68 @@ use crate::input::Camera;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OutputId(pub u64);
 
+/// G-E5.5.1: one output's rectangle inside the simulation framebuffer.
+/// The mapping global-rect → viewport is explicit and reusable by both
+/// rendering and tests — never derived ad hoc in the render path.
+///
+/// Hierarchy: simulation framebuffer → OutputViewport[] → OutputState[]
+/// → per-output camera/projection. `window_size` remains a property of
+/// the underlying Winit framebuffer, not the desktop geometry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OutputViewport {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl OutputViewport {
+    /// Viewport for an output: its global rect translated by the
+    /// desktop origin (the min corner across all outputs), so
+    /// negative-origin outputs land inside the simulation framebuffer.
+    pub fn from_state(state: &OutputState, desktop_origin: (i32, i32)) -> Self {
+        OutputViewport {
+            x: state.global_pos.0 - desktop_origin.0,
+            y: state.global_pos.1 - desktop_origin.1,
+            width: state.mode.0,
+            height: state.mode.1,
+        }
+    }
+
+    pub fn contains(&self, px: i32, py: i32) -> bool {
+        px >= self.x
+            && px < self.x + self.width as i32
+            && py >= self.y
+            && py < self.y + self.height as i32
+    }
+}
+
+/// G-E5.5.2: one output's plan for the current frame — identity, where
+/// it renders inside the simulation framebuffer, and ITS view of the
+/// SHARED scene. Built by `build_frame_plans` (pure, testable);
+/// render_scene consumes plans and must not derive geometry itself.
+#[derive(Debug, Clone)]
+pub struct OutputFramePlan {
+    pub output_id: OutputId,
+    pub viewport: OutputViewport,
+    /// The output's own view of the shared scene.
+    pub view: cgmath::Matrix4<f32>,
+    /// Projection from the output's OWN viewport size — never the
+    /// underlying framebuffer size.
+    pub proj: cgmath::Matrix4<f32>,
+}
+
+/// G-E5.5.5: per-output presentation bookkeeping for one presented
+/// frame. The simulated swap is global (one swap_buffers presents all
+/// views), but the bookkeeping already understands that a frame
+/// contains N output views.
+#[derive(Debug, Clone)]
+pub struct OutputFrameReport {
+    pub output_id: OutputId,
+    pub viewport: OutputViewport,
+    pub presented: bool,
+}
+
 /// One output's state: identity, mode, scale, its position on the
 /// global desktop plane, and its PRESENTATION VIEW.
 ///
@@ -211,6 +273,69 @@ impl OutputManager {
     /// handle is a cheap clone (Arc internally).
     pub fn primary_wl(&self) -> Option<smithay::output::Output> {
         self.primary().and_then(|o| o.wl.clone())
+    }
+
+    /// G-E5.5.3: the desktop plane's min corner across all outputs.
+    /// (0,0) for the default row tiling; negative when an output sits
+    /// left of / above the origin. The identity input↔render mapping
+    /// relies on this being the SINGLE offset between the global
+    /// desktop plane and the simulation framebuffer.
+    pub fn desktop_origin(&self) -> (i32, i32) {
+        let mut it = self.states.values();
+        let Some(first) = it.next() else {
+            return (0, 0);
+        };
+        let mut min_x = first.global_pos.0;
+        let mut min_y = first.global_pos.1;
+        for o in it {
+            min_x = min_x.min(o.global_pos.0);
+            min_y = min_y.min(o.global_pos.1);
+        }
+        (min_x, min_y)
+    }
+
+    /// G-E5.5.3: simulation framebuffer pixel → global desktop plane.
+    /// Exact inverse of `global_to_fb`. With the default row tiling
+    /// (origin at (0,0)) this is the identity — today's behavior.
+    pub fn fb_to_global(&self, x: i32, y: i32) -> (i32, i32) {
+        let (ox, oy) = self.desktop_origin();
+        (x + ox, y + oy)
+    }
+
+    /// G-E5.5.3: global desktop plane → simulation framebuffer pixel.
+    pub fn global_to_fb(&self, x: i32, y: i32) -> (i32, i32) {
+        let (ox, oy) = self.desktop_origin();
+        (x - ox, y - oy)
+    }
+
+    /// G-E5.5.2: build one OutputFramePlan per output, in registry
+    /// order. Pure so tests can assert the mapping without a backend.
+    /// `projector` produces the per-output projection from the
+    /// output's OWN viewport size (the compositor supplies its
+    /// spatial/ortho policy).
+    pub fn build_frame_plans(
+        &self,
+        projector: &dyn Fn(bool, f32, f32) -> cgmath::Matrix4<f32>,
+        spatial_mode: bool,
+    ) -> Vec<OutputFramePlan> {
+        let origin = self.desktop_origin();
+        self.order
+            .iter()
+            .filter_map(|id| {
+                let state = self.states.get(id)?;
+                let viewport = OutputViewport::from_state(state, origin);
+                Some(OutputFramePlan {
+                    output_id: *id,
+                    viewport,
+                    view: state.camera.view_matrix(),
+                    proj: projector(
+                        spatial_mode,
+                        viewport.width as f32,
+                        viewport.height as f32,
+                    ),
+                })
+            })
+            .collect()
     }
 
     pub fn update_primary_scale(&mut self, scale: f64) {
@@ -509,5 +634,145 @@ mod tests {
         assert_eq!(m.to_local(2050, 300), Some((b, 130, 300)));
         // And the event just OUTSIDE the window on B still hits B:
         assert_eq!(m.to_local(2200, 300), Some((b, 280, 300)));
+    }
+
+    // ---- G-E5.5: simulated multi-output viewport mapping.
+    // Contract: simulation framebuffer → OutputViewport[] →
+    // OutputState[] → per-output camera/projection. The fb↔global
+    // conversions are exact inverses; viewports derive from global
+    // rects via the desktop origin (never ad hoc in the render path).
+
+    #[test]
+    fn viewport_mapping_identity_for_row_tiling() {
+        let m = side_by_side();
+        assert_eq!(m.desktop_origin(), (0, 0));
+        // Identity round trip on the default row tiling.
+        for (gx, gy) in [(0, 0), (1919, 1079), (1920, 0), (3199, 719)] {
+            let (fx, fy) = m.global_to_fb(gx, gy);
+            assert_eq!((fx, fy), (gx, gy));
+            assert_eq!(m.fb_to_global(fx, fy), (gx, gy));
+        }
+        // Viewports tile the framebuffer exactly.
+        let plans = m.build_frame_plans(&|_, w, h| {
+            cgmath::Matrix4::from_nonuniform_scale(w, h, 1.0)
+        }, false);
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].viewport, OutputViewport { x: 0, y: 0, width: 1920, height: 1080 });
+        assert_eq!(plans[1].viewport, OutputViewport { x: 1920, y: 0, width: 1280, height: 720 });
+    }
+
+    #[test]
+    fn viewport_mapping_negative_origin_translates() {
+        let mut m = OutputManager::new();
+        m.add(out("L", 1920, 1080));
+        m.add(out("R", 1920, 1080));
+        let ids = m.order.clone();
+        // L occupies [-1920, 0), R occupies [0, 1920) — adjacent, with
+        // the desktop origin at L's top-left.
+        m.states.get_mut(&ids[0]).unwrap().global_pos = (-1920, 0);
+        m.states.get_mut(&ids[1]).unwrap().global_pos = (0, 0);
+        // Desktop origin is L's top-left; the framebuffer starts there.
+        assert_eq!(m.desktop_origin(), (-1920, 0));
+        let plans = m.build_frame_plans(&|_, w, h| {
+            cgmath::Matrix4::from_nonuniform_scale(w, h, 1.0)
+        }, false);
+        assert_eq!(plans[0].viewport, OutputViewport { x: 0, y: 0, width: 1920, height: 1080 });
+        assert_eq!(plans[1].viewport, OutputViewport { x: 1920, y: 0, width: 1920, height: 1080 });
+        // fb(0,0) IS global (-1920,0) — and the round trip closes.
+        assert_eq!(m.fb_to_global(0, 0), (-1920, 0));
+        assert_eq!(m.global_to_fb(-1920, 0), (0, 0));
+        assert_eq!(m.global_to_fb(-1000, 400), (920, 400));
+        assert_eq!(m.fb_to_global(920, 400), (-1000, 400));
+    }
+
+    #[test]
+    fn viewport_mapping_stacked_translates_y() {
+        let mut m = OutputManager::new();
+        m.add(out("top", 1920, 1080));
+        m.add(out("bot", 2560, 1440));
+        let ids = m.order.clone();
+        m.states.get_mut(&ids[1]).unwrap().global_pos = (0, 1080);
+        let plans = m.build_frame_plans(&|_, w, h| {
+            cgmath::Matrix4::from_nonuniform_scale(w, h, 1.0)
+        }, false);
+        assert_eq!(plans[0].viewport, OutputViewport { x: 0, y: 0, width: 1920, height: 1080 });
+        assert_eq!(plans[1].viewport, OutputViewport { x: 0, y: 1080, width: 2560, height: 1440 });
+        // Framebuffer is the AABB: 2560 wide (bottom is wider), 2520 tall.
+        assert_eq!(m.global_extents(), (2560, 2520));
+        assert_eq!(m.fb_to_global(100, 1200), (100, 1200));
+    }
+
+    #[test]
+    fn viewport_plans_use_output_camera_and_size() {
+        // THE core E5.5 property: one scene, N views. Each plan carries
+        // ITS output's camera and ITS viewport-size projection — the
+        // same builder input produces different view matrices when the
+        // cameras differ.
+        let mut m = OutputManager::new();
+        m.add(out("A", 1920, 1080));
+        m.add(out("B", 1280, 720));
+        let ids = m.order.clone();
+        m.states.get_mut(&ids[1]).unwrap().global_pos = (1920, 0);
+        // Rotate camera B 90° about Y (camera A stays default).
+        m.states.get_mut(&ids[1]).unwrap().camera.yaw = 1.5707964; // ~90°
+        let plans = m.build_frame_plans(&|_, w, h| {
+            cgmath::Matrix4::from_nonuniform_scale(w, h, 1.0)
+        }, false);
+        assert_ne!(plans[0].view, plans[1].view, "different cameras → different views");
+        // Projections derive from each output's OWN size.
+        let pa = plans[0].proj;
+        let pb = plans[1].proj;
+        assert_ne!(pa, pb);
+        // And the projection scale matches the viewport (marker matrix
+        // is from_nonuniform_scale(w, h, 1)).
+        assert_eq!(pa.x.x, 1920.0);
+        assert_eq!(pb.x.x, 1280.0);
+    }
+
+    #[test]
+    fn viewport_removal_drops_plan_and_remaps() {
+        let mut m = OutputManager::new();
+        m.add(out("A", 1920, 1080));
+        m.add(out("B", 1280, 720));
+        let ids = m.order.clone();
+        m.states.get_mut(&ids[1]).unwrap().global_pos = (1920, 0);
+        m.remove(ids[0]);
+        // B remains. remove() re-tiles the row (placement policy), so
+        // B lands at the row start and the simulation framebuffer
+        // shrinks to exactly B's viewport.
+        let plans = m.build_frame_plans(&|_, w, h| {
+            cgmath::Matrix4::from_nonuniform_scale(w, h, 1.0)
+        }, false);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].output_id, ids[1]);
+        assert_eq!(plans[0].viewport, OutputViewport { x: 0, y: 0, width: 1280, height: 720 });
+        assert_eq!(m.desktop_origin(), (0, 0));
+    }
+
+    #[test]
+    fn viewport_identity_is_registry_order_independent() {
+        // Rendering order may vary; logical identity (OutputId) and
+        // geometry must not.
+        let mut m1 = OutputManager::new();
+        let a1 = m1.add(out("A", 1920, 1080));
+        let b1 = m1.add(out("B", 1280, 720));
+        m1.states.get_mut(&b1).unwrap().global_pos = (1920, 0);
+        let mut m2 = OutputManager::new();
+        let b2 = m2.add(out("B", 1280, 720));
+        let a2 = m2.add(out("A", 1920, 1080));
+        m2.states.get_mut(&a2).unwrap().global_pos = (0, 0);
+        m2.states.get_mut(&b2).unwrap().global_pos = (1920, 0);
+        m2.set_primary(a2);
+        let plans1 = m1.build_frame_plans(&|_, w, h| {
+            cgmath::Matrix4::from_nonuniform_scale(w, h, 1.0)
+        }, false);
+        let plans2 = m2.build_frame_plans(&|_, w, h| {
+            cgmath::Matrix4::from_nonuniform_scale(w, h, 1.0)
+        }, false);
+        let by_id = |plans: &[OutputFramePlan], id: OutputId| {
+            plans.iter().find(|p| p.output_id == id).unwrap().viewport
+        };
+        assert_eq!(by_id(&plans1, a1), by_id(&plans2, a2));
+        assert_eq!(by_id(&plans1, b1), by_id(&plans2, b2));
     }
 }
