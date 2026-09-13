@@ -5,3 +5,6 @@
 
 # Local code-review output
 /RECOMMENDATIONS.md
+
+# E2E validation run artifacts (tests/e2e/runs/<timestamp>/...)
+/tests/e2e/runs/

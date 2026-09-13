@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyra.local/tests/e2e/spec/result.schema.json",
+  "title": "Veyra E2E per-test result",
+  "type": "object",
+  "required": ["id", "title", "category", "status", "duration_ms", "deterministic"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "$ref": "scenario.schema.json#/$defs/testId" },
+    "title": { "type": "string" },
+    "category": { "type": "string" },
+    "stack": { "enum": ["x11", "nested", "drm", "hardware-gated"] },
+    "status": { "enum": ["PASS", "FAIL", "BLOCKED", "SKIPPED", "NOT_APPLICABLE"] },
+    "failure_class": { "$ref": "#/$defs/failureClass" },
+    "block_reason": { "type": "string" },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "started_at": { "type": "string", "format": "date-time" },
+    "finished_at": { "type": "string", "format": "date-time" },
+    "deterministic": {
+      "type": "array",
+      "description": "Every machine assertion, in execution order.",
+      "items": {
+        "type": "object",
+        "required": ["name", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "enum": ["PASS", "FAIL", "SKIPPED"] },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "visual": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["PASS", "FAIL", "SKIPPED"] },
+        "anomalies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["class", "detail", "confidence"],
+            "additionalProperties": false,
+            "properties": {
+              "class": { "$ref": "#/$defs/anomalyClass" },
+              "detail": { "type": "string" },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "vlm_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["checkpoint", "template", "verdict", "response_ref"],
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint": { "type": "string" },
+          "template": { "enum": ["base", "compare", "anomaly", "text"] },
+          "verdict": { "enum": ["PASS", "FAIL", "UNCERTAIN", "INFRA_SKIPPED"] },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "response_ref": { "type": "string", "description": "Path under vlm/raw/." }
+        }
+      }
+    },
+    "screenshots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "type": "string" },
+          "meta_ref": { "type": "string" }
+        }
+      }
+    },
+    "client_logs": { "type": "array", "items": { "type": "string" } },
+    "compositor_errors": { "type": "array", "items": { "type": "string" } },
+    "notes": { "type": "array", "items": { "type": "string" } },
+    "known_limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "failureClass": {
+      "enum": [
+        "CRASH", "WAYLAND_PROTOCOL", "INPUT", "FOCUS", "GEOMETRY", "RENDERING",
+        "VISUAL", "WINDOW_LIFECYCLE", "WORKSPACE", "CAMERA", "SHELL", "XWAYLAND",
+        "CLIPBOARD", "DND", "IME", "SCALING", "PERSISTENCE", "TIMING",
+        "PERFORMANCE", "TEST_HARNESS", "ENVIRONMENT", "UNKNOWN"
+      ]
+    },
+    "anomalyClass": {
+      "enum": [
+        "GHOST", "DUPLICATE", "DETACHED_DECORATION", "MISSING_SURFACE",
+        "BLACK_SURFACE", "WHITE_SURFACE", "CLIPPING", "WRONG_SCALE",
+        "WRONG_POSITION", "WRONG_FOCUS", "WRONG_TASKBAR_STATE",
+        "WRONG_POPUP_POSITION", "WRONG_SHELL_STATE", "WRONG_SPATIAL_POSE",
+        "TEXT_CORRUPTION", "UNKNOWN"
+      ]
+    }
+  }
+}

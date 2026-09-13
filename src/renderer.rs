@@ -1171,12 +1171,21 @@ pub fn render_scene(
     // Must be called inside each with_context() closure before any GL
     // operations. Failure is logged once per frame; the frame fails
     // downstream at submit (context-loss handling takes over).
+    //
+    // G-E5.5: each rebind is a fresh context→surface bind, and EGL
+    // resets viewport/scissor to the SURFACE size on every fresh bind —
+    // which silently reverted the active plan's viewport (multi-output
+    // quads rendered at full-framebuffer scale). Re-assert the active
+    // viewport after every rebind.
     let mut rebind_failed = false;
+    let current_viewport: std::cell::Cell<[i32; 4]> = std::cell::Cell::new([0, 0, 0, 0]);
     let mut rebind_surface = |gl: &ffi::Gles2| {
         if binding.rebind(gl).is_err() && !rebind_failed {
             rebind_failed = true;
             tracing::error!("surface rebind failed — frame will not present");
         }
+        let v = current_viewport.get();
+        unsafe { gl.Viewport(v[0], v[1], v[2], v[3]) };
     };
 
     // Initialize the per-context caches inside the current GL context
@@ -1234,6 +1243,17 @@ pub fn render_scene(
     // projection. Viewports derive from the registry (OutputFramePlan);
     // nothing here derives geometry ad hoc.
     let mut any_partial = false;
+    // Frame-level clear FIRST: regions between output viewports (gaps
+    // in non-adjacent tiling) must never hold stale swapchain content.
+    // Per-output scissored clears below still prove viewport
+    // independence — draws happen after all clears.
+    current_viewport.set([0, 0, w as i32, h as i32]);
+    let _ = renderer.with_context(|gl| unsafe {
+        rebind_surface(gl);
+        gl.Disable(ffi::SCISSOR_TEST);
+        gl.ClearColor(0.08, 0.08, 0.08, 1.0);
+        gl.Clear(ffi::COLOR_BUFFER_BIT | ffi::DEPTH_BUFFER_BIT);
+    });
     for plan in plans {
         // Set up viewport, clear, and state in one with_context block
         let t_clear = std::time::Instant::now();
@@ -1249,6 +1269,11 @@ pub fn render_scene(
             plan.viewport.width as f32,
             plan.viewport.height as f32,
         );
+        // GL viewport/scissor origins are BOTTOM-LEFT; plan viewports
+        // are TOP-LEFT framebuffer rects. (Also: EGL fresh binds reset
+        // viewport/scissor — rebind_surface re-asserts these GL coords.)
+        let gl_y = h as i32 - (vy + vh as i32);
+        current_viewport.set([vx, gl_y, vw as i32, vh as i32]);
         let visible_set: Option<std::collections::HashSet<crate::scene::VisualId>> =
             visible_ids.map(|ids| ids.iter().copied().collect());
         let content_changed: std::collections::HashSet<crate::scene::VisualId> =
@@ -1265,6 +1290,16 @@ pub fn render_scene(
             let world = scene.world_matrix(visual.id);
             let gw = visual.total_width();
             let gh = visual.total_height();
+            if std::env::var("VEYRA_DEBUG_VIEWPORT").is_ok() && visual.parent.is_none() {
+                let pos = visual.transform.position;
+                tracing::debug!(
+                    plan_out = plan.output_id.0,
+                    vp = ?(vx, vy, vw as u32, vh as u32),
+                    world_pos = ?(pos.x, pos.y, pos.z),
+                    gw, gh,
+                    "E5.5 plan/visual geometry"
+                );
+            }
             let drawn = visual.window_state != crate::scene::WindowState::Minimized
                 && visible_set.as_ref().is_none_or(|s| s.contains(&visual.id))
                 && visual.texture().is_some();
@@ -1351,18 +1386,22 @@ pub fn render_scene(
             // drawing (GL viewport); its clear is SCISSORED to the
             // same rect so one output's clear can never erase
             // another's pixels.
-            gl.Viewport(vx, vy, vw as i32, vh as i32);
+            gl.Viewport(vx, gl_y, vw as i32, vh as i32);
             gl.Enable(ffi::SCISSOR_TEST);
-            gl.Scissor(vx, vy, vw as i32, vh as i32);
+            gl.Scissor(vx, gl_y, vw as i32, vh as i32);
             gl.ClearColor(0.15, 0.15, 0.15, 1.0);
             if partial {
                 // Clear and draw ONLY the damaged region; the preserved
                 // back buffer retains the previous frame elsewhere.
                 let d = damage_union.unwrap();
+                // Damage rects are top-left fb coords → GL bottom-left.
                 let x = d[0].floor().max(vx as f32) as i32;
-                let y = d[1].floor().max(vy as f32) as i32;
-                let rw = (d[2].ceil().min(vx as f32 + vw) as i32 - x).max(0);
-                let rh = (d[3].ceil().min(vy as f32 + vh) as i32 - y).max(0);
+                let top = d[1].floor().max(vy as f32) as i32;
+                let right = d[2].ceil().min(vx as f32 + vw) as i32;
+                let bottom = d[3].ceil().min(vy as f32 + vh) as i32;
+                let y = h as i32 - bottom;
+                let rw = (right - x).max(0);
+                let rh = (bottom - top).max(0);
                 if rw > 0 && rh > 0 {
                     gl.Scissor(x, y, rw, rh);
                 }

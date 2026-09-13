@@ -1,0 +1,80 @@
+# E-AI01 — XWayland: xterm maps as a first-class spatial visual, receives
+# keyboard input, and closes cleanly (no frozen frame, no ghost).
+api: e2e/1
+id: E-AI01
+title: "XWayland xterm — map, type, close as a first-class visual"
+category: xwayland
+priority: daily
+tags: [xwayland, smoke]
+stack: x11
+timeout_s: 150
+
+requires:
+  binaries: [veyra, client-kit]
+  tools: [Xvfb, xdotool, import, identify, compare, python3]
+  apps: [xterm]
+
+veyra:
+  args: ["--normal"]
+
+steps:
+  - assert:
+      log_contains:
+        pattern: "XWayland ready; starting X11 window manager"
+        within_s: 20
+
+  - exec:
+      cmd: ["xterm", "-geometry", "80x24"]
+      display: xwayland
+      wait_log:
+        pattern: "surface mapped"
+        within_s: 15
+        anchor: xterm_mapped
+
+  - focus_x11: {}
+  - click: {x: "{{ win_cx('xterm') }}", y: "{{ win_cy('xterm') }}"}
+  - release_mods: {}
+  - type: {text: "VEYRA_X11_OK"}
+
+  - capture:
+      name: xterm-typed
+      category: S2
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display]
+      vlm:
+        template: text
+        required: true
+        min_confidence: 0.7
+        text: "VEYRA_X11_OK"
+        expected:
+          windows: ["xterm"]
+          taskbar: visible
+          anomalies_max: 0
+
+  - chord: {mods: [super], key: q, hold_ms: 200}
+  - assert:
+      log_contains: {pattern: "close sent to focused app", after: xterm_mapped, within_s: 5}
+  - wait_log:
+      pattern: "surface destroyed"
+      after: xterm_mapped
+      within_s: 10
+      anchor: xterm_destroyed
+
+  - wait_stable: {max_changed_pct: 0.3, timeout_s: 6}
+  - capture:
+      name: after-close
+      category: S3
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display, {region_not_uniform: taskbar}]
+      vlm:
+        template: anomaly
+        required: true
+        min_confidence: 0.7
+        expected:
+          windows: []
+          taskbar: visible
+          anomalies_max: 0
+        question: "No xterm window and no ghost fragments may remain; the desktop must be clean."
+
+  - assert: {log_not_contains: {pattern: "panicked"}}
+  - assert: {process_alive: {name: veyra}}

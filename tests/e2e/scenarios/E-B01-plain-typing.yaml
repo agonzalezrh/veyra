@@ -1,0 +1,64 @@
+# E-B01 — Plain keys reach the focused client; no compositor binding steals them.
+api: e2e/1
+id: E-B01
+title: "Plain typing reaches the focused client (q/1/w/2 regression)"
+category: keyboard
+priority: daily
+tags: [input, smoke]
+stack: x11
+timeout_s: 90
+
+requires:
+  binaries: [veyra, client-kit]
+  tools: [Xvfb, xdotool, import, identify, compare, python3]
+
+veyra:
+  args: ["--normal"]
+
+steps:
+  - launch:
+      kit: keyboard
+      args: ["--expect", "q1w2", "--duration", "8000"]
+      app_id: kb-probe
+      json: kb.json
+
+  - wait_log:
+      pattern: "surface mapped"
+      app_id: kb-probe
+      within_s: 10
+      anchor: kb_mapped
+
+  - release_mods: {}
+  - click: {x: "{{ CX }}", y: "{{ CY }}"}
+  - assert:
+      log_contains: {pattern: "focus set, brought to front", after: kb_mapped, within_s: 5}
+
+  - type: {text: "q1w2", clear_mods: false}
+
+  - assert:
+      client_json: {file: kb.json, expr: "any(e['ev']=='kb_enter' for e in events)"}
+  - assert:
+      client_json: {file: kb.json, expr: "any(e['ev']=='expect_matched' for e in events)"}
+  - assert:
+      client_json:
+        file: kb.json
+        expr: "any(e['ev']=='key' and e.get('char')=='q' and e.get('pressed') for e in events)"
+
+  - capture:
+      name: after-typing
+      category: S2
+      stability: {max_changed_pct: 0.3, timeout_s: 4}
+      image_checks: [not_black, not_white, size_matches_display]
+      vlm:
+        template: anomaly
+        required: false
+        expected:
+          windows: ["client-kit test window"]
+          taskbar: visible
+          anomalies_max: 0
+
+  # digits 1/2 must not be intercepted by the Meta+1..0 bookmark bindings
+  - assert:
+      log_not_contains: {pattern: "camera bookmark saved", since: kb_mapped}
+  - assert: {log_not_contains: {pattern: "panicked"}}
+  - assert: {process_alive: {name: veyra}}

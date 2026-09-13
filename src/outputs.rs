@@ -324,10 +324,28 @@ impl OutputManager {
             .filter_map(|id| {
                 let state = self.states.get(id)?;
                 let viewport = OutputViewport::from_state(state, origin);
+                // Normal mode: the ortho projection maps the output's
+                // OWN pixel space, but the scene lives on the GLOBAL
+                // desktop plane — the view carries the output's global
+                // offset so each output renders ITS slice of the shared
+                // desktop (a window at global (440,210) is on output A,
+                // not on B). Spatial mode: one shared 3D space, every
+                // output's camera is just a different viewpoint — no
+                // translation.
+                let view = if spatial_mode {
+                    state.camera.view_matrix()
+                } else {
+                    state.camera.view_matrix()
+                        * cgmath::Matrix4::from_translation(cgmath::Vector3::new(
+                            -(state.global_pos.0 - origin.0) as f32,
+                            -(state.global_pos.1 - origin.1) as f32,
+                            0.0,
+                        ))
+                };
                 Some(OutputFramePlan {
                     output_id: *id,
                     viewport,
-                    view: state.camera.view_matrix(),
+                    view,
                     proj: projector(
                         spatial_mode,
                         viewport.width as f32,
@@ -337,6 +355,8 @@ impl OutputManager {
             })
             .collect()
     }
+
+
 
     pub fn update_primary_scale(&mut self, scale: f64) {
         if let Some(o) = self.primary.and_then(|id| self.states.get_mut(&id)) {
@@ -392,6 +412,37 @@ impl OutputManager {
         let o = &self.states[&id];
         Some((id, x - o.global_pos.0, y - o.global_pos.1))
     }
+}
+
+/// G-E5.5: the simulated multi-output layout spec — shared by the
+/// registry seeder (LookingGlass::new) and the nested window sizing
+/// (main.rs), so the simulation framebuffer and the underlying winit
+/// surface can never disagree. Output 0 is the primary (1280x720);
+/// outputs 1..n are 1024x768 with a 64 px gap, row-tiled.
+/// One simulated output's spec: (name, physical mode, global position).
+pub type SimulatedOutputSpec = (String, (u32, u32), (i32, i32));
+
+pub fn simulated_layout(n: u32) -> Vec<SimulatedOutputSpec> {
+    let mut v = vec![("default".to_string(), (1280u32, 720u32), (0i32, 0i32))];
+    for i in 1..n {
+        v.push((
+            format!("SIM-{i}"),
+            (1024, 768),
+            ((1280 + 64) * i as i32, 0),
+        ));
+    }
+    v
+}
+
+/// Simulation framebuffer extents for N simulated outputs.
+pub fn simulated_extents(n: u32) -> (u32, u32) {
+    let mut w = 0u32;
+    let mut h = 0u32;
+    for (_, (mw, mh), (x, y)) in simulated_layout(n) {
+        w = w.max(x as u32 + mw);
+        h = h.max(y as u32 + mh);
+    }
+    (w, h)
 }
 
 #[cfg(test)]

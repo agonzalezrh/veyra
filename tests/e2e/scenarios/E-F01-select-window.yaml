@@ -1,0 +1,66 @@
+# E-F01 — Left-click selects a window: visual selection, keyboard focus and
+# taskbar focus indicator follow; delivered pointer events land in the surface.
+api: e2e/1
+id: E-F01
+title: "Click selects the window — focus follows, client sees activation"
+category: selection
+priority: daily
+tags: [input, smoke]
+stack: x11
+timeout_s: 90
+
+requires:
+  binaries: [veyra, client-kit]
+  tools: [Xvfb, xdotool, import, identify, compare, python3]
+
+veyra:
+  args: ["--normal"]
+
+steps:
+  - launch:
+      kit: probe
+      args: ["--duration", "12000"]
+      app_id: probe-a
+      json: probe_a.json
+
+  - wait_log:
+      pattern: "surface mapped"
+      app_id: probe-a
+      within_s: 10
+      anchor: probe_mapped
+
+  - capture:
+      name: before-select
+      category: S0
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display]
+
+  - focus_x11: {}
+  - click: {x: "{{ CX }}", y: "{{ CY }}"}
+
+  - assert:
+      log_contains: {pattern: "focus set, brought to front", after: probe_mapped, within_s: 5}
+  - assert:
+      log_contains: {pattern: "focus history updated", after: probe_mapped, within_s: 5}
+  - assert:
+      client_json:
+        file: probe_a.json
+        expr: "any(e['ev']=='config' and e.get('activated') for e in events)"
+
+  - capture:
+      name: after-select
+      category: S1
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display]
+      vlm:
+        template: base
+        required: true
+        min_confidence: 0.7
+        expected:
+          windows: ["client-kit test window"]
+          focused: "client-kit test window"
+          taskbar: visible
+          anomalies_max: 0
+
+  - assert: {log_not_contains: {pattern: "panicked"}}
+  - assert: {process_alive: {name: veyra}}

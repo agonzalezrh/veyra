@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyra.local/tests/e2e/spec/screenshot-meta.schema.json",
+  "title": "Veyra E2E screenshot sidecar metadata",
+  "description": "Written beside every captured PNG as <name>.json. Machine evidence; the PNG is visual evidence.",
+  "type": "object",
+  "required": ["test_id", "checkpoint", "sequence", "category", "timestamp", "display_size", "sha256"],
+  "additionalProperties": false,
+  "properties": {
+    "test_id": { "$ref": "scenario.schema.json#/$defs/testId" },
+    "checkpoint": { "type": "string" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "category": { "enum": ["S0", "S1", "S2", "S3"] },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "display_size": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": { "type": "integer", "minimum": 1 }
+    },
+    "wayland_display": { "type": "string" },
+    "x11_display": { "type": "string" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "changed_pct_vs_previous": {
+      "type": ["number", "null"],
+      "description": "Changed-pixel fraction vs the previous capture in this test (null for the first)."
+    },
+    "stability": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "achieved": { "type": "boolean" },
+        "attempts": { "type": "integer", "minimum": 1 },
+        "max_changed_pct": { "type": "number" }
+      }
+    },
+    "expected_spatial_mode": {
+      "type": ["boolean", "null"],
+      "description": "Runner-derived expectation (start mode XOR parity of spatial toggles it injected). Never a compositor observation."
+    },
+    "expected_workspace": {
+      "type": ["integer", "null"],
+      "description": "Runner-derived expectation from the workspace-switch chords it injected."
+    },
+    "focused_window": {
+      "type": ["string", "null"],
+      "description": "Runner-derived expectation from its own focus actions, when known."
+    }
+  }
+}

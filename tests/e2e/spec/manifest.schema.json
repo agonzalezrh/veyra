@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyra.local/tests/e2e/spec/manifest.schema.json",
+  "title": "Veyra E2E run manifest",
+  "type": "object",
+  "required": ["run_id", "started_at", "finished_at", "runner_version", "veyra", "environment", "suite", "counts", "tests"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": { "type": "string", "description": "UTC timestamp, e.g. 2026-09-13T12-30-00Z" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "finished_at": { "type": "string", "format": "date-time" },
+    "runner_version": { "type": "string" },
+    "veyra": {
+      "type": "object",
+      "required": ["git_sha", "dirty"],
+      "additionalProperties": false,
+      "properties": {
+        "git_sha": { "type": "string" },
+        "dirty": { "type": "boolean", "description": "True if the working tree had uncommitted changes." },
+        "binary_path": { "type": "string" },
+        "rustc": { "type": "string" }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["os", "kernel", "screen_size", "stack"],
+      "additionalProperties": false,
+      "properties": {
+        "os": { "type": "string" },
+        "kernel": { "type": "string" },
+        "gpu": { "type": "string", "description": "GL renderer string; llvmpipe (software) expected in CI." },
+        "mesa": { "type": ["string", "null"] },
+        "xvfb_version": { "type": ["string", "null"] },
+        "screen_size": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "output_scale": { "type": "number" },
+        "stack": { "enum": ["x11", "nested", "drm", "mixed"] },
+        "veyra_config_sha256": { "type": ["string", "null"] }
+      }
+    },
+    "vlm": {
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "base_url_host": { "type": "string", "description": "Host:port only — never the API key or full URL with credentials." },
+        "model": { "type": "string" },
+        "timeout_s": { "type": "integer" },
+        "max_tokens": { "type": "integer" }
+      }
+    },
+    "suite": {
+      "type": "object",
+      "required": ["scenario_files", "tags"],
+      "additionalProperties": false,
+      "properties": {
+        "scenario_files": { "type": "array", "items": { "type": "string" } },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "seed": { "type": ["integer", "null"], "description": "Randomized-exploration seed when applicable." }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "required": ["total", "pass", "fail", "blocked", "skipped", "not_applicable"],
+      "additionalProperties": false,
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "pass": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "blocked": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "not_applicable": { "type": "integer", "minimum": 0 },
+        "crashes": { "type": "integer", "minimum": 0, "default": 0 },
+        "vlm_anomalies": { "type": "integer", "minimum": 0, "default": 0 }
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "failure_class"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "failure_class": { "$ref": "result.schema.json#/$defs/failureClass" },
+          "summary": { "type": "string" }
+        }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "result_ref"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "enum": ["PASS", "FAIL", "BLOCKED", "SKIPPED", "NOT_APPLICABLE"] },
+          "failure_class": { "$ref": "result.schema.json#/$defs/failureClass" },
+          "duration_ms": { "type": "integer", "minimum": 0 },
+          "result_ref": { "type": "string" }
+        }
+      }
+    },
+    "comparison_with_previous": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "previous_run_id": { "type": "string" },
+        "new_failures": { "type": "array", "items": { "type": "string" } },
+        "recurring_failures": { "type": "array", "items": { "type": "string" } },
+        "fixed": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

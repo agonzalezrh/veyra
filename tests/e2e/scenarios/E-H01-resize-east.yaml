@@ -1,0 +1,84 @@
+# E-H01 — East-edge pointer resize end-to-end: Resizing state, configure→ACK→commit,
+# geometry growth, session termination on release, no state corruption.
+api: e2e/1
+id: E-H01
+title: "East-edge pointer resize end-to-end (configure/ACK/commit transaction)"
+category: resize
+priority: daily
+tags: [input, geometry]
+stack: x11
+timeout_s: 120
+
+requires:
+  binaries: [veyra, client-kit]
+  tools: [Xvfb, xdotool, import, identify, compare, python3]
+
+veyra:
+  args: ["--normal"]
+
+steps:
+  - launch:
+      kit: resizer
+      args: ["--duration", "12000", "--min", "300x200"]
+      app_id: resizer-a
+      json: resizer.json
+
+  - wait_log:
+      pattern: "surface mapped"
+      app_id: resizer-a
+      within_s: 10
+      anchor: resizer_mapped
+
+  - focus_x11: {}
+  - click: {x: "{{ CX }}", y: "{{ CY }}"}
+
+  - capture:
+      name: before-resize
+      category: S0
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display]
+
+  # east edge of the first window (640x480 + title bar), drag outward +120px
+  - drag:
+      from: ["{{ XR - 4 }}", "{{ CY }}"]
+      to: ["{{ XR + 120 }}", "{{ CY }}"]
+      steps: 6
+      step_delay_ms: 150
+
+  - capture:
+      name: mid-resize
+      category: S1
+      stability: null
+      image_checks: [not_black, not_white, size_matches_display]
+
+  - assert:
+      client_json:
+        file: resizer.json
+        expr: "any(e['ev']=='config' and e.get('resizing') for e in events)"
+  - assert:
+      client_json:
+        file: resizer.json
+        expr: "any(e['ev']=='commit' and e['w'] > 640 for e in events)"
+  - assert:
+      log_contains: {pattern: "client resize fulfilled", after: resizer_mapped, within_s: 10}
+  - assert:
+      log_contains: {pattern: "resize session finished", after: resizer_mapped, within_s: 10}
+
+  - wait_stable: {max_changed_pct: 0.3, timeout_s: 6}
+  - capture:
+      name: after-resize
+      category: S2
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display, {region_not_uniform: taskbar}]
+      vlm:
+        template: base
+        required: true
+        min_confidence: 0.7
+        expected:
+          windows: ["client-kit test window"]
+          taskbar: visible
+          anomalies_max: 0
+        question: "Exactly one coherent window must be visible; it must be wider than a 640px default and its contents must not be clipped or corrupted."
+
+  - assert: {log_not_contains: {pattern: "panicked"}}
+  - assert: {process_alive: {name: veyra}}

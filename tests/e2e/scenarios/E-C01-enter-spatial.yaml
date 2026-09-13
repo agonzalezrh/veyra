@@ -1,0 +1,67 @@
+# E-C01 — Enter spatial mode (F5): perspective increases, windows/taskbar intact,
+# camera-only change (client commits keep flowing, client unaware of the 3D desktop).
+api: e2e/1
+id: E-C01
+title: "Enter spatial mode (F5) — perspective, no duplication, taskbar screen-space"
+category: spatial
+priority: daily
+tags: [spatial, visual]
+stack: x11
+timeout_s: 120
+
+requires:
+  binaries: [veyra, client-kit]
+  tools: [Xvfb, xdotool, import, identify, compare, python3]
+
+veyra:
+  args: ["--normal"]
+
+steps:
+  - launch:
+      kit: probe
+      args: ["--duration", "20000"]
+      app_id: probe-a
+      json: probe_a.json
+
+  - wait_log:
+      pattern: "surface mapped"
+      app_id: probe-a
+      within_s: 10
+      anchor: probe_mapped
+
+  - capture:
+      name: baseline-normal
+      category: S0
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display]
+
+  - focus_x11: {}
+  - click: {x: "{{ CX }}", y: "{{ CY }}"}
+  - key: {key: F5}
+
+  # camera transition (config camera.transition_ms, default 300) must settle
+  - wait_stable: {max_changed_pct: 0.3, timeout_s: 6}
+
+  - capture:
+      name: stable-spatial
+      category: S2
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display, {region_not_uniform: taskbar}]
+      vlm:
+        template: base
+        required: true
+        min_confidence: 0.7
+        expected:
+          windows: ["client-kit test window"]
+          spatial_mode: true
+          perspective: increased
+          taskbar: visible
+          anomalies_max: 0
+          ignore: ["font anti-aliasing"]
+
+  # client stays alive and committing through the mode change (spatial
+  # transparency invariant: the application must not notice anything)
+  - assert:
+      client_json: {file: probe_a.json, expr: "sum(1 for e in events if e['ev']=='commit') >= 3"}
+  - assert: {log_not_contains: {pattern: "panicked"}}
+  - assert: {process_alive: {name: veyra}}

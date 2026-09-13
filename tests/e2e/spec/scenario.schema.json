@@ -1,0 +1,489 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyra.local/tests/e2e/spec/scenario.schema.json",
+  "title": "Veyra E2E scenario",
+  "type": "object",
+  "required": ["api", "id", "title", "category", "priority", "stack", "timeout_s", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "api": { "const": "e2e/1" },
+    "id": { "$ref": "#/$defs/testId" },
+    "title": { "type": "string", "minLength": 3 },
+    "category": { "type": "string", "minLength": 1 },
+    "priority": { "enum": ["daily", "nightly", "soak"] },
+    "tags": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "stack": { "enum": ["x11", "nested", "drm", "hardware-gated"] },
+    "timeout_s": { "type": "integer", "minimum": 5, "maximum": 86400 },
+    "requires": { "$ref": "#/$defs/requires" },
+    "veyra": { "$ref": "#/$defs/veyra" },
+    "context": {
+      "type": "object",
+      "description": "Seed variables for the expression context.",
+      "default": {}
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "testId": {
+      "type": "string",
+      "pattern": "^(E-[A-Z]{1,2}[0-9]{2}|H-GP-[0-9]{3})$"
+    },
+    "anchor": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "expr": {
+      "type": "string",
+      "description": "Python expression over the context dict; {{expr}} in step fields.",
+      "pattern": "\\{\\{.*\\}\\}"
+    },
+    "intOrExpr": {
+      "oneOf": [
+        { "type": "integer" },
+        { "$ref": "#/$defs/expr" }
+      ]
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "binaries": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "tools": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "apps": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional real applications; unmet => SKIPPED with reason.",
+          "default": []
+        },
+        "env": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Env vars that must be set (e.g. VLM_API_KEY for required VLM).",
+          "default": []
+        }
+      }
+    },
+    "veyra": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "args": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "rust_log": { "type": "string", "default": "veyra=info,veyra::compositor=debug" },
+        "config_toml": {
+          "type": ["string", "null"],
+          "description": "Written to VEYRA_CONFIG_PATH for this scenario."
+        }
+      }
+    },
+    "stability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_changed_pct": { "type": "number", "minimum": 0, "maximum": 100, "default": 0.3 },
+        "sample_interval_ms": { "type": "integer", "minimum": 20, "default": 150 },
+        "timeout_s": { "type": "integer", "minimum": 1, "default": 6 }
+      }
+    },
+    "region": {
+      "oneOf": [
+        { "enum": ["taskbar", "fullscreen_area", "center"] },
+        {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "[x, y, w, h] in framebuffer coordinates."
+        }
+      ]
+    },
+    "imageCheck": {
+      "oneOf": [
+        { "enum": ["not_black", "not_white", "size_matches_display"] },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["region_not_uniform"],
+          "properties": {
+            "region_not_uniform": { "$ref": "#/$defs/region" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["region_min_changed_pct"],
+          "properties": {
+            "region_min_changed_pct": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["region", "pct"],
+              "properties": {
+                "region": { "$ref": "#/$defs/region" },
+                "pct": { "type": "number", "minimum": 0, "maximum": 100 },
+                "vs": { "enum": ["previous"], "default": "previous" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "expectedState": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "windows": { "type": "array", "items": { "type": "string" } },
+        "focused": { "type": "string" },
+        "selected": { "type": "string" },
+        "spatial_mode": { "type": "boolean" },
+        "perspective": { "enum": ["flat", "increased"] },
+        "taskbar": { "enum": ["visible", "hidden", "not_applicable"] },
+        "workspace": { "type": "integer", "minimum": 0 },
+        "context_menu": { "type": "boolean" },
+        "popup": { "type": "boolean" },
+        "anomalies_max": { "type": "integer", "minimum": 0, "default": 0 },
+        "ignore": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Expected differences the VLM must not report (false-positive control)."
+        }
+      }
+    },
+    "vlmCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["template"],
+      "properties": {
+        "template": { "enum": ["base", "compare", "anomaly", "text"] },
+        "required": { "type": "boolean", "default": false },
+        "min_confidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
+        "expected": { "$ref": "#/$defs/expectedState" },
+        "compare_with": {
+          "type": "string",
+          "description": "Capture name (not file) for template=compare."
+        },
+        "text": {
+          "type": "string",
+          "description": "Expected visible text for template=text."
+        },
+        "question": {
+          "type": "string",
+          "description": "Additional task-specific question appended to the prompt."
+        }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "category"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$" },
+        "category": { "enum": ["S0", "S1", "S2", "S3"] },
+        "stability": {
+          "oneOf": [
+            { "$ref": "#/$defs/stability" },
+            { "type": "null", "description": "explicit immediate capture (non-authoritative)" }
+          ]
+        },
+        "image_checks": { "type": "array", "items": { "$ref": "#/$defs/imageCheck" } },
+        "vlm": { "$ref": "#/$defs/vlmCheck" }
+      }
+    },
+    "logContains": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern"],
+      "properties": {
+        "pattern": { "type": "string", "minLength": 3 },
+        "after": { "$ref": "#/$defs/anchor" },
+        "within_s": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 10 }
+      }
+    },
+    "logNotContains": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern"],
+      "properties": {
+        "pattern": { "type": "string", "minLength": 3 },
+        "since": { "$ref": "#/$defs/anchor" }
+      }
+    },
+    "clientJson": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "expr"],
+      "properties": {
+        "file": { "type": "string" },
+        "expr": {
+          "type": "string",
+          "description": "Python boolean expr over the parsed JSON event list `events`."
+        }
+      }
+    },
+    "assertion": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["log_contains"],
+          "properties": { "log_contains": { "$ref": "#/$defs/logContains" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["log_not_contains"],
+          "properties": { "log_not_contains": { "$ref": "#/$defs/logNotContains" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["client_json"],
+          "properties": { "client_json": { "$ref": "#/$defs/clientJson" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["process_alive"],
+          "properties": { "process_alive": { "type": "object", "additionalProperties": false, "properties": { "name": { "type": "string", "default": "veyra" } } } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["wayland_socket_alive"],
+          "properties": { "wayland_socket_alive": { "type": "object", "additionalProperties": false } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x11_window_visible"],
+          "properties": { "x11_window_visible": { "type": "object", "additionalProperties": false } }
+        }
+      ]
+    },
+    "step": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["launch"],
+          "properties": {
+            "launch": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kit"],
+              "properties": {
+                "kit": { "enum": ["probe", "resizer", "keyboard", "pointer", "maximizer", "popups", "dnd", "ime", "clip"] },
+                "args": { "type": "array", "items": { "type": ["string", "number"] }, "default": [] },
+                "app_id": { "type": "string" },
+                "json": { "type": "string", "description": "Event-log filename under the test dir." },
+                "label": { "$ref": "#/$defs/anchor" }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["exec"],
+          "properties": {
+            "exec": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cmd"],
+              "properties": {
+                "cmd": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+                "env": { "type": "object", "additionalProperties": { "type": "string" } },
+                "display": {
+                  "enum": ["xvfb", "xwayland", "none"],
+                  "default": "none",
+                  "description": "xvfb=:99 root server; xwayland=veyra's XWayland display (parsed from the XWayland-ready log line)."
+                },
+                "wayland": { "type": "boolean", "default": false, "description": "Set WAYLAND_DISPLAY to veyra's socket." },
+                "wait_log": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "pattern": { "type": "string" },
+                    "within_s": { "type": "integer", "minimum": 1, "default": 10 },
+                    "anchor": { "$ref": "#/$defs/anchor" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kill"],
+          "properties": {
+            "kill": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["match"],
+              "properties": {
+                "match": { "type": "string", "description": "pkill -f pattern" },
+                "signal": { "enum": ["TERM", "KILL"], "default": "KILL" }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["quiesce"],
+          "properties": { "quiesce": { "type": "object", "additionalProperties": false } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["click"],
+          "properties": {
+            "click": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["x", "y"],
+              "properties": {
+                "x": { "$ref": "#/$defs/intOrExpr" },
+                "y": { "$ref": "#/$defs/intOrExpr" },
+                "button": { "enum": [1, 2, 3], "default": 1 },
+                "double": { "type": "boolean", "default": false }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["drag"],
+          "properties": {
+            "drag": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["from", "to"],
+              "properties": {
+                "from": { "type": "array", "items": { "$ref": "#/$defs/intOrExpr" }, "minItems": 2, "maxItems": 2 },
+                "to": { "type": "array", "items": { "$ref": "#/$defs/intOrExpr" }, "minItems": 2, "maxItems": 2 },
+                "button": { "enum": [1, 2, 3], "default": 1 },
+                "steps": { "type": "integer", "minimum": 1, "default": 6 },
+                "step_delay_ms": { "type": "integer", "minimum": 10, "default": 150 }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["key"],
+          "properties": {
+            "key": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key"],
+              "properties": { "key": { "type": "string", "description": "xdotool key symbol" } }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["chord"],
+          "properties": {
+            "chord": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key"],
+              "properties": {
+                "mods": {
+                  "type": "array",
+                  "items": { "enum": ["ctrl", "shift", "alt", "super"] },
+                  "default": []
+                },
+                "key": { "type": "string" },
+                "hold_ms": { "type": "integer", "minimum": 0, "default": 150 }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["type"],
+          "properties": {
+            "type": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["text"],
+              "properties": {
+                "text": { "type": "string" },
+                "clear_mods": { "type": "boolean", "default": true }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["scroll"],
+          "properties": {
+            "scroll": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["x", "y", "direction"],
+              "properties": {
+                "x": { "$ref": "#/$defs/intOrExpr" },
+                "y": { "$ref": "#/$defs/intOrExpr" },
+                "direction": { "enum": ["up", "down", "left", "right"] },
+                "clicks": { "type": "integer", "minimum": 1, "default": 3 }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["focus_x11"],
+          "properties": { "focus_x11": { "type": "object", "additionalProperties": false } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["release_mods"],
+          "properties": { "release_mods": { "type": "object", "additionalProperties": false } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["wait_log"],
+          "properties": {
+            "wait_log": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["pattern"],
+              "properties": {
+                "pattern": { "type": "string", "minLength": 3 },
+                "app_id": { "type": "string", "description": "Additional 'app_id=<x>' / substring filter on the line." },
+                "after": { "$ref": "#/$defs/anchor" },
+                "within_s": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 10 },
+                "anchor": { "$ref": "#/$defs/anchor", "description": "Record the matched line number under this name." }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["wait_stable"],
+          "properties": { "wait_stable": { "$ref": "#/$defs/stability" } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["capture"],
+          "properties": { "capture": { "$ref": "#/$defs/capture" } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["assert"],
+          "properties": { "assert": { "$ref": "#/$defs/assertion" } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["set_context"],
+          "properties": {
+            "set_context": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "value"],
+              "properties": {
+                "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+                "value": { "type": ["string", "number", "boolean"] }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["sleep_ms"],
+          "properties": {
+            "sleep_ms": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["value", "reason"],
+              "properties": {
+                "value": { "type": "integer", "minimum": 1, "maximum": 60000 },
+                "reason": { "type": "string", "minLength": 5 }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

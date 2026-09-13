@@ -161,6 +161,18 @@ fn start_winit_state(
     // and the bottom of the framebuffer — off-screen, while the
     // compositor's default window_size (1280x720) silently disagrees
     // with the actual GL viewport.
+    // G-E5.5: the simulation framebuffer sizes the nested window — the
+    // surface must contain every output's viewport. Same spec as the
+    // registry seeder (outputs::simulated_layout).
+    if let Ok(n) = std::env::var("VEYRA_SIM_OUTPUTS").ok().unwrap_or_default().parse::<u32>() {
+        if n > 1 {
+            let (ew, eh) = crate::outputs::simulated_extents(n);
+            let _ = backend.window().request_inner_size(
+                smithay::reexports::winit::dpi::PhysicalSize::new(ew, eh),
+            );
+            tracing::info!(w = ew, h = eh, "nested window sized to simulation extents");
+        }
+    }
     if let Some(monitor) = backend.window().current_monitor() {
         let ms = monitor.size();
         let win = backend.window().inner_size();

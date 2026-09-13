@@ -1,0 +1,43 @@
+# E-A01 — Clean startup: taskbar present, desktop clean, no ghost surfaces.
+api: e2e/1
+id: E-A01
+title: "Clean startup — taskbar, clean desktop, no ghost surfaces"
+category: startup
+priority: daily
+tags: [smoke, visual]
+stack: x11
+timeout_s: 120
+
+requires:
+  binaries: [veyra, client-kit]
+  tools: [Xvfb, xdotool, import, identify, compare, python3]
+
+veyra:
+  args: ["--normal"]
+  rust_log: "veyra=info,veyra::compositor=debug"
+
+steps:
+  - assert:
+      log_contains: {pattern: "Listening on wayland socket:", within_s: 15}
+  - assert:
+      log_contains: {pattern: "starting in normal (2D) mode", within_s: 5}
+  - assert: {wayland_socket_alive: {}}
+
+  - capture:
+      name: baseline-clean
+      category: S0
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display, {region_not_uniform: taskbar}]
+      vlm:
+        template: base
+        required: true
+        min_confidence: 0.7
+        expected:
+          windows: []
+          taskbar: visible
+          anomalies_max: 0
+          ignore: ["cursor position", "caret blink"]
+
+  - assert: {log_not_contains: {pattern: "panicked"}}
+  - assert: {log_not_contains: {pattern: "protocol error"}}
+  - assert: {process_alive: {name: veyra}}

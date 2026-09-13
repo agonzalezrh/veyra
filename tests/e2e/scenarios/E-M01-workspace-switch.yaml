@@ -1,0 +1,87 @@
+# E-M01 — Workspace navigation (Ctrl+Tab / Ctrl+Shift+Tab): no cross-workspace
+# interaction, no window disappearance, no transform loss.
+api: e2e/1
+id: E-M01
+title: "Workspace switch round-trip — isolation, no destroy, content restored"
+category: workspace
+priority: daily
+tags: [workspace, smoke]
+stack: x11
+timeout_s: 120
+
+requires:
+  binaries: [veyra, client-kit]
+  tools: [Xvfb, xdotool, import, identify, compare, python3]
+
+veyra:
+  args: ["--normal"]
+
+steps:
+  - launch:
+      kit: probe
+      args: ["--duration", "24000"]
+      app_id: probe-a
+      json: probe_a.json
+
+  - wait_log:
+      pattern: "surface mapped"
+      app_id: probe-a
+      within_s: 10
+      anchor: probe_mapped
+
+  - focus_x11: {}
+  - click: {x: "{{ CX }}", y: "{{ CY }}"}
+
+  - capture:
+      name: ws1-baseline
+      category: S0
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display]
+
+  - chord: {mods: [ctrl], key: Tab}
+  - assert:
+      log_contains: {pattern: "switched workspace", after: probe_mapped, within_s: 5}
+  - wait_stable: {max_changed_pct: 0.3, timeout_s: 6}
+
+  - capture:
+      name: ws2-empty
+      category: S2
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display, {region_not_uniform: taskbar}]
+      vlm:
+        template: base
+        required: true
+        min_confidence: 0.7
+        expected:
+          windows: []
+          taskbar: visible
+          workspace: 1
+          anomalies_max: 0
+        question: "The second workspace must be empty of application windows; only the taskbar/shell may be visible."
+
+  - chord: {mods: [ctrl, shift], key: Tab}
+  - assert:
+      log_contains: {pattern: "switched workspace", after: probe_mapped, within_s: 5}
+  - wait_stable: {max_changed_pct: 0.3, timeout_s: 6}
+
+  - capture:
+      name: ws1-return
+      category: S3
+      stability: {max_changed_pct: 0.3, timeout_s: 6}
+      image_checks: [not_black, not_white, size_matches_display]
+      vlm:
+        template: compare
+        required: true
+        min_confidence: 0.7
+        compare_with: ws1-baseline
+        expected:
+          taskbar: visible
+          anomalies_max: 0
+        question: "After returning, the window must be back exactly as in the baseline: same count, same position, intact content."
+
+  # isolation evidence: the window was never destroyed, and it kept committing
+  - assert: {log_not_contains: {pattern: "surface destroyed", since: probe_mapped}}
+  - assert:
+      client_json: {file: probe_a.json, expr: "sum(1 for e in events if e['ev']=='commit') >= 5"}
+  - assert: {log_not_contains: {pattern: "panicked"}}
+  - assert: {process_alive: {name: veyra}}

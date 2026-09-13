@@ -1,0 +1,178 @@
+# E-AP01 — 3D visual corruption sweep: six windows cycled through normal,
+# spatial, orbit, zoom, overview, workspace overview and focus mode; every
+# stable state gets a VLM anomaly scan (ghosts, detached decorations,
+# duplicates, black/white surfaces, clipping).
+api: e2e/1
+id: E-AP01
+title: "3D visual corruption sweep across compositor modes (VLM)"
+category: rendering
+priority: nightly
+tags: [visual, vlm, modes]
+stack: x11
+timeout_s: 300
+
+requires:
+  binaries: [veyra, client-kit]
+  tools: [Xvfb, xdotool, import, identify, compare, python3]
+
+veyra:
+  args: ["--normal"]
+
+steps:
+  - launch: {kit: probe, args: ["--duration", "60000"], app_id: probe-1, json: probe_1.json}
+  - launch: {kit: probe, args: ["--duration", "60000"], app_id: probe-2}
+  - launch: {kit: probe, args: ["--duration", "60000"], app_id: probe-3}
+  - launch: {kit: probe, args: ["--duration", "60000"], app_id: probe-4}
+  - launch: {kit: probe, args: ["--duration", "60000"], app_id: probe-5}
+  - launch: {kit: probe, args: ["--duration", "60000"], app_id: probe-6}
+
+  - wait_log:
+      pattern: "surface mapped"
+      app_id: probe-6
+      within_s: 20
+      anchor: all_mapped
+
+  - capture:
+      name: baseline-normal
+      category: S0
+      stability: {max_changed_pct: 0.5, timeout_s: 8}
+      image_checks: [not_black, not_white, size_matches_display, {region_not_uniform: taskbar}]
+      vlm:
+        template: anomaly
+        required: true
+        min_confidence: 0.7
+        expected:
+          windows: ["six client-kit test windows"]
+          taskbar: visible
+          anomalies_max: 0
+
+  - focus_x11: {}
+  - key: {key: F5}
+  - wait_stable: {max_changed_pct: 0.5, timeout_s: 8}
+  - capture:
+      name: spatial
+      category: S2
+      stability: {max_changed_pct: 0.5, timeout_s: 8}
+      image_checks: [not_black, not_white, size_matches_display]
+      vlm:
+        template: anomaly
+        required: true
+        min_confidence: 0.7
+        expected:
+          windows: ["six client-kit test windows"]
+          spatial_mode: true
+          perspective: increased
+          taskbar: visible
+          anomalies_max: 0
+
+  - drag: {from: ["{{ CX }}", "{{ CY }}"], to: ["{{ CX + 200 }}", "{{ CY + 80 }}"], button: 3, steps: 8, step_delay_ms: 120}
+  - wait_stable: {max_changed_pct: 0.5, timeout_s: 8}
+  - capture:
+      name: orbit
+      category: S2
+      stability: {max_changed_pct: 0.5, timeout_s: 8}
+      image_checks: [not_black, not_white, size_matches_display]
+      vlm:
+        template: anomaly
+        required: true
+        min_confidence: 0.7
+        expected:
+          spatial_mode: true
+          taskbar: visible
+          anomalies_max: 0
+        question: "The viewpoint must be orbited; the six windows must keep their relative arrangement and remain intact."
+
+  - scroll: {x: 60, y: 60, direction: up, clicks: 3}
+  - wait_stable: {max_changed_pct: 0.5, timeout_s: 8}
+  - capture:
+      name: zoom
+      category: S2
+      stability: {max_changed_pct: 0.5, timeout_s: 8}
+      image_checks: [not_black, not_white, size_matches_display]
+      vlm:
+        template: anomaly
+        required: true
+        min_confidence: 0.7
+        expected:
+          spatial_mode: true
+          taskbar: visible
+          anomalies_max: 0
+
+  - chord: {mods: [super], key: o}
+  - wait_stable: {max_changed_pct: 0.5, timeout_s: 8}
+  - capture:
+      name: window-overview
+      category: S2
+      stability: {max_changed_pct: 0.5, timeout_s: 8}
+      image_checks: [not_black, not_white, size_matches_display]
+      vlm:
+        template: anomaly
+        required: true
+        min_confidence: 0.7
+        expected:
+          windows: ["six client-kit test windows"]
+          taskbar: visible
+          anomalies_max: 0
+        question: "Overview mode: every window must be visible exactly once — overview is a camera mode, so no window may be duplicated or missing."
+
+  - key: {key: Escape}
+  - wait_stable: {max_changed_pct: 0.5, timeout_s: 8}
+
+  - chord: {mods: [super], key: p}
+  - wait_stable: {max_changed_pct: 0.5, timeout_s: 8}
+  - capture:
+      name: workspace-overview
+      category: S2
+      stability: {max_changed_pct: 0.5, timeout_s: 8}
+      image_checks: [not_black, not_white, size_matches_display]
+      vlm:
+        template: anomaly
+        required: true
+        min_confidence: 0.7
+        expected:
+          taskbar: visible
+          anomalies_max: 0
+        question: "Workspace overview: coherent workspace representations, selected workspace distinguishable, no duplicated application surfaces."
+
+  - key: {key: Escape}
+  - key: {key: F6}
+  - wait_stable: {max_changed_pct: 0.5, timeout_s: 8}
+  - capture:
+      name: focus-mode
+      category: S2
+      stability: {max_changed_pct: 0.5, timeout_s: 8}
+      image_checks: [not_black, not_white, size_matches_display]
+      vlm:
+        template: anomaly
+        required: true
+        min_confidence: 0.7
+        expected:
+          taskbar: visible
+          anomalies_max: 0
+        question: "Focus mode: the camera emphasis is on the selected window; no corruption, no duplicated decorations."
+
+  - key: {key: Escape}
+  - key: {key: F5}
+  - wait_stable: {max_changed_pct: 0.5, timeout_s: 8}
+  - capture:
+      name: final-normal
+      category: S3
+      stability: {max_changed_pct: 0.5, timeout_s: 8}
+      image_checks: [not_black, not_white, size_matches_display, {region_not_uniform: taskbar}]
+      vlm:
+        template: compare
+        required: true
+        min_confidence: 0.7
+        compare_with: baseline-normal
+        expected:
+          taskbar: visible
+          anomalies_max: 0
+        question: "Back in normal mode: same six windows as the baseline, no window lost or duplicated, no corruption accumulated through the mode cycle."
+
+  # liveness through the whole sweep (spatial transparency invariant)
+  - assert:
+      client_json: {file: probe_1.json, expr: "sum(1 for e in events if e['ev']=='commit') >= 10"}
+  - assert: {log_not_contains: {pattern: "surface destroyed", since: all_mapped}}
+  - assert: {log_not_contains: {pattern: "panicked"}}
+  - assert: {wayland_socket_alive: {}}
+  - assert: {process_alive: {name: veyra}}

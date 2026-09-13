@@ -528,30 +528,31 @@ impl LookingGlass {
             wl: None,
         });
         // G-E5.5: simulated multi-output — VEYRA_SIM_OUTPUTS=N renders N
-        // logical outputs inside the ONE winit surface. Each gets its
-        // own mode and its own camera (seeded with a small yaw offset so
-        // the views are visibly independent: one scene, N views). The
-        // wl_output global stays primary-only until G-E5.6.
-        if let Ok(n) = std::env::var("VEYRA_SIM_OUTPUTS") {
-            if let Ok(n) = n.parse::<u32>() {
-                if n > 1 {
-                    let x = (1280.0 + 64.0) as i32;
-                    let _y = (720.0 + 64.0) as i32; // row tiling: all outputs on y=0 (per-output placement lands with G-E5.6 hotplug)
-                    for i in 1..n {
-                        let mut cam = Camera::new();
-                        cam.yaw = i as f32 * 0.26;
-                        outputs.add(crate::outputs::OutputState {
-                            name: format!("SIM-{i}"),
-                            mode: (1024, 768),
-                            refresh_mhz: 60000,
-                            scale: 1.0,
-                            global_pos: (x * i as i32, 0),
-                            camera: cam,
-                            wl: None,
-                        });
-                    }
-                    info!(outputs = n, "G-E5.5: simulated multi-output enabled");
+        // logical outputs inside the ONE winit surface. The layout spec
+        // lives in outputs.rs (shared with the window sizing in
+        // main.rs); each output gets its own camera (small yaw offsets
+        // so the views are visibly independent: one scene, N views).
+        // The wl_output global stays primary-only until G-E5.6.
+        if let Ok(n) = std::env::var("VEYRA_SIM_OUTPUTS").ok().unwrap_or_default().parse::<u32>() {
+            if n > 1 {
+                for (_i, (name, mode, pos)) in crate::outputs::simulated_layout(n)
+                    .into_iter()
+                    .enumerate()
+                    .skip(1)
+                {
+                    let mut cam = Camera::new();
+                    cam.yaw = 0.0; // live-demo default: identical pose; orbit input diverges them
+                    outputs.add(crate::outputs::OutputState {
+                        name,
+                        mode,
+                        refresh_mhz: 60000,
+                        scale: 1.0,
+                        global_pos: pos,
+                        camera: cam,
+                        wl: None,
+                    });
                 }
+                info!(outputs = n, "G-E5.5: simulated multi-output enabled");
             }
         }
         let compositor_state = CompositorState::new::<Self>(display_handle);
@@ -2021,6 +2022,13 @@ impl LookingGlass {
     /// backend) and on every resize; smithay propagates mode events to
     /// connected clients automatically.
     pub fn sync_output_mode(&mut self, w: i32, h: i32, refresh: i32) {
+        // G-E5.5: with simulated multi-output the backend size is the
+        // SIMULATION EXTENTS, not any output's mode — the outputs keep
+        // their seeded modes and the row layout stays fixed. (Real
+        // per-output mode sets arrive with G-E5.6 DRM connectors.)
+        if self.outputs.outputs().len() > 1 {
+            return;
+        }
         let Some(output) = self.outputs.primary_wl() else {
             return;
         };
