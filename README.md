@@ -10,9 +10,12 @@ Firefox (XWayland) — run with keyboard, pointer, clipboard, drag-and-drop,
 IME, popups, subsurfaces, and fractional scaling. X11 applications run
 through the built-in XWayland manager. The spatial desktop (workspaces,
 overview, focus, arrangement) is presentation-only: applications never
-see the 3D layer. Multi-output support is in progress (outputs.rs registry
-landed; consumer migration ongoing). See COMPATIBILITY_MATRIX.md for the
-current compatibility assessment and AGENTS.md for the roadmap.
+see the 3D layer. Nested multi-output simulation is implemented
+(VEYRA_SIM_OUTPUTS=N: N logical outputs with independent cameras,
+viewports, and modes inside one window, over a shared scene). Native
+DRM multi-connector output support is in progress (G-E5.6). See
+COMPATIBILITY_MATRIX.md for the current compatibility assessment and
+AGENTS.md for the roadmap.
 
 ## Building
 

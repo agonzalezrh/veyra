@@ -137,7 +137,7 @@ interactions and multi-process window churn under long sessions.
 | Context-loss recovery | ✅ | DRM recreates via stashed libseat session; winit fails loudly (G-E5) |
 | Projection NaN guard | ✅ | Degenerate framebuffer sizes clamped (G-E5) |
 | Safe EGL/presentation boundary | ❌ | Raw-pointer surface-rebinding workaround remains (G-F3 planned) |
-| Multi-output | 🟡 | Output-aware compositor DONE: registry is the single source of truth (wl handle per output, G-E5.2 complete); per-output cameras (G-E5.3); explicit pointer→output at all entry points + synthetic multi-output geometry battery incl. straddling windows (G-E5.4). Remaining: per-output PRESENTATION (G-E5.5 winit simulated viewports, G-E5.6 DRM multi-connector, G-E5.7 integration/hotplug) |
+| Multi-output | 🟡 | Compositor semantics PROVEN (G-E5.2–E5.5): registry as single source of truth with per-output wl handles; per-output cameras; pointer→output at every entry point with the synthetic geometry battery (incl. straddling windows); nested simulated multi-output SHIPPED — N logical outputs, independent cameras/viewports/modes, one shared scene, live-verified (VEYRA_SIM_OUTPUTS). Remaining: native DRM multi-connector (G-E5.6) + integration/hotplug (G-E5.7, hardware-gated validation) |
 | Frame scheduling | ✅ | Demand-driven (dirty/animating), idle = no render, no timer wakeups |
 | Persistence | ✅ | v2 schema, atomic save/load, app_id identity |
 | Workspaces | ✅ | Per-workspace transforms/focus; destruction rehoming; multi-workspace lifecycle |
