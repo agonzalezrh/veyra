@@ -823,17 +823,29 @@ Milestones landed:
   (tests/harness/scripts/run_torture.sh): 200-client churn +
   workspace hammering + resize churn — 0 panics, 0 protocol failures
 
-Remaining: G-E5.5 one-winit-window-per-output (**blocked: smithay 0.7's
-winit backend creates its own event loop per init and exposes no
-multi-window API — needs either an upstream API or the simulated-output
-abstraction the user deferred**), G-E5.6 DRM multi-connector
+- **G-E5.5** simulated multi-output SHIPPED: one winit surface, N
+  logical outputs (VEYRA_SIM_OUTPUTS=N), each with its own viewport,
+  camera, and viewport-size projection over the SHARED scene
+  (OutputFramePlan; build_frame_plans pure). Input: pointer→output via
+  desktop_origin fb↔global conversion; pointer_view() picks through
+  the POINTER'S output's own camera/projection (all four conversion
+  sites migrated). OutputFrameReport = per-output presentation
+  bookkeeping. Live-verified: window confined to its output's slice,
+  independent per-viewport clears, taskbar across the simulation fb.
+  Coordinate-contract bugs found and fixed by the live session: EGL
+  fresh-bind viewport reset (rebind re-asserts), GL bottom-left
+  viewport origin (top-left→GL conversion), sync_output_mode clobbering
+  seeded modes with simulation extents.
+
+Remaining: G-E5.6 DRM multi-connector
 (implementable; **validation hardware-gated** — VKMS exposes one
-connector), G-E5.7 multi-monitor integration tests (depend on 5.5/5.6). Exit criteria:
+connector), G-E5.7 multi-monitor integration tests (depend on 5.6 /
+real hardware). Exit criteria:
 two outputs w/ different resolutions+scales, cross-output picking,
 straddling windows, per-output fullscreen/shell/IME, hotplug without
 restart — and single-output tests pass unchanged.
 
-**Status: 🟡 G-E5 multi-output in progress; G-G1–G-G6, G-H3, G-I1/I2-lite landed (509 unit tests; protocol 111/0/0; input 110/0/0)**
+**Status: 🟡 G-E5 multi-output: registry+cameras+input (E5.2–E5.4) and simulated presentation (E5.5) DONE; remaining E5.6/E5.7 hardware-gated (528 unit tests; protocol 111/0/0; input 110/0/0)**
 
 ### G-E5 fix — subsurface ghost visuals (foot CSD)
 
