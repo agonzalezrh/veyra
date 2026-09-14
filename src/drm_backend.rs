@@ -26,7 +26,6 @@ type AllocDmabuf = smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::egl::ffi::egl::types::EGLImage;
-use smithay::backend::egl::EGLSurface;
 use smithay::backend::renderer::gles::ffi;
 use smithay::backend::renderer::gles::GlesRenderer;
 
@@ -40,7 +39,7 @@ use smithay::reexports::drm::control::{connector, Device as ControlDevice};
 use smithay::utils::DeviceFd;
 use tracing::{info, warn};
 
-use crate::backend::PresentationBackend;
+use crate::backend::{FrameTarget, PresentationBackend};
 
 /// Errors during native backend initialization.
 #[derive(Debug)]
@@ -853,11 +852,11 @@ impl PresentationBackend for DrmGraphicsBackend {
         (self.outputs[0].width, self.outputs[0].height)
     }
 
-    fn egl_surface(&self) -> Option<&EGLSurface> {
-        // None: frames render into GBM dmabuf FBOs, not an EGL window
-        // surface. render_scene's rebind_surface no-ops accordingly,
-        // preserving the FBO binding across with_context closures.
-        None
+    fn frame_target(&mut self) -> FrameTarget {
+        // BoundFbo: frames render into GBM dmabuf FBOs, not a window
+        // surface. begin_output leaves the output's FBO current; the
+        // target's make_current is a viewport re-assertion only.
+        FrameTarget::BoundFbo
     }
 
     fn as_any(&mut self) -> &mut dyn std::any::Any {

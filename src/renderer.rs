@@ -1076,30 +1076,6 @@ fn quad_screen_aabb(
     Some([min_x, min_y, max_x, max_y])
 }
 
-/// G-G6: query EGL buffer preservation on the presentation surface.
-/// READ-ONLY: the swap behavior is a property of the EGLConfig the
-/// surface was created with (EGL_SWAP_BEHAVIOR_PRESERVED_BIT). We must
-/// NOT eglSurfaceAttrib it on — setting it on an unqualified config is
-/// spec-invalid and breaks llvmpipe's first swap with BadAlloc.
-/// Drivers that natively preserve get partial presents; everyone else
-/// falls back to full-frame (always correct).
-fn probe_buffer_preserved(
-    renderer: &mut GlesRenderer,
-    surface_ptr: *const smithay::backend::egl::EGLSurface,
-) -> bool {
-    use smithay::backend::egl::ffi::egl as eglffi;
-    unsafe {
-        let ctx = renderer.egl_context();
-        let display = ctx.display().get_display_handle().handle;
-        let surface = (&*surface_ptr).get_surface_handle();
-        let mut v = 0i32;
-        let ok =
-            eglffi::QuerySurface(display, surface, eglffi::SWAP_BEHAVIOR as i32, &mut v)
-                == eglffi::TRUE;
-        ok && v == eglffi::BUFFER_PRESERVED as i32
-    }
-}
-
 #[allow(clippy::too_many_arguments)] // one frame's inputs; grouping would obscure the GL call sites
 pub fn render_scene(
     backend: &mut dyn PresentationBackend,
@@ -1116,76 +1092,27 @@ pub fn render_scene(
 
     let (w, h) = backend.size();
 
-    // G-F3 (P2 #9 remainder): the EGL binding pair is owned by ONE
-    // type with a documented invariant instead of two loose raw
-    // pointers. The unsafety is irreducible with smithay's current
-    // API: `GlesRenderer::with_context` makes current with
-    // EGL_NO_SURFACE (backend/egl/context.rs:363), so every raw-GL
-    // closure drawing to the default framebuffer must re-make-current
-    // with the presentation surface — but the closure already holds
-    // `&ffi::Gles2` borrowed from the renderer borrowed from the
-    // backend that owns the surface. The pointers are valid for the
-    // whole render_scene body (the backend outlives it) and never
-    // stored. Rebind failures are ERRORS, not panics: a lost context
-    // surfaces at frame submission and the G-E5 recovery path takes
-    // over.
-    struct SurfaceBinding {
-        ctx: *const smithay::backend::egl::EGLContext,
-        surface: Option<*const smithay::backend::egl::EGLSurface>,
-    }
-    impl SurfaceBinding {
-        /// SAFETY: both pointers must outlive every `rebind` call —
-        /// guaranteed by render_scene's borrow structure (the backend
-        /// binding outlives the function; nothing mutates the EGL
-        /// objects during rendering).
-        fn rebind(&self, gl: &ffi::Gles2) -> Result<(), SwapBuffersError> {
-            if let Some(surface_ptr) = self.surface {
-                unsafe {
-                    let surface = &*surface_ptr;
-                    let ctx = &*self.ctx;
-                    ctx.make_current_with_surface(surface).map_err(|_| {
-                        SwapBuffersError::ContextLost(
-                            "surface rebind failed (context lost)".into(),
-                        )
-                    })?;
-                }
-                unsafe { gl.BindFramebuffer(ffi::FRAMEBUFFER, 0) };
-            }
-            Ok(())
-        }
-    }
-
-    // Stash the surface pointer BEFORE borrowing renderer (borrows backend).
-    let surface_ptr: Option<*const smithay::backend::egl::EGLSurface> =
-        backend.egl_surface().map(|s| s as *const _);
+    // G-F3: ask the backend for the frame's drawing target — an OPAQUE
+    // token. renderer.rs cannot name a presentation type (no EGL
+    // surface, no GBM, no CRTC): FrameTarget::make_current owns every
+    // binding detail, and the renderer only supplies the ACTIVE
+    // VIEWPORT for the rebind invariant (a fresh bind resets
+    // viewport/scissor to the surface size — the E5.5 live finding).
+    // Rebind failures are ERRORS, not panics: a lost context surfaces
+    // at frame submission and the G-E5 recovery path takes over.
+    let target = backend.frame_target();
     // G-G6: read the probe gate before the renderer borrow (the flag
     // is backend-level state, needed later past the mutable borrow).
     let probe_allowed = backend.preservation_probe_allowed();
     let renderer = backend.renderer();
-    let binding = SurfaceBinding {
-        ctx: renderer.egl_context(),
-        surface: surface_ptr,
-    };
 
-    // Helper to rebind the window surface as the current draw/read target.
-    // Must be called inside each with_context() closure before any GL
-    // operations. Failure is logged once per frame; the frame fails
-    // downstream at submit (context-loss handling takes over).
-    //
-    // G-E5.5: each rebind is a fresh context→surface bind, and EGL
-    // resets viewport/scissor to the SURFACE size on every fresh bind —
-    // which silently reverted the active plan's viewport (multi-output
-    // quads rendered at full-framebuffer scale). Re-assert the active
-    // viewport after every rebind.
-    let mut rebind_failed = false;
+    // The renderer's own knowledge: WHICH viewport is active. The
+    // target machinery handles everything else.
     let current_viewport: std::cell::Cell<[i32; 4]> = std::cell::Cell::new([0, 0, 0, 0]);
-    let mut rebind_surface = |gl: &ffi::Gles2| {
-        if binding.rebind(gl).is_err() && !rebind_failed {
-            rebind_failed = true;
-            tracing::error!("surface rebind failed — frame will not present");
+    let rebind_surface = |gl: &ffi::Gles2| {
+        if target.make_current(gl, current_viewport.get()).is_err() {
+            tracing::error!("frame target rebind failed — frame will not present");
         }
-        let v = current_viewport.get();
-        unsafe { gl.Viewport(v[0], v[1], v[2], v[3]) };
     };
 
     // Initialize the per-context caches inside the current GL context
@@ -1212,14 +1139,9 @@ pub fn render_scene(
     if preserved.is_none() {
         // Probe only where the backend opts in (native DRM). On the
         // nested llvmpipe stack even read-only eglQuerySurface corrupts
-        // the next swap (BadAlloc) — winit presents full-frame.
-        let probed = if probe_allowed {
-            surface_ptr
-                .map(|ptr| probe_buffer_preserved(renderer, ptr))
-                .unwrap_or(false)
-        } else {
-            false
-        };
+        // the next swap (BadAlloc) — winit presents full-frame. The
+        // query itself lives on the opaque target.
+        let probed = target.natively_preserves_buffers(probe_allowed);
         *preserved = Some(probed);
         if probed {
             tracing::info!("G-G6: EGL buffer preservation available natively — partial presents enabled");
@@ -2056,6 +1978,38 @@ mod tests {
             assert!(
                 !body.contains(banned),
                 "render_scene must not call {banned} — the frame lifecycle is owned by LookingGlass::render (R1)"
+            );
+        }
+    }
+
+    /// G-F3: the presentation boundary is a COMPILE-TIME property, not
+    /// a convention. renderer.rs must never name a presentation type —
+    /// no EGL surface/context, no GBM surface, no DRM fd, no CRTC. The
+    /// renderer's only knowledge of the frame target is the opaque
+    /// FrameTarget token and its make_current(viewport) invariant.
+    #[test]
+    fn renderer_never_names_presentation_types() {
+        // Scan the NON-TEST source only (this test's own banned-symbol
+        // strings would otherwise match themselves).
+        let src = include_str!("renderer.rs");
+        let src = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("renderer.rs source");
+        for banned in [
+            "egl_surface",
+            "EGLSurface",
+            "egl_context",
+            "EGLContext",
+            "gbm_surface",
+            "GbmSurface",
+            "crtc",
+            "Crtc",
+            "DrmDeviceFd",
+        ] {
+            assert!(
+                !src.contains(banned),
+                "renderer.rs must not contain the presentation symbol `{banned}` — the G-F3 boundary is compile-time, not a convention"
             );
         }
     }
