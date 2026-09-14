@@ -71,7 +71,7 @@ impl Camera {
     }
 
     /// Clamp pitch and position to valid ranges.
-    fn clamp_state(&mut self) {
+    pub(crate) fn clamp_state(&mut self) {
         self.pitch = self.pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
         self.position.x = self.position.x.clamp(-MAX_DISTANCE, MAX_DISTANCE);
         self.position.y = self.position.y.clamp(-MAX_DISTANCE, MAX_DISTANCE);

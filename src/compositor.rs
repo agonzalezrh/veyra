@@ -276,6 +276,12 @@ pub struct LookingGlass {
     #[allow(dead_code)]
     pub last_dy: f64,
     pub press_pos: (f64, f64),
+    /// H0.5: armed grab-the-world pan — the world point under a LEFT
+    /// press on EMPTY spatial background. Threshold-gated in move; a
+    /// release below the threshold is an ordinary background click.
+    /// None = the press started on a window/shell (normal window
+    /// interaction) or there is no active gesture.
+    pub camera_pan_grab: Option<cgmath::Point3<f32>>,
     pub nav_button: u32,
     pub event_serial: u32,
     pub last_down_vid: Option<VisualId>,
@@ -537,6 +543,14 @@ pub(crate) fn pointer_ray(
     Some((near, dir.normalize()))
 }
 
+/// H0.5: the world point under a framebuffer cursor (ray ∩ desktop
+/// plane z=0) through the pointer's output view — the grab anchor.
+fn pointer_view_then_plane(state: &LookingGlass, x: f64, y: f64) -> Option<cgmath::Point3<f32>> {
+    let (pv, nx, ny) = state.pointer_view(x, y)?;
+    let (origin, dir) = pointer_ray(&pv, nx, ny)?;
+    ray_plane_target(&origin, &dir, 0.0)
+}
+
 /// H0.3: the dolly step for one wheel tick — approach clamped to the
 /// target distance, retreat unclamped (the camera caps itself).
 pub(crate) fn dolly_step(wheel: f32, zoom_speed: f32, dist_to_target: f32) -> f32 {
@@ -729,6 +743,7 @@ impl LookingGlass {
             last_dx: 0.0,
             last_dy: 0.0,
             press_pos: (0.0, 0.0),
+            camera_pan_grab: None,
             nav_button: 0,
             event_serial: 0,
             last_down_vid: None,
@@ -5010,6 +5025,7 @@ impl LookingGlass {
             }
         }
         self.last_down_vid = self.scene.selected_id;
+        let mut background_press = false;
         match mode {
             Some(_) => {}
             None => {
@@ -5040,10 +5056,46 @@ impl LookingGlass {
                         &cam,
                         self.spatial_mode,
                     );
+                } else {
+                    background_press = true;
                 }
             }
         }
+        // H0.5: a LEFT press on EMPTY spatial background arms the
+        // grab-the-world pan. The gesture is decided by the PRESS
+        // location — a press on a window/shell keeps window interaction.
+        // Threshold-gated at move time; release below threshold = click.
+        self.camera_pan_grab = if background_press
+            && self.spatial_mode
+            && matches!(self.focus_manager.camera_mode, CameraMode::Normal)
+            && self.focus_manager.transition.is_none()
+        {
+            pointer_view_then_plane(self, x, y)
+        } else {
+            None
+        };
         let _ = self.display_handle.flush_clients();
+    }
+
+    /// H0.5: one grab-the-world pan step — move the camera so the
+    /// grabbed world point stays under the cursor. Pure camera state:
+    /// visual transforms, workspace membership, application coordinates
+    /// are untouched.
+    fn pan_camera_grabbed(&mut self, x: f64, y: f64, grab: cgmath::Point3<f32>) {
+        let Some((pv, nx, ny)) = self.pointer_view(x, y) else {
+            return;
+        };
+        let Some((origin, dir)) = pointer_ray(&pv, nx, ny) else {
+            return;
+        };
+        let Some(now) = ray_plane_target(&origin, &dir, 0.0) else {
+            return;
+        };
+        // The grabbed point must land back under the cursor.
+        let delta = grab - now;
+        let cam = self.camera_mut();
+        cam.position += delta;
+        cam.clamp_state();
     }
 
     /// Public entry point for pointer button release.
@@ -5366,9 +5418,29 @@ impl LookingGlass {
             }
         }
 
+        // H0.5: left-drag on EMPTY spatial background = grab-the-world
+        // pan. The press location decided the gesture; the threshold
+        // separates a click from a pan. Consumes the move (no hover
+        // routing while panning).
+        if self.camera_pan_grab.is_some() {
+            if self.nav_button == 1 {
+                let grab = self.camera_pan_grab.expect("checked above");
+                if (x - self.press_pos.0).abs() > 5.0 || (y - self.press_pos.1).abs() > 5.0 {
+                    self.pan_camera_grabbed(x, y, grab);
+                    self.schedule_render();
+                }
+                return;
+            }
+            self.camera_pan_grab = None;
+        }
+
         // If left button is held and we're not already dragging,
         // start a content-area spatial drag on the selected visual.
-        if !was_dragging && !self.interaction.is_dragging() && self.nav_button == 1 {
+        if self.camera_pan_grab.is_none()
+            && !was_dragging
+            && !self.interaction.is_dragging()
+            && self.nav_button == 1
+        {
             if let Some(vid) = self.scene.selected_id {
                 if self.scene.is_active(vid) {
                     let threshold = 5.0;
@@ -7707,6 +7779,37 @@ mod wheel_zoom_tests {
             "camera advanced 100 along the ray: {} -> {}",
             before,
             cam.position.z
+        );
+    }
+
+    #[test]
+    fn grab_pan_keeps_world_point_under_cursor() {
+        // The H0.5 invariant: after the pan step, the world point
+        // grabbed at the press cursor is EXACTLY under the dragged
+        // cursor — the world feels attached to the mouse.
+        let proj = LookingGlass::projection_for(false, 1280.0, 720.0);
+        let world_under = |cam: &crate::input::Camera, fb: (f64, f64)| {
+            let pv = proj * cam.view_matrix();
+            let nx = (fb.0 as f32 / 1280.0) * 2.0 - 1.0;
+            let ny = -((fb.1 as f32 / 720.0) * 2.0 - 1.0);
+            let (o, d) = pointer_ray(&pv, nx, ny).expect("ray");
+            ray_plane_target(&o, &d, 0.0).expect("plane hit")
+        };
+        let mut cam = crate::input::Camera::new();
+        cam.position = cgmath::Point3::new(0.0, 0.0, 500.0);
+        // Press at fb (960, 360): grabs world (320, 0, 0).
+        let grab = world_under(&cam, (960.0, 360.0));
+        assert!((grab.x - 320.0).abs() < 1.0, "grab x: {}", grab.x);
+        // Drag the cursor to the screen center (640, 360); the pan step
+        // moves the camera so the grabbed point follows.
+        let now = world_under(&cam, (640.0, 360.0));
+        cam.position += grab - now;
+        let under = world_under(&cam, (640.0, 360.0));
+        assert!(
+            (under.x - grab.x).abs() < 1.0 && (under.y - grab.y).abs() < 1.0,
+            "grabbed point must stay under the cursor: {:?} vs {:?}",
+            under,
+            grab
         );
     }
 
