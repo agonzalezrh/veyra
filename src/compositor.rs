@@ -1461,6 +1461,10 @@ impl LookingGlass {
                             let x11_vid = visual.id;
                             self.register_foreign_toplevel(x11_vid, &x11_title, &x11_app_id);
                             visual.transform.position = pos;
+                            let fit_pos = pos;
+                            let fit_w = visual.total_width();
+                            let fit_h = visual.total_height();
+                            self.fit_camera_to_placed(fit_pos, fit_w, fit_h);
                             let visual_id = visual.id;
                             let x11_map_pos = visual.transform.position;
                             info!(
@@ -1735,6 +1739,10 @@ impl LookingGlass {
                                     visual.transform.position = pos;
                                     visual.transform.rotation =
                                         cgmath::Quaternion::from_angle_y(Deg(angle_y));
+                                    let fit_pos = pos;
+                                    let fit_w = visual.total_width();
+                                    let fit_h = visual.total_height();
+                                    self.fit_camera_to_placed(fit_pos, fit_w, fit_h);
                                 }
                                 let visual_id = visual.id;
                                 let map_pos = visual.transform.position;
@@ -2021,6 +2029,12 @@ impl LookingGlass {
             self.visible_bounds(),
             &ws_eligible,
         );
+        {
+            let fit_pos = visual.transform.position;
+            let fit_w = visual.total_width();
+            let fit_h = visual.total_height();
+            self.fit_camera_to_placed(fit_pos, fit_w, fit_h);
+        }
         let vid = visual.id;
 
         // Try to create an InputSink from the producer before moving it
@@ -5584,6 +5598,47 @@ impl LookingGlass {
     /// (selection, manipulation, camera gestures) consumes THIS result;
     /// nothing else independently decides what is under the pointer.
     /// Returns any visual (wayland, producer, test) under the pointer.
+    /// H1 (user report): a freshly placed window must be fully visible.
+    /// If the placement (spiral overflow → row-append) put it outside
+    /// the z=0 frustum, dolly the camera out until it fits. Camera-only
+    /// operation: visual transforms are never touched (the arrangement
+    /// produced them; the workspace owns them).
+    fn fit_camera_to_placed(&mut self, pos: cgmath::Vector3<f32>, total_w: f32, total_h: f32) {
+        if !self.spatial_mode
+            || !matches!(
+                self.focus_manager.camera_mode,
+                CameraMode::Normal | CameraMode::Focus(_)
+            )
+            || self.focus_manager.transition.is_some()
+        {
+            return;
+        }
+        let cam = self.camera();
+        let (fb_w, fb_h) = self.fb_size();
+        let aspect = if fb_h > 0.0 { fb_w / fb_h } else { 1.0 };
+        let half_tan = (45.0f32.to_radians() / 2.0).tan();
+        let dist = {
+            let p = cam.position;
+            (p.x * p.x + p.y * p.y + p.z * p.z).sqrt()
+        };
+        // Distance at which the window's farthest corner (from the view
+        // axis through the camera) enters the frustum, with edge margin.
+        let ext_x = (pos.x - cam.position.x).abs() + total_w * 0.5 + 48.0;
+        let ext_y = (pos.y - cam.position.y).abs() + total_h * 0.5 + 48.0;
+        let need = ((ext_y / half_tan).max(ext_x / (half_tan * aspect))).clamp(600.0, 8000.0);
+        if need > dist + 1.0 {
+            // Preserve the view direction: scale the offset from the
+            // workspace origin along the same ray.
+            let k = need / dist.max(1.0);
+            let cam = self.camera_mut();
+            cam.position.x *= k;
+            cam.position.y *= k;
+            cam.position.z *= k;
+            cam.clamp_state();
+            info!(need, "camera auto-fit after placement");
+        }
+    }
+
     fn pick_visual_at(&self, x: f64, y: f64) -> Option<VisualId> {
         let (pv, nx, ny) = self.pointer_view(x, y)?;
         let ids: Vec<VisualId> = self

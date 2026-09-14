@@ -1060,7 +1060,7 @@ mod tests {
         // row tiling) must produce frame plans whose viewports tile
         // the global desktop exactly like the nested simulation does.
         use crate::drm_topology::{
-            global_positions, AssignedOutput, ConnectorState, DrmTopology, TopologyConnector,
+            global_positions, ConnectorState, DrmTopology, TopologyConnector,
             TopologyCrtc, TopologyMode,
         };
         let mut t = DrmTopology::new();

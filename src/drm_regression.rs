@@ -29,7 +29,7 @@ mod drm_regression_suite {
         global_positions, AssignedOutput, ConnectorState, DrmTopology, TopologyConnector,
         TopologyCrtc, TopologyMode, UnassignedReason,
     };
-    use crate::outputs::{OutputBindings, OutputId, OutputLifecycle, OutputManager, OutputState};
+    use crate::outputs::{OutputBindings, OutputId, OutputManager, OutputState};
     use crate::input::Camera;
     use smithay::reexports::drm::control as drm_control;
 
@@ -149,7 +149,7 @@ mod drm_regression_suite {
     fn l3_frame_state_is_independent_per_output() {
         // Two synthetic outputs; A's transitions must not leak into B.
         let mut a = OutputFrameState::Idle;
-        let mut b = OutputFrameState::Idle;
+        let b = OutputFrameState::Idle;
         a = a.begin().expect("A begins");
         assert_eq!(b, OutputFrameState::Idle, "B unaffected by A's begin");
         a = a.submit().expect("A submits");
@@ -157,9 +157,9 @@ mod drm_regression_suite {
         assert_eq!(b, OutputFrameState::Idle);
         assert_eq!(a, OutputFrameState::FlipPending);
         // B can run its OWN full cycle while A is pending.
-        b = b.begin().expect("B begins during A's flip");
-        b = b.submit().expect("B submits");
-        b = b.arm_flip().expect("B arms");
+        let b = b.begin().expect("B begins during A's flip");
+        let b = b.submit().expect("B submits");
+        let _b = b.arm_flip().expect("B arms");
         assert_eq!(a, OutputFrameState::FlipPending, "A untouched by B");
     }
 
@@ -191,7 +191,7 @@ mod drm_regression_suite {
         // With REVERSED vec order: the event's CRTC still resolves to
         // the right output, and completing A leaves B pending.
         let mut a_state = OutputFrameState::FlipPending;
-        let mut b_state = OutputFrameState::FlipPending;
+        let b_state = OutputFrameState::FlipPending;
         let a_crtc = crtc_handle(37);
         // Event for A arrives; attribution by handle (A is at index 1
         // in the reversed vec — irrelevant).

@@ -970,6 +970,37 @@ path.
   E5 multi-output architecture COMPLETE; remaining: G-F1/F4/F5
   (hardware-gated).
 
+- **G-H0.6** user-report batch (live E2E + VLM verification):
+  1. **Window rotation 0.3→1.2 °/px** (interaction.rs RotateX/Y/Z) —
+     "rotate a window is almost impossible, is too slow".
+  2. **Camera orbit factor 5.0→0.9** (0.26 °/px; was 1.43 °/px — a
+     ~100 px right-drag swung the scene ~150°). Root of the
+     "moving one window moves all windows" perception: a near-miss
+     right/left drag on the background spun or panned the world.
+  3. **Camera auto-fit after placement** (fit_camera_to_placed, called
+     from all three map sites): a placed window that does not fit the
+     z=0 frustum dollies the camera out (camera-only op; transforms
+     untouched — arrangement still owns placement). Root of "second
+     window positioned where the first is": a second 900×600 window
+     appended at world x=948 against a ±360 visible half-width
+     (88 % off-screen, no camera response).
+  4. Verified live (Xvfb + xdotool + VLM image checks): two 900×600
+     windows fully visible side-by-side after auto-fit (camera z
+     869→1963); client-kit drag isolation (+250 px, WB static);
+     Firefox X11 drag isolation (−184 px); xterm click-focus + typing
+     end-to-end ("echo works" executed); Firefox URL bar typing with
+     live autocomplete dropdown; rotation visibly responsive.
+  - HARNESS LESSON: for the nested session, xdotool/import target
+    :99 (the desktop); DISPLAY=:0 is ONLY for launching X11 clients
+    into veyra's XWayland; XTEST keys additionally require
+    `xdotool windowfocus <veyra-winit-win>` or they are dropped by
+    the X server (zero KEY logs = focus was missing).
+  - Snap firefox cannot connect to XWayland :0 from its sandbox
+    (environmental; unsets WAYLAND_DISPLAY and it maps via X11).
+  - Suites: input 108/2 (tcfoot foot-PTY SIGHUP flake family), protocol
+    111/0/0, 586 unit tests, clippy 0 (drm_regression/outputs unused
+    imports + dead stores cleaned).
+
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
 rendered as chrome-only ghosts scattered around the desktop. Two root
 causes, both in the #11 subsurface path:

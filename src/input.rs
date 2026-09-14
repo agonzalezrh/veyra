@@ -99,9 +99,12 @@ impl Camera {
     /// maintaining the same distance. This gives natural 3D orbit.
     pub fn handle_orbit(&mut self, dx: f64, dy: f64) {
         let focus = self.position + self.look_dir() * distance_to_focus(self);
-        self.yaw += dx as f32 * self.sensitivity * 5.0;
+        // 0.26 deg/px: a full-width drag swings ~30 deg. The old *5.0
+        // factor (1.4 deg/px) flipped the scene halfway around on a
+        // short drag — unusable (user report: rotation "impossible").
+        self.yaw += dx as f32 * self.sensitivity * 0.9;
         self.pitch =
-            (self.pitch - dy as f32 * self.sensitivity * 5.0).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+            (self.pitch - dy as f32 * self.sensitivity * 0.9).clamp(-PITCH_LIMIT, PITCH_LIMIT);
         // Reposition camera to maintain focus distance
         let dist = distance_to_focus(self);
         self.position = focus - self.look_dir() * dist;
