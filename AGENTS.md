@@ -932,6 +932,30 @@ restart — and single-output tests pass unchanged.
   camera orbit. Live-verified: two windows tilt OPPOSITE ways,
   desktop/taskbar unrotated, no menu.
 
+**FROZEN INTERACTION CONTRACTS (G-H0.5, do not regress):**
+
+```text
+Empty spatial scene:              Window:
+  LMB drag  -> camera/world pan     LMB click -> select/focus
+  RMB drag  -> camera orbit         LMB drag  -> window manipulation
+  Wheel     -> pointer-directed     RMB drag  -> rotate THAT window
+               dolly                Wheel     -> application scroll
+Meta + wheel -> camera dolly regardless of target
+Right release < 5px on window -> context menu (click semantics)
+5 px threshold separates clicks from drags everywhere.
+The gesture is decided by the PRESS location.
+```
+
+INVARIANTS (both directions, structurally enforced):
+- camera manipulation NEVER changes window transforms, workspace
+  membership, or application coordinates;
+- window manipulation NEVER changes camera state.
+Picking authority: pick_visual_at() (pointer_view ->
+scene.pick_visible) is the ONLY definition of "what is under the
+pointer"; nothing else may pick. XWayland pointer verified: X11
+windows receive click, right-click menu, and wheel through the same
+path.
+
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
 rendered as chrome-only ghosts scattered around the desktop. Two root
 causes, both in the #11 subsurface path:
