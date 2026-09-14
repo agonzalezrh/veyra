@@ -861,16 +861,35 @@ Milestones landed:
   ATTRIBUTED BY CRTC — flip(A) retires only A, unknown-CRTC events
   dropped; 11 lifecycle tests. VKMS re-validated through the new path.
 
-Remaining: G-E5.6.5 (KMS geometry ↔ OutputViewport via the E5.5
-oracle), G-E5.6.6 (hotplug lifecycle — model hooks shipped: unassigned
-reasons + force_idle), G-E5.6.7 (DRM regression suite), G-E5.7
-integration matrix. Validation beyond VKMS's single connector remains
-hardware-gated (G-F1). Exit criteria:
+- **G-E5.6.5** OutputId→backend-index binding + native mode adoption:
+  OutputBindings (the explicit map — survives reordering/non-
+  contiguous ids, backend_removed detaches+compacts); backend exposes
+  its TopologyAssignment; adopt_native_outputs registers REAL KMS
+  modes/positions via global_positions (the E5.5 oracle). Pure test:
+  2-connector assignment → OutputStates → plans tile exactly as the
+  nested simulation.
+- **G-E5.6.6** hotplug lifecycle: OutputLifecycle
+  (Disconnected/Discovered/Active/Draining/Removed, ordered
+  transitions; Draining still presented until quiesced);
+  OutputManager::unplug_output → HotplugEffect { was_primary,
+  promoted } with scene/workspaces structurally unreachable (THE
+  invariant: a physical output disappearing never destroys windows);
+  replug = NEW identity; DrmGraphicsBackend::unplug_output =
+  force_idle THEN remove (presentation-only, wired for runtime
+  events). 9 hotplug tests.
+- **G-E5.6.7** consolidated regression suite (drm_regression.rs):
+  15 tests ordered BY ARCHITECTURE (L1 topology → L2 bindings → L3
+  frame state → L4 CRTC attribution → L5 hotplug → full chain with
+  scrambled ids). 582 unit tests.
+
+Remaining: G-F3 (safe EGL/presentation API), then the hardware matrix
+(G-F1/F4/F5) — E5.6 is COMPLETE at every layer that can be validated
+without multi-connector hardware (VKMS: one connector, no hotplug). Exit criteria:
 two outputs w/ different resolutions+scales, cross-output picking,
 straddling windows, per-output fullscreen/shell/IME, hotplug without
 restart — and single-output tests pass unchanged.
 
-**Status: 🟡 G-E5 multi-output: registry+cameras+input (E5.2–E5.4) and simulated presentation (E5.5) DONE; remaining E5.6/E5.7 hardware-gated (528 unit tests; protocol 111/0/0; input 110/0/0)**
+**Status: 🟡 G-E5 multi-output COMPLETE (E5.1–E5.7: registry, cameras, input, simulated presentation, DRM topology/lifecycle/ownership/regression-suite); integration beyond VKMS hardware-gated (582 unit tests; protocol 111/0/0; input 108/2)**
 
 ### G-H0 — Spatial interaction ergonomics (in progress)
 - **G-H0.1** decorationless default: DecorationConfig::default()
