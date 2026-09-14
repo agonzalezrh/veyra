@@ -919,6 +919,18 @@ restart — and single-output tests pass unchanged.
   Mouse vocabulary now complete: LEFT=move, RIGHT=look, WHEEL=approach.
   Live-verified (grab resolution through the spatial camera; invariant
   unit-tested end to end).
+- **G-H0.5.3 (post-review fix)** ONE authoritative pointer pick: the
+  dual pick path (InteractionController's full-fb NDC picking fed
+  output-local coords — correct only for the identity output, broken
+  with N outputs; route_to_content double-converted) is closed.
+  pick_visual_at() (pointer_view → scene.pick_visible) is the single
+  authority for selection/manipulation/gestures/menus; the
+  InteractionController receives the RESOLVED target
+  (handle_pointer_down_picked/begin_manipulation). New right-button
+  grammar: right-drag on a WINDOW rotates THAT window (threshold-
+  gated; release below threshold = context menu); on background =
+  camera orbit. Live-verified: two windows tilt OPPOSITE ways,
+  desktop/taskbar unrotated, no menu.
 
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
 rendered as chrome-only ghosts scattered around the desktop. Two root
