@@ -821,7 +821,10 @@ impl DrmGraphicsBackend {
     /// removed output's flip event never arrives), THEN the
     /// presentation state is dropped. Logical output state (registry,
     /// scene, workspaces, other outputs' cameras) is untouched here.
-    /// Returns false when the index is out of range.
+    /// Returns false when the index is out of range. Wired to runtime
+    /// hotplug events with the G-E5.6.6 event source (hardware-gated
+    /// validation — VKMS exposes no hotplug).
+    #[allow(dead_code)]
     pub fn unplug_output(&mut self, idx: usize) -> bool {
         if idx >= self.outputs.len() {
             return false;
