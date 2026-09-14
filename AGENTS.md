@@ -956,6 +956,20 @@ pointer"; nothing else may pick. XWayland pointer verified: X11
 windows receive click, right-click menu, and wheel through the same
 path.
 
+- **G-F3** opaque FrameTarget — safe presentation API: the
+  renderer/presentation boundary is a COMPILE-TIME property. FrameTarget
+  (EglWindow { ctx, surface } | BoundFbo) owns ALL binding detail;
+  make_current(gl, viewport) enforces the rebind invariant (fresh
+  binds reset viewport/scissor — re-assert the ACTIVE viewport);
+  natively_preserves_buffers(probe_gate) carries the G-G6 query;
+  PresentationBackend::frame_target() replaces egl_surface().
+  renderer.rs can no longer name a presentation type — enforced by
+  renderer_never_names_presentation_types (structural test scanning
+  for egl_surface/EGLSurface/egl_context/EGLContext/gbm/crtc tokens).
+  Verified through both paths (simulated multi-output + VKMS probe).
+  E5 multi-output architecture COMPLETE; remaining: G-F1/F4/F5
+  (hardware-gated).
+
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
 rendered as chrome-only ghosts scattered around the desktop. Two root
 causes, both in the #11 subsurface path:
