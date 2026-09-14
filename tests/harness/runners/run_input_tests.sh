@@ -15,8 +15,9 @@ preflight || { say "pre-flight failed — fix the issues above and rerun"; exit 
 # The harness pins normal (2D) mode via veyra's --normal flag (spatial
 # mode must be off for the ortho projection to map world→screen 1:1
 # across the ACTUAL winit window size, which differs per machine —
-# queried below). Default probe window is 640x480 + 6% title bar →
-# decorated 640x509 world units; resize band is 8 px.
+# queried below). Default probe window is 640x480 CONTENT = 640x480
+# decorated (G-H0.1: no compositor title bar by default); resize band
+# is 8 px.
 say "starting stack: Xvfb → veyra"
 start_xvfb || { bad "Xvfb started"; exit 1; }
 ok "Xvfb started"
@@ -76,7 +77,7 @@ say "veyra window position: ${WIN_PX},${WIN_PY}"
 # First visual opens CENTERED on the workspace (layout.rs i==0 → origin),
 # which with the 1:1 ortho mapping is the center of the framebuffer.
 CX=$((WIN_W/2)); CY=$((WIN_H/2))
-XL=$((CX-320)); XR=$((CX+320)); YT=$((CY-255)); YB=$((CY+255))
+XL=$((CX-320)); XR=$((CX+320)); YT=$((CY-240)); YB=$((CY+240))
 
 # ── t5: q/w/1/2 regression — compositor must not steal plain keys ────
 say "t5_keyboard_plain_keys_reach_client"
@@ -1141,7 +1142,7 @@ else
     if [ -n "$FOOT_POS" ] && [ "$LOGO_STUCK2" -eq 0 ]; then
         FX=${FOOT_POS% *}; FY=${FOOT_POS#* }
         DISPLAY=:99 xdotool keyup super alt ctrl shift 2>/dev/null
-        DISPLAY=:99 xdotool mousemove $((FX-165)) $((FY-207)) click --repeat 2 --delay 60 1
+        DISPLAY=:99 xdotool mousemove $((FX-165)) $((FY-178)) click --repeat 2 --delay 60 1  # G-H0.1: no veyra title bar — content 29 px higher
         sleep 0.6
         capture "$TMP_DIR/tcfoot_select.png"
         visual_check "$TMP_DIR/tcfoot_select.png" \
@@ -1210,9 +1211,13 @@ if command -v xterm >/dev/null 2>&1 && strip_ansi "$TMP_DIR/veyra.log" | grep -a
         > "$TMP_DIR/t27i_set.json" 2>"$TMP_DIR/t27i_set.err" &
     T27I_SET_PID=$!
     sleep 1.5
-    # xterm connects to veyra's own XWayland (display from the log);
-    # xdotool injection stays on :99 (veyra's nested X window).
-    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" DISPLAY=:0 xterm -geometry 80x24 > "$TMP_DIR/t27i_xterm.log" 2>&1 &
+    # xterm connects to veyra's own XWayland — the display number is
+    # DYNAMIC (smithay picks the first free :N; stale X servers on :0
+    # make it :1). Parse it from the xwm log line.
+    XDISP=$(strip_ansi "$TMP_DIR/veyra.log" | grep -aoE "X11 window manager display=[0-9]+" | tail -1 | grep -oE "[0-9]+$")
+    XDISP=${XDISP:-0}
+    say "t27i: XWayland on :$XDISP"
+    XDG_RUNTIME_DIR="$VEYRA_RUNTIME" DISPLAY=":$XDISP" xterm -geometry 80x24 > "$TMP_DIR/t27i_xterm.log" 2>&1 &
     T27I_XTERM_PID=$!
     if ! wait_for_log_after "$TMP_DIR/veyra.log" "x11 surface mapped" 0 10; then
         bad "t27i: xterm did not map as an X11 visual"

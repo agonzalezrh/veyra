@@ -1554,7 +1554,9 @@ pub fn render_scene(
                 // popups) are raw client content and must not grow veyra
                 // chrome (a chrome strip carved from a 5px CSD border reads
                 // as ghost buttons floating on the desktop).
-                if visual.parent.is_none() {
+                if visual.parent.is_none() && visual.decoration.title_bar_height > 0.0 {
+                    // G-H0.1: chrome draws only when an SSD strip was
+                    // explicitly requested (default policy: none).
                     let strip_px = title_h * gh;
                     let char_h = strip_px * 0.62;
                     let layout = crate::chrome::ButtonLayout::for_window(gw, gh, title_h);

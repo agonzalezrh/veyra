@@ -19,7 +19,7 @@ veyra:
 steps:
   - launch:
       kit: probe
-      args: ["--duration", "20000"]
+      args: ["--duration", "60000"]
       app_id: probe-a
       json: probe_a.json
 

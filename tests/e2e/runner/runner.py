@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import yaml
 
 import report as report_mod
+import stack as stack_mod
 import steps as steps_mod
 import vlm as vlm_mod
 from steps import ScenarioRun
@@ -117,6 +118,8 @@ def select_scenarios(files, args):
     return scenarios
 
 
+
+
 def run_suite(args):
     if not os.path.exists(RUNS_DIR):
         os.makedirs(RUNS_DIR)
@@ -140,6 +143,14 @@ def run_suite(args):
     if not scenarios:
         print("[e2e] no scenarios selected")
         return 0
+    others = stack_mod.external_stack_activity()
+    if others and not args.allow_shared_display:
+        print("[e2e] REFUSING to run: another harness stack owns display :99 —")
+        for o in others:
+            print("       %s" % o.strip()[:120])
+        print("       (their cleanup pkills 'veyra'/'Xvfb' and would corrupt this run;")
+        print("       use --allow-shared-display to override)")
+        return 2
     if not preflight(bin_dir, run_dir):
         return 2
 
@@ -254,6 +265,7 @@ def main():
     ap_run.add_argument("--keep-all-shots", action="store_true", default=True)
     ap_run.add_argument("--bin", type=str, default="")
     ap_run.add_argument("--no-vlm", action="store_true")
+    ap_run.add_argument("--allow-shared-display", action="store_true")
     ap_run.add_argument("--seed", type=int, default=None)
 
     ap_rep = sub.add_parser("report")

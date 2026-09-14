@@ -649,7 +649,8 @@ mod tests {
         for (w, h) in apps {
             let pos = place_new_visual(w as f32, h as f32, &scene, bounds, &all_eligible(&scene));
             let wt = w as f32;
-            let ht = h as f32 * 1.06;
+            // G-H0.1: no SSD strip by default — decorated height == content.
+            let ht = h as f32 * (1.0 + crate::scene::DecorationConfig::default().title_bar_height);
             for (px, py, pw, ph) in &placed {
                 let dx = (pos.x - px).abs();
                 let dy = (pos.y - py).abs();

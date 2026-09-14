@@ -18,7 +18,7 @@ veyra:
 steps:
   - launch:
       kit: keyboard
-      args: ["--expect", "q1w2", "--duration", "8000"]
+      args: ["--duration", "30000"]
       app_id: kb-probe
       json: kb.json
 
@@ -28,6 +28,7 @@ steps:
       within_s: 10
       anchor: kb_mapped
 
+  - focus_x11: {}
   - release_mods: {}
   - click: {x: "{{ CX }}", y: "{{ CY }}"}
   - assert:
@@ -35,14 +36,25 @@ steps:
 
   - type: {text: "q1w2", clear_mods: false}
 
+  # client stays alive (--duration, no --expect) so the visual frame shows it
   - assert:
       client_json: {file: kb.json, expr: "any(e['ev']=='kb_enter' for e in events)"}
-  - assert:
-      client_json: {file: kb.json, expr: "any(e['ev']=='expect_matched' for e in events)"}
   - assert:
       client_json:
         file: kb.json
         expr: "any(e['ev']=='key' and e.get('char')=='q' and e.get('pressed') for e in events)"
+  - assert:
+      client_json:
+        file: kb.json
+        expr: "any(e['ev']=='key' and e.get('char')=='1' and e.get('pressed') for e in events)"
+  - assert:
+      client_json:
+        file: kb.json
+        expr: "any(e['ev']=='key' and e.get('char')=='w' and e.get('pressed') for e in events)"
+  - assert:
+      client_json:
+        file: kb.json
+        expr: "any(e['ev']=='key' and e.get('char')=='2' and e.get('pressed') for e in events)"
 
   - capture:
       name: after-typing

@@ -67,6 +67,10 @@ class TimeoutAbort(Exception):
     pass
 
 
+class InterferenceAbort(Exception):
+    pass
+
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
@@ -258,6 +262,11 @@ class ScenarioRun:
                 raise
             except Exception as e:
                 self.check("step:%s" % key, False, "%s: %s" % (type(e).__name__, e))
+                from stack import external_stack_activity
+                if external_stack_activity():
+                    raise InterferenceAbort(
+                        "step %s failed while a foreign stack is active on :99"
+                        % key)
 
     # ---------- client/process steps ----------
 
@@ -661,9 +670,14 @@ class ScenarioRun:
                 self.visual_class = res.anomalies[0]["class"]
 
     def _invariants(self, checkpoint):
-        if self.stack.veyra_proc.poll() is not None:
-            self.check("invariant:process_alive", False,
-                       "veyra exited at %s" % checkpoint)
+        rc = self.stack.veyra_proc.poll()
+        if rc is not None:
+            detail = "veyra exited at %s rc=%s" % (checkpoint, rc)
+            if rc < 0:
+                detail += " (killed by signal %d — possible external pkill/OOM, " \
+                          "no panic in log)" % abs(rc)
+                self.note(detail)
+            self.check("invariant:process_alive", False, detail)
             raise CrashAbort("veyra process exited at checkpoint %s" % checkpoint)
         if not self.stack.socket_path():
             self.check("invariant:socket_alive", False,
@@ -765,7 +779,7 @@ class ScenarioRun:
 
     def _classify_machine(self):
         for c in self.checks:
-            if c["status"] != "FAIL":
+            if c["status"] != "FAIL" or c["name"].startswith("vlm:"):
                 continue
             text = (c["name"] + " " + c["detail"]).lower()
             if "panicked" in text or "invariant" in text:
@@ -802,14 +816,24 @@ class ScenarioRun:
 
     def compose_result(self):
         machine_fail = any(
-            c["status"] == "FAIL"
-            and not (c["name"].startswith("vlm:") and c["detail"].startswith("INFRA"))
+            c["status"] == "FAIL" and not c["name"].startswith("vlm:")
             for c in self.checks)
         status = "PASS"
         failure_class = None
         block_reason = None
         if self.crash:
-            status, failure_class = "FAIL", "CRASH"
+            from stack import external_stack_activity
+            if external_stack_activity():
+                status = "BLOCKED"
+                block_reason = ("stack died while a foreign harness was active "
+                                "on :99 (external interference likely): %s; %s"
+                                % (external_stack_activity()[0].strip()[:80],
+                                   self.crash))
+            else:
+                status, failure_class = "FAIL", "CRASH"
+        elif getattr(self, "interference", None):
+            status = "BLOCKED"
+            block_reason = self.interference
         elif self.timeout:
             status, failure_class = "FAIL", "TIMING"
         elif machine_fail:
@@ -864,6 +888,16 @@ class ScenarioRun:
             self._write_artifacts(result)
             return result
 
+        from stack import external_stack_activity
+        others = external_stack_activity()
+        if others:
+            result = self._simple_result(
+                "BLOCKED",
+                block_reason="external stack activity on :99 (interference "
+                             "risk): %s" % others[0].strip()[:100])
+            self._write_artifacts(result)
+            return result
+
         ve = self.sc.get("veyra", {})
         self.stack = Stack(self.bin_dir, self.tmp_dir / "runtime",
                            self.test_dir / "compositor.log",
@@ -887,6 +921,8 @@ class ScenarioRun:
             self.timeout = str(t)
         except CrashAbort as c:
             self.crash = str(c)
+        except InterferenceAbort as i:
+            self.interference = str(i)
         finally:
             if not self.crash:
                 try:

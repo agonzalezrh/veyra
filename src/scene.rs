@@ -39,8 +39,14 @@ pub struct DecorationConfig {
 
 impl Default for DecorationConfig {
     fn default() -> Self {
+        // G-H0.1 policy: Veyra adds NO persistent compositor decoration
+        // by default. Application content owns the full window area;
+        // window operations live in the taskbar, context menu, and
+        // keyboard (parity is UX-P2). CSD clients keep their own
+        // decoration pixels (client-owned, not Veyra's). The field
+        // remains for opt-in SSD and for layout math.
         DecorationConfig {
-            title_bar_height: 0.06,
+            title_bar_height: 0.0,
             title: String::new(),
         }
     }

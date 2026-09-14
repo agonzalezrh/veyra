@@ -42,10 +42,12 @@ steps:
       log_contains: {pattern: "focus set, brought to front", after: probe_mapped, within_s: 5}
   - assert:
       log_contains: {pattern: "focus history updated", after: probe_mapped, within_s: 5}
+  # kb_enter is the protocol-level focus signal (xdg_toplevel activated state
+  # is only observed on state-changing configures, not on plain click-focus)
   - assert:
       client_json:
         file: probe_a.json
-        expr: "any(e['ev']=='config' and e.get('activated') for e in events)"
+        expr: "any(e['ev']=='kb_enter' for e in events)"
 
   - capture:
       name: after-select

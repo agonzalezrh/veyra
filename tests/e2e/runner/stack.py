@@ -87,6 +87,14 @@ class Stack:
             return False, "veyra never reported a Wayland socket (see %s)" % self.log_path
         self.win_w, self.win_h = self.render_size()
         self.wid0 = self._find_wid0()
+        if self.wid0:
+            try:
+                env = dict(os.environ)
+                env["DISPLAY"] = ":99"
+                subprocess.run(["xdotool", "windowfocus", self.wid0],
+                               env=env, capture_output=True, timeout=10)
+            except Exception:
+                pass
         return True, ""
 
     def socket_path(self):
@@ -184,3 +192,17 @@ class Stack:
                         proc.kill()
                     except OSError:
                         pass
+
+
+def external_stack_activity():
+    """Detects another harness/Xvfb stack on :99 (their cleanup pkills veyra)."""
+    try:
+        r = subprocess.run(["ps", "axo", "args"], capture_output=True, timeout=10)
+        args = r.stdout.decode()
+        return [l for l in args.splitlines()
+                if ("Xvfb :99" in l and "python3" not in l)
+                or "run_input_tests.sh" in l
+                or "run_protocol_tests.sh" in l
+                or "run_torture.sh" in l]
+    except Exception:
+        return []
