@@ -815,6 +815,21 @@ impl DrmGraphicsBackend {
             o.frame_state = o.frame_state.force_idle();
         }
     }
+
+    /// G-E5.6.6: hotplug unplug on the presentation side. ORDERING
+    /// MATTERS: the frame lifecycle quiesces FIRST (force_idle — a
+    /// removed output's flip event never arrives), THEN the
+    /// presentation state is dropped. Logical output state (registry,
+    /// scene, workspaces, other outputs' cameras) is untouched here.
+    /// Returns false when the index is out of range.
+    pub fn unplug_output(&mut self, idx: usize) -> bool {
+        if idx >= self.outputs.len() {
+            return false;
+        }
+        self.force_output_idle(idx);
+        self.outputs.remove(idx);
+        true
+    }
 }
 
 impl PresentationBackend for DrmGraphicsBackend {

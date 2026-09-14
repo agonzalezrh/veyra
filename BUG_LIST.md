@@ -116,3 +116,31 @@ With the focus pinned and the click on the typed word, the FULL bridge
 verifies: xterm selection → XWM incoming transfer → Wayland client
 receives the payload (t27i part B green). xterm→xterm roundtrip also
 verified ("hello-worldhello-world").
+
+## #20 (FIXED, regression guard) — winit wheel values were always 0.0; smithay sign convention
+
+Discovered by the live wheel-dolly session (G-H0.2–H0.4, 2026-09-14).
+
+Two independent bugs in the axis path, both invisible to unit tests
+because they live at the event-conversion boundary:
+
+1. **LineDelta wheels carry their value in `amount_v120`, not
+   `amount`.** smithay's winit backend converts XTEST wheel buttons
+   4/5 and physical wheel notches into
+   `MouseScrollDelta::LineDelta`, for which
+   `PointerAxisEvent::amount()` returns `None` — every dispatch site
+   reading `amount(...).unwrap_or(0.0)` saw ZERO for every wheel
+   event. Compositor camera zoom AND client scroll were both dead.
+   Fix: `amount(..).or_else(|| amount_v120(..))` at BOTH dispatch
+   sites (main.rs winit path, native_backend.rs libinput path).
+
+2. **smithay negates LineDelta.** Wheel-up arrives as `-120`
+   (`amount_v120 = -y * 120`). The dolly path must normalize the sign
+   exactly once — wheel-up approaches the cursor target.
+
+PERMANENT RULE for any future input-path work:
+- winit/LineDelta wheel values REQUIRE the amount_v120 fallback;
+- the compositor normalizes wheel direction EXACTLY ONCE (at the
+  camera path; client forwarding passes the raw v120 value through);
+- regression coverage lives in `wheel_zoom_tests` (compositor.rs) via
+  the pure `dolly_step` semantics plus the live wheel demos.

@@ -177,6 +177,35 @@ impl OutputManager {
         Some(removed)
     }
 
+    /// G-E5.6.6: hotplug unplug — the logical output LEAVES the
+    /// desktop plane (registry, row tiling, camera access) while
+    /// everything that is not presentation state survives untouched:
+    /// scene, workspaces, windows, other outputs' cameras. The caller
+    /// applies the returned effect to the bindings (detach + compact)
+    /// and drives the backend's Draining → Removed presentation
+    /// teardown separately.
+    pub fn unplug_output(&mut self, id: OutputId) -> Option<HotplugEffect> {
+        let was_primary = self.primary == Some(id);
+        self.remove(id)?;
+        let promoted = if was_primary {
+            self.primary
+        } else {
+            None
+        };
+        Some(HotplugEffect {
+            unplugged: id,
+            was_primary,
+            promoted,
+        })
+    }
+
+    /// G-E5.6.6: hotplug replug — a NEW output (ids are never
+    /// recycled). The caller presents it at the end of the row.
+    pub fn replug_output(&mut self, mut state: OutputState) -> OutputId {
+        state.camera = Camera::new();
+        self.add(state)
+    }
+
     /// Re-tile the row after add/remove/resize.
     fn retile(&mut self) {
         let mut x = 0;
@@ -499,12 +528,97 @@ impl OutputBindings {
         affected
     }
 
+    /// Bind an output's presentation again after a backend-side index
+    /// change (replug).
+    pub fn rebind(&mut self, id: OutputId, backend_index: usize) -> bool {
+        match self.map.get_mut(&id) {
+            Some(slot) => {
+                *slot = backend_index;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+}
+
+/// G-E5.6.6: what an unplugged output leaves behind — the effect a
+/// caller must apply (bindings detach, primary may move).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotplugEffect {
+    /// The unplugged output's identity. Ids are NEVER recycled: a
+    /// re-added connector is a NEW output (Wayland/X11 semantics).
+    pub unplugged: OutputId,
+    /// True when the unplugged output was primary.
+    pub was_primary: bool,
+    /// The promoted primary, if reassignment happened.
+    pub promoted: Option<OutputId>,
+}
+
+/// G-E5.6.6: one output's lifecycle. Logical removal (the registry
+/// forgets an output) and physical presentation teardown (GBM surfaces,
+/// pending flips, buffer caches) are SEPARATE states — a monitor
+/// disappearing must never imply the destruction of the windows that
+/// were visible on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputLifecycle {
+    /// Connector gone (or never seen). Not presented.
+    Disconnected,
+    /// Topology assigned the connector to a CRTC; no presentation yet.
+    Discovered,
+    /// Presentation bound; frames flowing.
+    Active,
+    /// Presentation detaching: the pending flip completes or is
+    /// cancelled (force_idle) BEFORE resources are destroyed.
+    Draining,
+    /// Fully torn down. The registry entry may persist if windows
+    /// remain on the (now unbound) logical output.
+    Removed,
+}
+
+impl OutputLifecycle {
+    /// A connector appeared / was assigned.
+    pub fn discover(self) -> Result<Self, &'static str> {
+        match self {
+            OutputLifecycle::Disconnected => Ok(OutputLifecycle::Discovered),
+            _ => Err("discover requires Disconnected"),
+        }
+    }
+
+    /// Presentation bound.
+    pub fn activate(self) -> Result<Self, &'static str> {
+        match self {
+            OutputLifecycle::Discovered => Ok(OutputLifecycle::Active),
+            _ => Err("activate requires Discovered"),
+        }
+    }
+
+    /// Unplug: presentation starts detaching. Resources are NOT freed
+    /// yet — the pending flip (if any) must resolve first.
+    pub fn begin_drain(self) -> Result<Self, &'static str> {
+        match self {
+            OutputLifecycle::Active => Ok(OutputLifecycle::Draining),
+            _ => Err("drain requires Active"),
+        }
+    }
+
+    /// Teardown completes. Only legal once the frame state is quiesced.
+    pub fn finish_drain(self) -> Result<Self, &'static str> {
+        match self {
+            OutputLifecycle::Draining => Ok(OutputLifecycle::Removed),
+            _ => Err("finish_drain requires Draining"),
+        }
+    }
+
+    pub fn is_presented(self) -> bool {
+        matches!(self, OutputLifecycle::Active | OutputLifecycle::Draining)
     }
 }
 
@@ -1011,5 +1125,144 @@ mod tests {
         }
         assert_eq!(bindings.index_for(plans[0].output_id), Some(0));
         assert_eq!(bindings.index_for(plans[1].output_id), Some(1));
+    }
+
+    // ---- G-E5.6.6: hotplug lifecycle — logical removal ≠ physical
+    // teardown. THE invariant: a physical output disappearing never
+    // implies the destruction of the windows visible on it.
+
+    fn two_outputs() -> (OutputManager, OutputId, OutputId) {
+        let mut m = OutputManager::new();
+        let a = m.add(out("A", 1920, 1080));
+        let b = m.add(out("B", 1280, 720));
+        (m, a, b)
+    }
+
+    #[test]
+    fn lifecycle_transitions_are_ordered() {
+        use OutputLifecycle::*;
+        assert_eq!(Disconnected.discover(), Ok(Discovered));
+        assert_eq!(Discovered.activate(), Ok(Active));
+        assert_eq!(Active.begin_drain(), Ok(Draining));
+        assert_eq!(Draining.finish_drain(), Ok(Removed));
+        // Illegal jumps.
+        assert!(Disconnected.activate().is_err());
+        assert!(Discovered.begin_drain().is_err());
+        assert!(Active.finish_drain().is_err());
+        assert!(Removed.discover().is_err());
+    }
+
+    #[test]
+    fn draining_outputs_are_still_presented_until_quiesced() {
+        use OutputLifecycle::*;
+        assert!(Active.is_presented());
+        assert!(Draining.is_presented(), "pending flip still owns buffers");
+        assert!(!Removed.is_presented());
+    }
+
+    #[test]
+    fn unplug_secondary_primary_continues() {
+        let (mut m, a, b) = two_outputs();
+        let eff = m.unplug_output(b).expect("unplug");
+        assert!(!eff.was_primary);
+        assert_eq!(eff.promoted, None);
+        assert_eq!(m.primary_id(), Some(a), "A continues rendering");
+        assert_eq!(m.outputs().len(), 1);
+    }
+
+    #[test]
+    fn unplug_primary_promotes_successor() {
+        let (mut m, _a, b) = two_outputs();
+        let eff = m.unplug_output(_a).expect("unplug primary");
+        assert!(eff.was_primary);
+        assert_eq!(eff.promoted, Some(b), "B becomes primary");
+        assert_eq!(m.primary_id(), Some(b));
+    }
+
+    #[test]
+    fn unplug_does_not_touch_scene_or_workspaces() {
+        // The single most important lifecycle invariant, at the level
+        // testable here: the registry's unplug path never receives —
+        // let alone mutates — scene/workspace state. The visual_ids
+        // live on WorkspaceState, keyed by WORKSPACE, not by output.
+        // This assertion pins the structural fact that OutputManager
+        // holds no window references to destroy.
+        let (mut m, a, _b) = two_outputs();
+        m.unplug_output(a).expect("unplug");
+        // Nothing to assert on windows BECAUSE there is no window field
+        // on OutputManager — the type system enforces the invariant.
+        assert_eq!(m.outputs().len(), 1);
+    }
+
+    #[test]
+    fn pending_flip_resolution_is_a_draining_concern() {
+        // A pending flip (E5.6.3 FlipPending) must resolve BEFORE the
+        // presentation is Removed — force_idle cancels it, then
+        // finish_drain is legal. The ordering is the lifecycle's job.
+        use crate::drm_backend::OutputFrameState;
+        use OutputLifecycle::*;
+        let frame = OutputFrameState::FlipPending;
+        // Presentation teardown starts (Draining) while the flip pends:
+        let lc = Active.begin_drain().expect("drain");
+        assert!(lc.is_presented());
+        // The frame state quiesces (force_idle — no event will arrive).
+        let frame = frame.force_idle();
+        assert_eq!(frame, OutputFrameState::Idle);
+        // NOW teardown may complete.
+        assert_eq!(lc.finish_drain(), Ok(Removed));
+    }
+
+    #[test]
+    fn replug_creates_a_new_identity() {
+        let (mut m, a, b) = two_outputs();
+        let _ = a;
+        m.unplug_output(b).expect("unplug");
+        // Reconnect B's connector: a NEW OutputId (ids never recycled —
+        // matching wl_output/X11 hotplug semantics).
+        let b2 = m.replug_output(out("B", 1280, 720));
+        assert_ne!(b2, b, "re-added output is a new identity");
+        assert_eq!(m.outputs().len(), 2);
+        assert_ne!(m.primary_id(), Some(b));
+    }
+
+    #[test]
+    fn hotplug_binding_detach_and_compact() {
+        // The full disconnect dance at the binding level: A(idx0)+B(idx1)
+        // active → B unplugged → B's binding detached, A untouched →
+        // reconnect: B2 binds at the next index.
+        let (mut m, a, b) = two_outputs();
+        let mut bindings = OutputBindings::new();
+        bindings.bind(a, 0);
+        bindings.bind(b, 1);
+        let eff = m.unplug_output(b).expect("unplug");
+        let _ = eff;
+        let affected = bindings.backend_removed(1);
+        assert_eq!(affected, vec![b]);
+        assert_eq!(bindings.index_for(a), Some(0));
+        assert_eq!(
+            bindings.index_for(b),
+            Some(usize::MAX),
+            "presentation link severed (detached marker)"
+        );
+        // Logical output B is gone from the registry; the binding map
+        // no longer references it (unplug_output removed the id, so
+        // replug gets a fresh id and a fresh binding).
+        let b2 = m.replug_output(out("B", 1280, 720));
+        bindings.bind(b2, 1);
+        assert_eq!(bindings.index_for(b2), Some(1));
+        assert_eq!(bindings.index_for(a), Some(0));
+    }
+
+    #[test]
+    fn camera_state_of_survivors_is_untouched() {
+        // Unplugging B must not disturb A's presentation view.
+        let (mut m, a, b) = two_outputs();
+        if let Some(o) = m.primary_mut() {
+            o.camera.yaw = 0.5;
+        }
+        let yaw_before = m.outputs()[0].1.camera.yaw;
+        m.unplug_output(b).expect("unplug");
+        assert_eq!(m.outputs()[0].1.camera.yaw, yaw_before, "A's camera preserved");
+        let _ = a;
     }
 }
