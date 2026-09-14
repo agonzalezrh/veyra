@@ -142,13 +142,31 @@ impl InteractionController {
     /// e.g. normal 2D mode with yaw = 0), it falls back to a screen-parallel
     /// plane (normal = camera forward) so drags still start and the window
     /// follows the cursor at constant depth.
-    fn drag_plane_normal(fwd: Vector3<f32>, ray_dir: Vector3<f32>) -> Vector3<f32> {
+    fn drag_plane_normal(
+        fwd: Vector3<f32>,
+        ray_dir: Vector3<f32>,
+        cam_pos: Vector3<f32>,
+        plane_point: Vector3<f32>,
+    ) -> Vector3<f32> {
         let mut n = Vector3::new(fwd.z, 0.0, -fwd.x);
         if n.magnitude2() < 1e-12 {
             n = fwd;
         }
         let n = n.normalize();
-        if n.dot(ray_dir).abs() < 1e-4 {
+        // The wall plane is unusable when the ray never crosses it
+        // ahead of the camera: t = num/denom ≤ 0 means the plane is
+        // behind the view (the drag "grab point" collapses and the
+        // delta is stuck at zero — observed as a window that follows
+        // neither cursor nor plane), the camera lies in the plane
+        // (t≈0 for every ray), or the ray is near-parallel. Any of
+        // those falls back to the camera-facing plane through the
+        // grab point, which the ray always crosses at camera distance.
+        let num = (plane_point - cam_pos).dot(n);
+        let denom = n.dot(ray_dir);
+        let camera_in_plane = num.abs() < 1.0;
+        let ray_parallel = denom.abs() < 1e-3;
+        let plane_behind_ray = num * denom < 0.0;
+        if camera_in_plane || ray_parallel || plane_behind_ray {
             fwd.normalize()
         } else {
             n
@@ -191,7 +209,8 @@ impl InteractionController {
         if let Some(visual) = scene.visuals.iter().find(|v| v.id == vid) {
             let pos = visual.transform.position;
             let fwd = camera.forward();
-            let plane_normal = Self::drag_plane_normal(fwd, ray_dir);
+            let plane_normal =
+                Self::drag_plane_normal(fwd, ray_dir, cgmath::Vector3::new(camera.position.x, camera.position.y, camera.position.z), pos);
 
             // Mark as detached from layout when user starts manipulating
             if !scene.detached_set.contains(&vid) {
@@ -316,7 +335,8 @@ impl InteractionController {
         if let Some(visual) = scene.visuals.iter().find(|v| v.id == vid) {
             let pos = visual.transform.position;
             let fwd = camera.forward();
-            let plane_normal = Self::drag_plane_normal(fwd, ray_dir);
+            let plane_normal =
+                Self::drag_plane_normal(fwd, ray_dir, cgmath::Vector3::new(camera.position.x, camera.position.y, camera.position.z), pos);
 
             // Mark as detached from layout when user starts manipulating
             if !scene.detached_set.contains(&vid) {
@@ -369,7 +389,8 @@ impl InteractionController {
             let pos = visual.transform.position;
             // Compute camera forward in world space using camera orientation
             let fwd = camera.forward();
-            let plane_normal = Self::drag_plane_normal(fwd, ray_dir);
+            let plane_normal =
+                Self::drag_plane_normal(fwd, ray_dir, cgmath::Vector3::new(camera.position.x, camera.position.y, camera.position.z), pos);
 
             let plane_point = pos;
             if !scene.detached_set.contains(&vid) {
@@ -534,13 +555,38 @@ mod tests {
     }
 
     #[test]
+    fn drag_plane_normal_camera_in_wall_plane_falls_back() {
+        // Regression (UX gate I2): a front-facing camera sits IN the
+        // wall plane x = plane_point.x when the window shares the
+        // camera's x. Every ray then met the plane at t=0 and the drag
+        // delta was stuck at zero. The fallback must kick in.
+        let fwd = Vector3::new(0.0, 0.0, -1.0);
+        let ray = Vector3::new(0.05, 0.0, -1.0).normalize();
+        let n = InteractionController::drag_plane_normal(
+            fwd,
+            ray,
+            Vector3::new(0.0, 0.0, 869.0),
+            Vector3::new(0.0, 0.0, 0.0),
+        );
+        assert!(
+            n.dot(ray).abs() > 0.5,
+            "plane must cross the ray at camera distance"
+        );
+    }
+
+    #[test]
     fn drag_plane_normal_front_facing_camera_falls_back_to_forward() {
         // Regression: with a front-facing camera (yaw = 0) the vertical
         // wall plane is edge-on to the view ray; the fallback keeps drags
         // working by using a screen-parallel plane.
         let fwd = Vector3::new(0.0, 0.0, -1.0);
         let ray = Vector3::new(0.0, 0.0, -1.0);
-        let n = InteractionController::drag_plane_normal(fwd, ray);
+        let n = InteractionController::drag_plane_normal(
+            fwd,
+            ray,
+            Vector3::new(0.0, 0.0, 869.0),
+            Vector3::new(0.0, 0.0, 0.0),
+        );
         assert!(
             n.dot(ray).abs() > 0.5,
             "plane must not be parallel to the view ray"
@@ -550,7 +596,12 @@ mod tests {
         let fwd2 = Vector3::new(-yaw.sin(), 0.0, -yaw.cos());
         let right2 = Vector3::new(yaw.cos(), 0.0, -yaw.sin());
         let ray2 = (fwd2 + right2 * 0.3).normalize();
-        let n2 = InteractionController::drag_plane_normal(fwd2, ray2);
+        let n2 = InteractionController::drag_plane_normal(
+            fwd2,
+            ray2,
+            Vector3::new(0.0, 0.0, 869.0),
+            Vector3::new(0.0, 0.0, 0.0),
+        );
         assert!(approx_eq(n2.y, 0.0, 1e-6), "wall plane stays vertical");
         assert!(
             n2.dot(ray2).abs() > 1e-3,
@@ -937,7 +988,12 @@ mod tests {
             let (near, far) = ctrl.world_ray(0.0, 0.0, &camera, true);
             (far - near).normalize()
         };
-        let normal = InteractionController::drag_plane_normal(fwd, center_ray);
+        let normal = InteractionController::drag_plane_normal(
+            fwd,
+            center_ray,
+            cgmath::Vector3::new(camera.position.x, camera.position.y, camera.position.z),
+            cgmath::Vector3::new(0.0, 0.0, 0.0),
+        );
         let drift = (after - start).dot(normal);
         assert!(
             drift.abs() < 1.0,

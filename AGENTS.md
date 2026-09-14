@@ -1001,6 +1001,54 @@ path.
     111/0/0, 586 unit tests, clippy 0 (drm_regression/outputs unused
     imports + dead stores cleaned).
 
+- **G-H0.7** UX regression gate + two REAL interaction bugs it caught
+  (the gate immediately paid for itself):
+  1. **Pan armed on WINDOW presses** (compositor.rs down flow):
+     background_press was derived from route_to_content's result —
+     every successful content delivery (Routed ≠ TitleBarHit) armed
+     the grab-the-world pan, so in spatial mode LMB-dragging a window
+     PANNED THE SCENE (the literal "moving one window moves all the
+     windows"). The earlier "drag isolation verified" checks had been
+     pan artifacts (the second window was clipped off-screen).
+     Background is now exactly pick=None (or an off-workspace hit).
+  2. **Drag-plane degeneracy** (interaction.rs drag_plane_normal): the
+     wall-plane candidate is rejected when the ray never crosses it
+     ahead of the camera (t = num/denom ≤ 0 — camera in the plane or
+     plane behind the view). Symptom: rotate a window (right-drag),
+     then LMB-drag did NOTHING (grab point collapsed to the camera;
+     delta ≡ 0). New regression test
+     drag_plane_normal_camera_in_wall_plane_falls_back.
+  3. Right-button release now ENDS the rotation drag (a stale RotateY
+     consumed subsequent left-drags as more rotation).
+  - **tests/harness/scripts/ux_env.sh** — the nested-session
+    environment codified (Xvfb :99 = desktop/xdotool; veyra's XWayland
+    display parsed from the log for CLIENT launches only; automatic
+    windowfocus before XTEST keys; journal/pixel helpers). Test
+    authors no longer need to remember the display rules.
+  - **tests/harness/scripts/run_ux_gate.sh** — the permanent UX gate
+    (20 checks): new-application usability (A/B launch → journal
+    geometry asserts → click-focus → typed keys), Firefox real-app
+    scenario, spatial auto-fit, wheel dolly-in, LMB pan, RMB orbit,
+    window rotation, window drag isolation, normal-mode return — with
+    the FROZEN INVARIANTS asserted from the debug journal:
+    I1 camera changes ≠ window transforms (pan/orbit/wheel),
+    I2 window transform changes ≠ other windows (single-mover drag).
+    Journal snapshots now fire at every gesture end (pointer up, wheel
+    dolly, spatial toggle, frame_all, X11 map) and carry the full
+    camera position.
+  - Gate debug cycle caught harness bugs too (Geometry grep
+    case-sensitivity — the very lesson ux_env codifies; stale-snapshot
+    reads before state-transition journaling existed).
+  - Suites after the fixes: 587 unit tests, protocol 111/0/0, input
+    108/2 (tcfoot flake family only), clippy 0, UX gate 20/20.
+  - **Wheel retreat study (user-requested, empirical)**: 10× wheel-in +
+    10× wheel-out at the same background point returns the view to
+    within ONE pixel-sample of the start (w2-0 vs w2-out bbox equal,
+    51929 vs 51930 samples); VLM confirms both windows stay visible
+    and intelligible mid-zoom and the end state matches a fresh view.
+    VERDICT: keep the zoom-to-cursor model — no geometry change; the
+    lateral travel is the pointer-ray geometry working as designed.
+
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
 rendered as chrome-only ghosts scattered around the desktop. Two root
 causes, both in the #11 subsurface path:

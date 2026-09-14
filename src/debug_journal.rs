@@ -80,7 +80,12 @@ pub struct WindowRow {
 }
 
 /// Full state snapshot (call after state-changing events).
-pub fn snapshot(rows: &[WindowRow], focused: Option<VisualId>, active_ws: usize, camera_z: f32) {
+pub fn snapshot(
+    rows: &[WindowRow],
+    focused: Option<VisualId>,
+    active_ws: usize,
+    camera: (f32, f32, f32),
+) {
     let windows: Vec<String> = rows
         .iter()
         .map(|r| {
@@ -107,7 +112,11 @@ pub fn snapshot(rows: &[WindowRow], focused: Option<VisualId>, active_ws: usize,
                     .unwrap_or_else(|| "null".into()),
             ),
             ("active_ws", active_ws.to_string()),
-            ("camera_z", format!("{:.1}", camera_z)),
+            (
+                "camera",
+                format!("[{:.1},{:.1},{:.1}]", camera.0, camera.1, camera.2),
+            ),
+            ("camera_z", format!("{:.1}", camera.2)),
         ],
     );
 }

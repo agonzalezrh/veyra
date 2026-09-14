@@ -1507,6 +1507,10 @@ impl LookingGlass {
                             if !self.spatial_mode {
                                 self.auto_fit_camera();
                             }
+                            // Journal parity with the Wayland map path: the
+                            // X11 map is a state transition (the UX gate
+                            // reads the post-map transform + camera).
+                            self.debug_snapshot();
                         } else if is_popup {
                             // ── Popup commit ──
                             let popup_idx = self
@@ -3074,11 +3078,12 @@ impl LookingGlass {
                 }
             })
             .collect();
+        let cam_pos = self.camera().position;
         crate::debug_journal::snapshot(
             &rows,
             self.scene.focused_id,
             self.workspace_manager.active_id(),
-            self.camera().position.z,
+            (cam_pos.x, cam_pos.y, cam_pos.z),
         );
     }
 
@@ -5052,27 +5057,34 @@ impl LookingGlass {
             }
         }
         self.last_down_vid = self.scene.selected_id;
-        let mut background_press = false;
-        match mode {
-            Some(_) => {}
-            None => {
-                // Route to content (RAW coords — pointer_view resolves
-                // the output internally); title bar hits start a drag.
-                if self.route_to_content(PointerEventKind::Down, x, y)
-                    == ContentRouting::TitleBarHit
-                {
-                    // Start a translate drag from the title bar on the
-                    // (authoritatively picked) selected visual.
-                    let cam = self.camera().clone();
-                    self.interaction.force_translate(
-                        x,
-                        y,
-                        &mut self.scene,
-                        &cam,
-                        self.spatial_mode,
-                    );
-                } else {
-                    background_press = true;
+        // H0.5 fix (UX gate I2): a press on a WINDOW is window
+        // interaction — never a background pan. The old rule derived
+        // background_press from route_to_content's routing result, so
+        // every successful content delivery (Routed ≠ TitleBarHit)
+        // armed the grab-the-world pan: dragging a window panned the
+        // whole scene (the literal user report "moving one window
+        // moves all the windows"). Background = the pick found nothing
+        // (or the hit was deselected as off-workspace).
+        let background_press = self.scene.selected_id.is_none();
+        if !background_press {
+            match mode {
+                Some(_) => {}
+                None => {
+                    // Title-bar hits start a translate drag; content
+                    // presses deliver to the client and become window
+                    // drags at move time (the plain-drag starter).
+                    if self.route_to_content(PointerEventKind::Down, x, y)
+                        == ContentRouting::TitleBarHit
+                    {
+                        let cam = self.camera().clone();
+                        self.interaction.force_translate(
+                            x,
+                            y,
+                            &mut self.scene,
+                            &cam,
+                            self.spatial_mode,
+                        );
+                    }
                 }
             }
         }
@@ -5224,6 +5236,12 @@ impl LookingGlass {
             self.route_to_content(PointerEventKind::Up, x, y);
         }
         let _ = self.display_handle.flush_clients();
+        // Gesture END is a state transition: window drags finalize
+        // transforms here and camera grabs (pan/orbit) finalize the
+        // camera — journal a snapshot so the UX gate can diff
+        // authoritative state across gestures (camera ≠ transforms,
+        // drag isolation).
+        self.debug_snapshot();
     }
 
     /// Public entry point for pointer motion.
@@ -5585,12 +5603,21 @@ impl LookingGlass {
     /// right-CLICK semantics: context menu on the visual. A rotation
     /// drag ends through the interaction controller's own up path.
     pub fn handle_right_release(&mut self, x: f64, y: f64) {
-        if let Some((_vid, px, py)) = self.right_rotate_arm.take() {
-            let moved = (x - px).abs() > 5.0 || (y - py).abs() > 5.0;
-            if !moved && !self.interaction.is_dragging() {
+        let arm = self.right_rotate_arm.take();
+        let moved = arm
+            .is_some_and(|(_, px, py)| (x - px).abs() > 5.0 || (y - py).abs() > 5.0);
+        // The rotation drag ends with ITS button. Leaving the active
+        // manipulation alive made every subsequent left-drag rotate the
+        // stale target instead of translating it (caught by the UX
+        // gate's drag-isolation invariant I2).
+        self.interaction.handle_pointer_up();
+        if let Some((_vid, _px, _py)) = arm {
+            if !moved {
                 self.handle_context_menu(x, y);
             }
         }
+        // Gesture END is a state transition (rotation finalized).
+        self.debug_snapshot();
     }
 
     /// H0.5: THE authoritative pointer pick — the output-aware path
@@ -5767,6 +5794,7 @@ impl LookingGlass {
         let result = cam.frame_all(scene);
         if result {
             info!("camera framed all visuals");
+            self.debug_snapshot();
         }
         result
     }
@@ -5953,6 +5981,7 @@ impl LookingGlass {
             // wheel is the PRIMARY navigation gesture: pointer-directed
             // dolly (the world point under the cursor stays there).
             self.camera_dolly_at_pointer(x, y, wheel);
+            self.debug_snapshot();
         }
         // Normal mode + background wheel: no-op (the ortho camera is
         // pinned; application scrolling is the only wheel consumer).
@@ -6384,7 +6413,16 @@ impl LookingGlass {
                     }
                     self.spatial_cam_adapted = true;
                 }
+                if !self.spatial_mode {
+                    // The per-frame pin applies from the next frame; apply
+                    // it NOW so the state transition (and its journal
+                    // snapshot) records the settled normal-mode camera.
+                    self.camera_mut().position = cgmath::Point3::new(0.0, 0.0, 500.0);
+                    self.camera_mut().yaw = 0.0;
+                    self.camera_mut().pitch = 0.0;
+                }
                 tracing::info!(spatial_mode = self.spatial_mode, "spatial mode toggled");
+                self.debug_snapshot();
             }
             ToggleFocus => {
                 self.toggle_focus_mode();
