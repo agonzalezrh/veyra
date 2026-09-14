@@ -911,7 +911,14 @@ restart — and single-output tests pass unchanged.
   clients were getting zero wheel values too) and the smithay
   LineDelta negation (wheel-up approached, not retreated).
 
-### G-E5 fix — subsurface ghost visuals (foot CSD)
+- **G-H0.5** left-drag on empty spatial background = grab-the-world
+  pan: the gesture is decided by the PRESS location (background arms a
+  grab; window/shell presses keep window interaction); pointer-relative
+  — the grabbed world point (ray ∩ z=0 plane) stays exactly under the
+  cursor while dragging; 5 px click/pan threshold; camera-only state.
+  Mouse vocabulary now complete: LEFT=move, RIGHT=look, WHEEL=approach.
+  Live-verified (grab resolution through the spatial camera; invariant
+  unit-tested end to end).
 
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
 rendered as chrome-only ghosts scattered around the desktop. Two root
