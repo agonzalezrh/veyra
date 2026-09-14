@@ -72,6 +72,8 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use cgmath::SquareMatrix;
+use cgmath::InnerSpace;
 use cgmath::Matrix4;
 
 use crate::app_switcher::ApplicationSwitcher;
@@ -508,6 +510,55 @@ fn scale_from_f64(s: f64) -> Scale {
     } else {
         Scale::Fractional(s)
     }
+}
+
+/// H0.3: the pointer's world ray — unproject the NDC point at the
+/// near and far planes of the given proj·view. Pure and unit-tested.
+pub(crate) fn pointer_ray(
+    pv: &Matrix4<f32>,
+    ndc_x: f32,
+    ndc_y: f32,
+) -> Option<(cgmath::Point3<f32>, cgmath::Vector3<f32>)> {
+    let inv = cgmath::Matrix4::invert(pv)?;
+    let unproject = |ndc_z: f32| -> Option<cgmath::Point3<f32>> {
+        let p = inv * cgmath::Vector4::new(ndc_x, ndc_y, ndc_z, 1.0);
+        if p.w.abs() < 1e-6 {
+            None
+        } else {
+            Some(cgmath::Point3::new(p.x / p.w, p.y / p.w, p.z / p.w))
+        }
+    };
+    let near = unproject(-1.0)?;
+    let far = unproject(1.0)?;
+    let dir = far - near;
+    if dir.magnitude2() < 1e-9 {
+        return None;
+    }
+    Some((near, dir.normalize()))
+}
+
+/// H0.3: the dolly step for one wheel tick — approach clamped to the
+/// target distance, retreat unclamped (the camera caps itself).
+pub(crate) fn dolly_step(wheel: f32, zoom_speed: f32, dist_to_target: f32) -> f32 {
+    let raw = wheel * zoom_speed * 0.01;
+    if raw > 0.0 {
+        raw.min(dist_to_target)
+    } else {
+        raw
+    }
+}
+
+/// H0.3: intersect a ray with a constant-z plane. None when parallel.
+pub(crate) fn ray_plane_target(
+    origin: &cgmath::Point3<f32>,
+    dir: &cgmath::Vector3<f32>,
+    plane_z: f32,
+) -> Option<cgmath::Point3<f32>> {
+    if dir.z.abs() < 1e-5 {
+        return None;
+    }
+    let t = (plane_z - origin.z) / dir.z;
+    Some(*origin + *dir * t)
 }
 
 impl LookingGlass {
@@ -5653,13 +5704,34 @@ impl LookingGlass {
     /// browsers scroll their content). Only when no client surface is under
     /// the cursor does the camera zoom (the pre-existing global behavior).
     pub fn handle_axis(&mut self, x: f64, y: f64, dx: f64, dy: f64) {
-        // G-E5.4: output-local conversion for the pick target.
-        let (_out, x, y) = self.resolve_pointer_output(x, y);
+        // H0.4 wheel ownership: Meta+wheel ALWAYS drives the camera —
+        // even over a client surface — so the spatial desktop stays
+        // navigable without hunting for background pixels.
+        let meta_held = self
+            .keyboard_handle
+            .as_ref()
+            .map(|kh| kh.modifier_state().logo)
+            .unwrap_or(false);
+        let wheel = if dx.abs() > dy.abs() { dx } else { dy };
+        // The wheel dolly is a SPATIAL navigation gesture. In normal
+        // (2D) mode the ortho camera is pinned for 1:1 world↔screen
+        // mapping — camera motion there would break the pointer
+        // contract, so background wheel is a no-op.
+        if meta_held && self.spatial_mode {
+            self.camera_dolly_at_pointer(x, y, wheel);
+            return;
+        }
+        if meta_held {
+            return;
+        }
         let Some(ph) = self.pointer_handle.clone() else {
-            self.camera_mut().handle_zoom(dy);
+            self.camera_dolly_at_pointer(x, y, wheel);
             return;
         };
 
+        // G-E5.4/H0.4 routing: pick with RAW framebuffer coords —
+        // pointer_view() resolves the output internally (passing
+        // output-local coords here would convert twice).
         if let Some((vid, wl_surface, pos)) = self.pick_wayland_target(x, y) {
             // Ensure pointer focus is on the target surface before axis events.
             self.last_wayland_focus = Some(wl_surface.clone());
@@ -5684,13 +5756,53 @@ impl LookingGlass {
                 .value(smithay::backend::input::Axis::Vertical, dy);
             ph.axis(self, frame);
             ph.frame(self);
-        } else {
-            if dx.abs() > dy.abs() {
-                self.camera_mut().handle_zoom(dx);
-            } else {
-                self.camera_mut().handle_zoom(dy);
-            }
+        } else if self.spatial_mode {
+            // H0.2/H0.3: pointer over the spatial background — the
+            // wheel is the PRIMARY navigation gesture: pointer-directed
+            // dolly (the world point under the cursor stays there).
+            self.camera_dolly_at_pointer(x, y, wheel);
         }
+        // Normal mode + background wheel: no-op (the ortho camera is
+        // pinned; application scrolling is the only wheel consumer).
+    }
+
+    /// H0.3: dolly the camera along the POINTER's ray — zoom-to-cursor.
+    /// The ray comes from the pointer's output view (its camera and
+    /// viewport-size projection, the same math that renders the frame);
+    /// the target is its intersection with the desktop plane (z=0).
+    /// Camera state only: visual transforms, workspace membership, and
+    /// application coordinates are untouched.
+    fn camera_dolly_at_pointer(&mut self, x: f64, y: f64, wheel: f64) {
+        let fallback = |s: &mut Self| {
+            // No ray available (degenerate output/projection): plain
+            // look-direction zoom keeps the gesture functional.
+            s.camera_mut().handle_zoom(wheel);
+            s.schedule_render();
+        };
+        let Some((pv, ndc_x, ndc_y)) = self.pointer_view(x, y) else {
+            fallback(self);
+            return;
+        };
+        let Some((_origin, dir)) = pointer_ray(&pv, ndc_x, ndc_y) else {
+            fallback(self);
+            return;
+        };
+        // Intersect the desktop plane z = 0 (the reference plane where
+        // windows live). A near-parallel ray falls back to look-zoom.
+        let Some(target) = ray_plane_target(&_origin, &dir, 0.0) else {
+            fallback(self);
+            return;
+        };
+        let cam = self.camera();
+        // Never dolly THROUGH the target: clamp only the approach side
+        // (retreat is unlimited up to the camera's MAX_DISTANCE cap).
+        // The v120 value is NEGATIVE for wheel-up (smithay negates
+        // LineDelta) — negate so wheel-up approaches the cursor target.
+        let to_target = target - cam.position;
+        let dist = to_target.magnitude().max(1.0);
+        let step = dolly_step(-(wheel as f32), cam.zoom_speed, dist);
+        self.camera_mut().handle_dolly(dir, step);
+        self.schedule_render();
     }
 
     /// Save camera bookmark.
@@ -7546,6 +7658,66 @@ mod output_damage_tests {
             area,
             100.0 * th
         );
+    }
+}
+
+#[cfg(test)]
+mod wheel_zoom_tests {
+    use super::*;
+
+    #[test]
+    fn pointer_ray_hits_desktop_plane_at_cursor_world_point() {
+        // Ortho normal-mode mapping: world [-w/2..w/2]x[-h/2..h/2] at
+        // z=0, camera pinned at z=500 looking down -z. The fb point
+        // (960, 360) in a 1280x720 fb maps to world x=320 on the plane.
+        let proj = LookingGlass::projection_for(false, 1280.0, 720.0);
+        let mut cam = crate::input::Camera::new();
+        cam.position = cgmath::Point3::new(0.0, 0.0, 500.0);
+        let view = cam.view_matrix();
+        let pv = proj * view;
+        let ndc_x = (960.0f32 / 1280.0) * 2.0 - 1.0;
+        let ndc_y = -((360.0f32 / 720.0) * 2.0 - 1.0);
+        let (origin, dir) = pointer_ray(&pv, ndc_x, ndc_y).expect("ray");
+        let target = ray_plane_target(&origin, &dir, 0.0).expect("plane hit");
+        assert!(
+            (target.x - 320.0).abs() < 1.0,
+            "cursor world x == 320, got {}",
+            target.x
+        );
+        assert!(target.y.abs() < 1.0, "cursor world y == 0, got {}", target.y);
+        assert!(target.z.abs() < 1e-3, "on the plane");
+    }
+
+    #[test]
+    fn parallel_ray_yields_no_target() {
+        let origin = cgmath::Point3::new(0.0, 0.0, 5.0);
+        let dir = cgmath::Vector3::new(1.0, 0.0, 0.0);
+        assert!(ray_plane_target(&origin, &dir, 0.0).is_none());
+    }
+
+    #[test]
+    fn dolly_toward_target_reduces_distance() {
+        let mut cam = crate::input::Camera::new();
+        cam.position = cgmath::Point3::new(0.0, 0.0, 500.0);
+        let dir = cgmath::Vector3::new(0.0, 0.0, -1.0);
+        let before = cam.position.z;
+        cam.handle_dolly(dir, 100.0);
+        assert!(
+            (cam.position.z - (before - 100.0)).abs() < 1e-3,
+            "camera advanced 100 along the ray: {} -> {}",
+            before,
+            cam.position.z
+        );
+    }
+
+    #[test]
+    fn dolly_step_never_passes_target_forward_only_clamp() {
+        // Approach: clamped to the remaining distance.
+        assert_eq!(dolly_step(200.0, 50.0, 30.0), 30.0);
+        // Retreat: unclamped (the camera caps itself at MAX_DISTANCE).
+        assert_eq!(dolly_step(-200.0, 50.0, 30.0), -100.0);
+        // Small approach passes through unchanged.
+        assert_eq!(dolly_step(100.0, 50.0, 90.0), 50.0);
     }
 }
 

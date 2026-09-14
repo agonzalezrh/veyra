@@ -265,8 +265,15 @@ fn dispatch_input_event(state: &mut LookingGlass, event: InputEvent<LibinputInpu
             }
         }
         InputEvent::PointerAxis { event } => {
-            let v = event.amount(backend::Axis::Vertical).unwrap_or(0.0);
-            let h = event.amount(backend::Axis::Horizontal).unwrap_or(0.0);
+            // LineDelta wheels carry values in the v120 convention.
+            let v = event
+                .amount(backend::Axis::Vertical)
+                .or_else(|| event.amount_v120(backend::Axis::Vertical))
+                .unwrap_or(0.0);
+            let h = event
+                .amount(backend::Axis::Horizontal)
+                .or_else(|| event.amount_v120(backend::Axis::Horizontal))
+                .unwrap_or(0.0);
             let (mx, my) = state.last_mouse;
             state.handle_axis(mx, my, h, v);
         }

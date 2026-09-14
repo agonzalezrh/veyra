@@ -120,6 +120,23 @@ impl Camera {
     }
 
     /// Dolly zoom: move camera along look direction with distance limits.
+    /// H0.3: dolly along an arbitrary (pointer-ray) direction. The
+    /// CALLER clamps the approach side (never pass through the target);
+    /// here the retreat side is capped at MAX_DISTANCE from the focus.
+    pub fn handle_dolly(&mut self, dir: cgmath::Vector3<f32>, delta: f32) {
+        let new_pos = self.position + dir * delta;
+        let focus = self.position + self.look_dir() * distance_to_focus(self);
+        let d = (new_pos - focus).magnitude();
+        if d > MAX_DISTANCE {
+            // Cap retreat along the dolly direction.
+            let back = (focus - new_pos).normalize();
+            self.position = focus - back * MAX_DISTANCE;
+        } else {
+            self.position = new_pos;
+        }
+        self.clamp_state();
+    }
+
     pub fn handle_zoom(&mut self, delta: f64) {
         let dir = self.look_dir();
         let new_pos = self.position + dir * (delta as f32 * self.zoom_speed * 0.01);

@@ -488,8 +488,17 @@ fn main() {
                             state.schedule_render();
                         }
                         InputEvent::PointerAxis { event } => {
-                            let v = event.amount(Axis::Vertical).unwrap_or(0.0);
-                            let h = event.amount(Axis::Horizontal).unwrap_or(0.0);
+                            // LineDelta wheels (XTEST button 4/5, physical
+                            // wheel notches) carry their value in the
+                            // v120 convention — amount() is None for them.
+                            let v = event
+                                .amount(Axis::Vertical)
+                                .or_else(|| event.amount_v120(Axis::Vertical))
+                                .unwrap_or(0.0);
+                            let h = event
+                                .amount(Axis::Horizontal)
+                                .or_else(|| event.amount_v120(Axis::Horizontal))
+                                .unwrap_or(0.0);
                             let (mx, my) = state.last_mouse;
                             state.handle_axis(mx, my, h, v);
                             state.schedule_render();
