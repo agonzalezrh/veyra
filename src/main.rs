@@ -9,6 +9,7 @@ mod client_resize;
 mod closed;
 mod compositor;
 mod config;
+mod drm_regression;
 mod drm_topology;
 mod context_menu;
 mod debug_journal;
