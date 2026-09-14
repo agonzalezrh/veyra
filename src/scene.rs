@@ -955,7 +955,9 @@ impl Scene {
 
     /// Pick the closest visual under a screen coordinate.
     /// When two visuals are at the same depth, the one on top (later in
-    /// stacking order) wins.
+    /// stacking order) wins. Used by group hit tests and the legacy
+    /// interaction path (tests).
+    #[allow(dead_code)]
     pub fn pick(
         &self,
         proj_view: &Matrix4<f32>,

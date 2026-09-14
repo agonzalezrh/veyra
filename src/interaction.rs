@@ -166,6 +166,105 @@ impl InteractionController {
     /// `visible_ids` optionally restricts picking to a set of visual IDs
     /// (e.g., the active workspace). If None, all visuals are pickable.
     #[allow(clippy::too_many_arguments)] // wide GL/routing signatures are inherent
+    /// H0.5: begin a manipulation on an ALREADY-RESOLVED target. The
+    /// compositor's output-aware pick (pointer_view →
+    /// scene.pick_visible) is authoritative — this controller no
+    /// longer decides what is under the pointer (the old internal NDC
+    /// pick used full-framebuffer dimensions and broke with N
+    /// outputs). Returns true when the drag started.
+    pub fn begin_manipulation(
+        &mut self,
+        vid: crate::scene::VisualId,
+        x: f64,
+        y: f64,
+        scene: &mut Scene,
+        camera: &Camera,
+        spatial_mode: bool,
+        mode: ManipMode,
+    ) -> bool {
+        self.mouse_x = x;
+        self.mouse_y = y;
+        let (nx, ny) = self.ndc(x, y);
+        let (ray_origin, ray_far) = self.world_ray(nx, ny, camera, spatial_mode);
+        let ray_dir = (ray_far - ray_origin).normalize();
+
+        if let Some(visual) = scene.visuals.iter().find(|v| v.id == vid) {
+            let pos = visual.transform.position;
+            let fwd = camera.forward();
+            let plane_normal = Self::drag_plane_normal(fwd, ray_dir);
+
+            // Mark as detached from layout when user starts manipulating
+            if !scene.detached_set.contains(&vid) {
+                scene.detached_set.push(vid);
+            }
+
+            if let Some(hit) = Self::ray_plane_intersect(ray_origin, ray_dir, pos, plane_normal) {
+                let grab_offset = hit - pos;
+                self.active = Some(ActiveManip {
+                    mode,
+                    vid,
+                    origin: hit,
+                    grab_offset,
+                    plane_normal,
+                    start_position: pos,
+                    start_rotation: visual.transform.rotation,
+                });
+                return true;
+            }
+        }
+        false
+    }
+
+    /// H0.5: pointer-down with the pick ALREADY resolved by the
+    /// compositor (None = empty background → deselect). Selection and
+    /// modifier-driven manipulation start here; WHAT is under the
+    /// pointer is not this controller's decision anymore.
+    #[allow(clippy::too_many_arguments)] // mirrors the event shape it replaces
+    pub fn handle_pointer_down_picked(
+        &mut self,
+        picked: Option<crate::scene::VisualId>,
+        x: f64,
+        y: f64,
+        scene: &mut Scene,
+        camera: &Camera,
+        spatial_mode: bool,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+    ) -> Option<ManipMode> {
+        self.mouse_x = x;
+        self.mouse_y = y;
+        match picked {
+            None => {
+                scene.select(None);
+                None
+            }
+            Some(vid) => {
+                scene.select(Some(vid));
+                // Modifier keys determine manipulation mode.
+                // Without modifiers, no manipulation starts — the event is for content.
+                let mode = if shift {
+                    ManipMode::RotateY
+                } else if ctrl {
+                    ManipMode::RotateZ
+                } else if alt {
+                    ManipMode::RotateX
+                } else {
+                    return None;
+                };
+                if self.begin_manipulation(vid, x, y, scene, camera, spatial_mode, mode) {
+                    Some(mode)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Superseded by the output-aware pick path (G-H0.5); kept for its
+    /// unit tests — the compositor no longer calls it.
+    #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     pub fn handle_pointer_down(
         &mut self,
         x: f64,
@@ -587,6 +686,75 @@ mod tests {
         assert!(ctrl.is_dragging());
         ctrl.handle_pointer_up();
         assert!(!ctrl.is_dragging(), "release terminates drag");
+    }
+
+    #[test]
+    fn picked_target_api_selects_and_rotates() {
+        // H0.5: the compositor resolves the target; the controller only
+        // manipulates. None deselects; Some selects and (with a
+        // modifier) rotates THAT visual.
+        let (mut scene, ids) = two_visual_scene();
+        let camera = front_camera();
+        let mut ctrl = InteractionController::new();
+        // Empty background: deselect.
+        scene.select(Some(ids[0]));
+        let mode = ctrl.handle_pointer_down_picked(
+            None, 400.0, 300.0, &mut scene, &camera, false, false, false, false,
+        );
+        assert!(mode.is_none());
+        assert_eq!(scene.selected_id, None, "background press deselects");
+        // A picked visual + shift = RotateY on THAT visual.
+        let mode = ctrl.handle_pointer_down_picked(
+            Some(ids[1]), 420.0, 360.0, &mut scene, &camera, false, true, false, false,
+        );
+        assert!(matches!(mode, Some(ManipMode::RotateY)));
+        assert_eq!(scene.selected_id, Some(ids[1]));
+        assert!(ctrl.is_dragging());
+        ctrl.handle_pointer_up();
+    }
+
+    #[test]
+    fn two_windows_rotate_independently() {
+        // H0.5.3: right-drag rotates the TARGET window only. A rotated
+        // +30°, B rotated −15° — neither affects the other, and the
+        // camera (borrowed immutably) cannot change at all.
+        let (mut scene, ids) = two_visual_scene();
+        let camera = front_camera();
+        let cam_before = camera.clone();
+        let mut ctrl = InteractionController::new();
+
+        // Rotate A clockwise (positive yaw drag).
+        ctrl.begin_manipulation(ids[0], 420.0, 300.0, &mut scene, &camera, false, ManipMode::RotateY);
+        assert!(ctrl.is_dragging());
+        ctrl.handle_pointer_move(540.0, 300.0, &mut scene, &camera, false);
+        ctrl.handle_pointer_up();
+        let rot_a = scene.get(ids[0]).unwrap().transform.rotation;
+        let pos_a = scene.get(ids[0]).unwrap().transform.position;
+
+        // Rotate B counter-clockwise (opposite drag direction).
+        ctrl.begin_manipulation(ids[1], 420.0, 300.0, &mut scene, &camera, false, ManipMode::RotateY);
+        ctrl.handle_pointer_move(300.0, 300.0, &mut scene, &camera, false);
+        ctrl.handle_pointer_up();
+        let rot_b = scene.get(ids[1]).unwrap().transform.rotation;
+
+        // A kept its rotation; B rotated the OTHER way.
+        let rot_a2 = scene.get(ids[0]).unwrap().transform.rotation;
+        assert_eq!(rot_a, rot_a2, "A untouched by B's rotation");
+        assert_ne!(rot_a, rot_b, "independent rotations");
+        // The yaw axis is +Y: the quaternion's y component carries the
+        // sign of the rotation for small angles.
+        assert!(rot_a.v.y.abs() > 1e-4, "A actually rotated: {rot_a:?}");
+        assert!(rot_b.v.y.abs() > 1e-4, "B actually rotated: {rot_b:?}");
+        assert!(
+            rot_a.v.y * rot_b.v.y < 0.0,
+            "opposite directions: A.y={} B.y={}",
+            rot_a.v.y,
+            rot_b.v.y
+        );
+        assert_eq!(scene.get(ids[0]).unwrap().transform.position, pos_a);
+        // The camera is immutable here by construction.
+        assert_eq!(camera.position, cam_before.position);
+        assert_eq!(camera.yaw, cam_before.yaw);
     }
 
     #[test]

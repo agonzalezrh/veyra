@@ -283,6 +283,10 @@ pub struct LookingGlass {
     /// interaction) or there is no active gesture.
     pub camera_pan_grab: Option<cgmath::Point3<f32>>,
     pub nav_button: u32,
+    /// H0.5.3: right-press on a WINDOW arms per-window rotation
+    /// (threshold-gated); release below the threshold = context menu.
+    /// None = the right press was on empty background (camera orbit).
+    pub right_rotate_arm: Option<(VisualId, f64, f64)>,
     pub event_serial: u32,
     pub last_down_vid: Option<VisualId>,
     // auto_orbit is now per-workspace via workspace_manager.active().auto_orbit
@@ -745,6 +749,7 @@ impl LookingGlass {
             press_pos: (0.0, 0.0),
             camera_pan_grab: None,
             nav_button: 0,
+            right_rotate_arm: None,
             event_serial: 0,
             last_down_vid: None,
             saved_state: None,
@@ -4906,8 +4911,12 @@ impl LookingGlass {
 
     /// Public entry point for a pointer button press.
     pub fn handle_pointer_down(&mut self, x: f64, y: f64, shift: bool, ctrl: bool, alt: bool) {
-        // G-E5.4: convert global-plane pointer px to output-local px.
-        let (_out, x, y) = self.resolve_pointer_output(x, y);
+        // G-H0.5: keep RAW framebuffer coordinates. The output-aware
+        // pick path (pointer_view) resolves the pointer's output
+        // internally; pre-converting here and passing output-local px
+        // into NDC math built on FULL-framebuffer dimensions
+        // double-converts and breaks picking with N outputs. ONE
+        // authoritative pick, one coordinate space.
         self.press_pos = (x, y);
         self.event_serial = self.event_serial.wrapping_add(1);
         self.interaction.window_size = self.fb_size();
@@ -4974,9 +4983,14 @@ impl LookingGlass {
             let _ = self.display_handle.flush_clients();
             return;
         }
-        let ws_ids = self.workspace_manager.active().visual_ids.clone();
+        // H0.5: ONE authoritative pick — the output-aware path
+        // (pointer_view → scene.pick_visible). The InteractionController
+        // receives the resolved target and only decides manipulation;
+        // it no longer picks with its own full-fb NDC math.
+        let picked_vid = self.pick_visual_at(x, y);
         let cam = self.camera().clone();
-        let mode = self.interaction.handle_pointer_down(
+        let mode = self.interaction.handle_pointer_down_picked(
+            picked_vid,
             x,
             y,
             &mut self.scene,
@@ -4985,7 +4999,6 @@ impl LookingGlass {
             shift,
             ctrl,
             alt,
-            Some(ws_ids),
         );
         // In overview mode, clicking a visual should focus it
         if matches!(self.focus_manager.camera_mode, CameraMode::Overview) {
@@ -5029,25 +5042,13 @@ impl LookingGlass {
         match mode {
             Some(_) => {}
             None => {
-                // Route to content; title bar hits start a title-bar drag
+                // Route to content (RAW coords — pointer_view resolves
+                // the output internally); title bar hits start a drag.
                 if self.route_to_content(PointerEventKind::Down, x, y)
                     == ContentRouting::TitleBarHit
                 {
-                    // Start a translate drag from the title bar
-                    let ws_ids = self.workspace_manager.active().visual_ids.clone();
-                    let cam = self.camera().clone();
-                    self.interaction.handle_pointer_down(
-                        x,
-                        y,
-                        &mut self.scene,
-                        &cam,
-                        self.spatial_mode,
-                        false,
-                        false,
-                        false,
-                        Some(ws_ids),
-                    );
-                    // Force translate even though no modifier
+                    // Start a translate drag from the title bar on the
+                    // (authoritatively picked) selected visual.
                     let cam = self.camera().clone();
                     self.interaction.force_translate(
                         x,
@@ -5347,13 +5348,38 @@ impl LookingGlass {
             }
             return;
         }
-        // Navigation buttons (right=mouse 3, middle=mouse 2)
-        if self.nav_button == 3 {
+        // H0.5.3: right-drag on a WINDOW = rotate THAT window (the
+        // interaction drag applies the deltas below). The camera orbit
+        // shortcut is suppressed while a rotation is armed/dragging —
+        // the target decides the manipulation, never the reverse.
+        if let Some((vid, px, py)) = self.right_rotate_arm {
+            if self.nav_button == 3 {
+                if !self.interaction.is_dragging()
+                    && ((x - px).abs() > 5.0 || (y - py).abs() > 5.0)
+                {
+                    let cam = self.camera().clone();
+                    self.interaction.begin_manipulation(
+                        vid,
+                        x,
+                        y,
+                        &mut self.scene,
+                        &cam,
+                        self.spatial_mode,
+                        crate::interaction::ManipMode::RotateY,
+                    );
+                }
+            } else {
+                self.right_rotate_arm = None;
+            }
+        }
+        // Navigation buttons (right=mouse 3, middle=mouse 2) — camera
+        // manipulation only when NO window drag owns the gesture.
+        if self.nav_button == 3 && !self.interaction.is_dragging() && self.right_rotate_arm.is_none() {
             self.workspace_manager.active_mut().auto_orbit = false;
             self.handle_orbit(dx, dy);
             return;
         }
-        if self.nav_button == 2 {
+        if self.nav_button == 2 && !self.interaction.is_dragging() {
             self.workspace_manager.active_mut().auto_orbit = false;
             self.handle_pan(dx, dy);
             return;
@@ -5531,6 +5557,45 @@ impl LookingGlass {
             ndc_x,
             ndc_y,
         ))
+    }
+
+    /// H0.5.3: right press. On a WINDOW: arm per-window rotation
+    /// (the drag decides rotation vs menu by the threshold). On EMPTY
+    /// background: nothing here — nav_button=3 drives camera orbit.
+    pub fn handle_right_press(&mut self, x: f64, y: f64) {
+        self.press_pos = (x, y);
+        self.right_rotate_arm = self.pick_visual_at(x, y).map(|vid| (vid, x, y));
+    }
+
+    /// H0.5.3: right release. Armed but below the threshold → the
+    /// right-CLICK semantics: context menu on the visual. A rotation
+    /// drag ends through the interaction controller's own up path.
+    pub fn handle_right_release(&mut self, x: f64, y: f64) {
+        if let Some((_vid, px, py)) = self.right_rotate_arm.take() {
+            let moved = (x - px).abs() > 5.0 || (y - py).abs() > 5.0;
+            if !moved && !self.interaction.is_dragging() {
+                self.handle_context_menu(x, y);
+            }
+        }
+    }
+
+    /// H0.5: THE authoritative pointer pick — the output-aware path
+    /// (pointer_view → scene.pick_visible). Every pointer-down decision
+    /// (selection, manipulation, camera gestures) consumes THIS result;
+    /// nothing else independently decides what is under the pointer.
+    /// Returns any visual (wayland, producer, test) under the pointer.
+    fn pick_visual_at(&self, x: f64, y: f64) -> Option<VisualId> {
+        let (pv, nx, ny) = self.pointer_view(x, y)?;
+        let ids: Vec<VisualId> = self
+            .workspace_manager
+            .active()
+            .visual_ids
+            .iter()
+            .copied()
+            .filter(|id| self.scene.is_visible(*id))
+            .collect();
+        let (vid, _) = self.scene.pick_visible(&pv, nx, ny, &ids)?;
+        Some(vid)
     }
 
     fn pick_wayland_target(

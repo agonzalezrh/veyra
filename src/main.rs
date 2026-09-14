@@ -479,8 +479,15 @@ fn main() {
                                     }
                                 }
                                 3 => {
+                                    // H0.5.3: right press on a window arms
+                                    // per-window rotation (release below the
+                                    // threshold opens the context menu);
+                                    // on empty background nav_button=3
+                                    // drives camera orbit as before.
                                     if pressed {
-                                        state.handle_context_menu(mx, my);
+                                        state.handle_right_press(mx, my);
+                                    } else {
+                                        state.handle_right_release(mx, my);
                                     }
                                 }
                                 2 => {}
