@@ -872,6 +872,26 @@ restart — and single-output tests pass unchanged.
 
 **Status: 🟡 G-E5 multi-output: registry+cameras+input (E5.2–E5.4) and simulated presentation (E5.5) DONE; remaining E5.6/E5.7 hardware-gated (528 unit tests; protocol 111/0/0; input 110/0/0)**
 
+### G-H0 — Spatial interaction ergonomics (in progress)
+- **G-H0.1** decorationless default: DecorationConfig::default()
+  .title_bar_height = 0.0 (UX-P1: application content owns the window
+  area; operations live in taskbar/context menu/keyboard — parity
+  unchanged, verified). SSD chrome draws only when explicitly
+  requested; edge ring (spatial focus indication) stays. Harness
+  updated: t20i re-purposed into the decoration-policy regression test
+  (the OLD title-strip position must deliver content clicks to the
+  client); t27i parses veyra's XWayland display from the log (stale
+  :0 servers made smithay pick :1). Known harness flake: foot's PTY
+  slave exits with SIGHUP under the harness (environmental — foot runs
+  clean manually; clipboard covered by protocol tests).
+- **G-H0.2/H0.3/H0.4** pointer-directed wheel dolly: background wheel
+  = camera dolly along the pointer's ray (zoom-to-cursor via the
+  desktop-plane intersection); client wheel = client scroll; Meta+wheel
+  = camera everywhere (spatial); normal mode = no-op (ortho pin).
+  Fixed winit LineDelta wheels reading 0.0 (amount_v120 fallback —
+  clients were getting zero wheel values too) and the smithay
+  LineDelta negation (wheel-up approached, not retreated).
+
 ### G-E5 fix — subsurface ghost visuals (foot CSD)
 
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
