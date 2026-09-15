@@ -374,3 +374,22 @@ ux_spawn_desktop() {
     done
     return 1
 }
+
+# ux_changed_region <pngA> <pngB> → "minx miny maxx maxy" (or NONE)
+# Bounding box of pixels that differ meaningfully between two shots.
+ux_changed_region() {
+    python3 - "$1" "$2" <<'PYEOF'
+import subprocess, sys
+A = subprocess.run(['convert', sys.argv[1], '-depth','8','rgb:-'], capture_output=True).stdout
+B = subprocess.run(['convert', sys.argv[2], '-depth','8','rgb:-'], capture_output=True).stdout
+if len(A) != len(B):
+    print("SIZE-MISMATCH"); sys.exit(0)
+pts = [((i//3)%1280, (i//3)//1280) for i in range(0, len(A), 3)
+       if abs(A[i]-B[i]) > 24 or abs(A[i+1]-B[i+1]) > 24 or abs(A[i+2]-B[i+2]) > 24]
+if not pts:
+    print("NONE")
+else:
+    xs=[p[0] for p in pts]; ys=[p[1] for p in pts]
+    print(min(xs), min(ys), max(xs), max(ys))
+PYEOF
+}

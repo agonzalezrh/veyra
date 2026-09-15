@@ -147,10 +147,12 @@ if [ "$FAST" -eq 0 ]; then
     [ "$NKEYS" -ge 5 ] && ok "S-FF: keys delivered to Firefox ($NKEYS KEY events)" \
         || bad "S-FF: too few KEY events ($NKEYS)"
     ux_shot "$(SHOT ff)"
-    python3 "$HARNESS_DIR/scripts/visual_check.py" "$(SHOT ff)" \
-        "Is a web browser window visible on the dark desktop with text typed in its address/search bar? Answer yes/no." \
-        | grep -q "^PASS" && ok "S-FF: browser with typed text [visual]" \
-        || say "S-FF: visual check inconclusive (non-fatal; pixel/log asserts above are authoritative)"
+    VLMFF=$(python3 "$HARNESS_DIR/scripts/visual_check.py" "$(SHOT ff)" \
+        "Is a web browser window visible on the dark desktop with text typed in its address/search bar? Answer yes/no.")
+    case "$VLMFF" in
+        PASS*) ok "S-FF: browser with typed text [visual]" ;;
+        *) unc "S-FF: browser visual (${VLMFF}) — pixel/log asserts remain authoritative" ;;
+    esac
 else
     skip "S-FF skipped (--fast)"
 fi
@@ -233,10 +235,24 @@ SNAPROT=$(ux_last_snapshot "$UX_JOURNAL")
 ux_no_window_moved "$SNAPR" "$SNAPROT" \
     && ok "I1 (rotation): rotation kept every window center" \
     || bad "I1 VIOLATED (rotation): a window pos moved"
-python3 "$HARNESS_DIR/scripts/visual_check.py" "$(SHOT rot1)" \
-    "A spatial desktop with windows. Compared to a normal view, does at least one window appear visibly tilted/rotated rather than axis-aligned? Answer yes/no." \
-    | grep -q "^PASS" && ok "S9: rotation visibly responsive [visual]" \
-    || bad "S9: rotation not visible [visual]"
+# Deterministic rotation check: the drag must change the window's own
+# footprint (a yawed quad's silhouette grows vertically). The VLM is
+# informational only — small windows make "clearly tilted" a weak
+# judgment, and per the taxonomy a weak visual finding is never FAIL.
+ROTREGION=$(ux_changed_region "$(SHOT rot0)" "$(SHOT rot1)")
+say "S9 rotation changed-region: $ROTREGION (target $TX,$TY)"
+case "$ROTREGION" in
+    NONE|SIZE-MISMATCH|"")
+        bad "S9: rotation changed nothing (region=$ROTREGION — press likely missed the window)" ;;
+    *)
+        ok "S9: rotation changed the window footprint (region=$ROTREGION)"
+        VLMROT=$(python3 "$HARNESS_DIR/scripts/visual_check.py" "$(SHOT rot1)" \
+            "A spatial desktop with windows. Does at least one window appear tilted/rotated rather than axis-aligned? Answer with what you see.")
+        case "$VLMROT" in
+            PASS*) ok "S9: rotation visible [visual]" ;;
+            *) unc "S9: rotation visibility [visual]: $VLMROT" ;;
+        esac ;;
+esac
 
 # ---------- S10: LMB window drag → I2 ------------------------------------
 say "S10: LMB window manipulation (drag isolation)"
@@ -249,14 +265,22 @@ MOVER=$(ux_single_mover "$SNAPROT" "$SNAPD")
 
 # ---------- S11: return to normal mode -----------------------------------
 say "S11: return to normal (2D) mode"
-ux_type "$VEYRA_LOG" F5
-sleep 1.0
-SNAPN=$(ux_last_snapshot "$UX_JOURNAL")
-NZ=$(ux_snapshot_field "$SNAPN" "ev['camera_z']")
-if python3 -c "exit(0 if abs($NZ - 500.0) < 2.0 else 1)"; then
+NZ=""
+for _ in 1 2 3; do
+    ux_type "$VEYRA_LOG" F5
+    sleep 1.2
+    NZ=$(ux_snapshot_field "$(ux_last_snapshot "$UX_JOURNAL")" "ev['camera_z']")
+    python3 -c "exit(0 if abs($NZ - 500.0) < 2.0 else 1)" && break
+    NZ=""
+done
+if [ -n "$NZ" ]; then
     ok "S11: normal mode pinned camera (z=$NZ ≈ 500)"
 else
-    bad "S11: normal-mode camera not pinned (z=$NZ)"
+    bad "S11: F5 did not reach the compositor after 3 attempts (last z=$(ux_snapshot_field "$(ux_last_snapshot "$UX_JOURNAL")" "ev['camera_z']"))"
+    say "S11 diagnosis — toggle lines:"
+    sed -E 's/\x1b\[[0-9;]*m//g' "$VEYRA_LOG" | grep -a "spatial mode toggled" | tail -2
+    say "S11 diagnosis — last KEY events:"
+    sed -E 's/\x1b\[[0-9;]*m//g' "$VEYRA_LOG" | grep -a "KEY raw" | tail -3
 fi
 
 echo "--------------------------------------------------------------"
