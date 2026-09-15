@@ -416,3 +416,75 @@ mod tests {
         }
     }
 }
+
+// ── G-H1: first-run / empty-state hints ─────────────────────────────
+//
+// A small, dismissible card that answers a new user's first questions
+// ("what am I looking at? how do I move?") without a tutorial or a
+// modal. One-time-ever: dismissed by the first camera gesture, the
+// first application opening, or a click anywhere on the card.
+
+#[derive(Debug, Clone)]
+pub struct HintLayout {
+    /// Card rect in framebuffer px (x, y, w, h), y = top.
+    pub rect: (f32, f32, f32, f32),
+    pub lines: Vec<String>,
+}
+
+impl HintLayout {
+    pub fn for_framebuffer(w: f32, h: f32) -> Self {
+        let lines = vec![
+            "Veyra — your desktop, in space".to_string(),
+            String::new(),
+            "Scroll · approach the desktop".to_string(),
+            "Left-drag · move (pan the world)".to_string(),
+            "Right-drag · look around".to_string(),
+            "Click a window · focus it".to_string(),
+            "Right-click a window · actions".to_string(),
+            String::new(),
+            "Open applications from the taskbar below".to_string(),
+        ];
+        let card_w = (w * 0.44).clamp(420.0, 640.0);
+        let line_h = 26.0f32;
+        let card_h = lines.len() as f32 * line_h + 36.0;
+        let x = (w - card_w) * 0.5;
+        let y = (h - card_h - 90.0).max(24.0); // above the taskbar strip
+        HintLayout {
+            rect: (x, y, card_w, card_h),
+            lines,
+        }
+    }
+
+    pub fn contains(&self, px: f64, py: f64) -> bool {
+        let (x, y, w, h) = self.rect;
+        px >= x as f64 && px <= (x + w) as f64 && py >= y as f64 && py <= (y + h) as f64
+    }
+}
+
+/// One-time-ever dismissal flag: a tiny marker file in the user's
+/// state directory.
+pub fn hints_seen() -> bool {
+    if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
+        let p = std::path::PathBuf::from(dir).join("veyra/hints-seen");
+        p.exists()
+    } else if let Ok(home) = std::env::var("HOME") {
+        std::path::PathBuf::from(home)
+            .join(".local/state/veyra/hints-seen")
+            .exists()
+    } else {
+        false
+    }
+}
+
+pub fn mark_hints_seen() {
+    let dir = match std::env::var("XDG_STATE_HOME") {
+        Ok(d) => std::path::PathBuf::from(d).join("veyra"),
+        Err(_) => match std::env::var("HOME") {
+            Ok(h) => std::path::PathBuf::from(h).join(".local/state/veyra"),
+            Err(_) => return,
+        },
+    };
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::write(dir.join("hints-seen"), b"1");
+    }
+}

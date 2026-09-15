@@ -977,6 +977,8 @@ fn draw_textured_quad(
 pub struct Overlays<'a> {
     pub context_menu: Option<&'a ContextMenu>,
     pub taskbar: Option<&'a crate::shell::TaskbarLayout>,
+    /// G-H1: the first-run hint card (None = not visible this frame).
+    pub hints: Option<&'a crate::shell::HintLayout>,
 }
 
 /// R1 contract: DRAW-ONLY. The frame lifecycle (begin_frame /
@@ -1543,6 +1545,68 @@ pub fn render_scene(
             output_id: plan.output_id,
             viewport: plan.viewport,
             presented: true,
+        });
+    }
+
+    // G-H1: the first-run hint card — a quiet screen-space card above
+    // the taskbar, drawn only while the desktop is empty and the user
+    // has not demonstrated an interaction. Same overlay discipline as
+    // the taskbar: no depth, no scissor, alpha blend.
+    if let Some(hints) = overlays.hints {
+        let _ = renderer.with_context(|gl| unsafe {
+            rebind_surface(gl);
+            gl.Disable(ffi::SCISSOR_TEST);
+            gl.Disable(ffi::DEPTH_TEST);
+            gl.Enable(ffi::BLEND);
+            gl.BlendFunc(ffi::SRC_ALPHA, ffi::ONE_MINUS_SRC_ALPHA);
+            let (hx, hy, hw, hh) = hints.rect;
+            // Card background: soft dark pill.
+            {
+                let cx = ((hx + hw / 2.0) / w) * 2.0 - 1.0;
+                let cy = -(((hy + hh / 2.0) / h) * 2.0 - 1.0);
+                let mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(cx, cy, 0.0))
+                    * cgmath::Matrix4::from_nonuniform_scale(hw / w * 2.0, hh / h * 2.0, 1.0);
+                gl.UseProgram(draw.round_prog);
+                gl.UniformMatrix4fv(draw.round_u_mvp, 1, 0, mvp.as_ptr());
+                gl.Uniform4f(draw.round_u_color, 0.10, 0.10, 0.11, 0.90);
+                gl.Uniform4f(draw.round_u_color2, 0.08, 0.08, 0.09, 0.92);
+                gl.Uniform2f(draw.round_u_size, hw, hh);
+                gl.Uniform1f(draw.round_u_radius, 14.0);
+                gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
+                gl.EnableVertexAttribArray(draw.solid_a_pos);
+                gl.VertexAttribPointer(draw.solid_a_pos, 2, ffi::FLOAT, 0, 4 * std::mem::size_of::<f32>() as i32, std::ptr::null());
+                gl.EnableVertexAttribArray(draw.solid_a_uv);
+                gl.VertexAttribPointer(draw.solid_a_uv, 2, ffi::FLOAT, 0, 4 * std::mem::size_of::<f32>() as i32, std::ptr::null());
+                gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+                gl.DisableVertexAttribArray(draw.solid_a_pos);
+                gl.DisableVertexAttribArray(draw.solid_a_uv);
+            }
+            // Text lines, centered, first line emphasized.
+            {
+                // draw/atlas are the render-scene-local caches (matched
+                // earlier; both initialized before any drawing).
+                let scale = 3.0f32;
+                let ch = (7.0f32 * scale / h) * 2.0;
+                let cw = (5.0f32 * scale / w) * 2.0;
+                let line_h_px = 26.0f32;
+                for (i, line) in hints.lines.iter().enumerate() {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let text_w_px = line.chars().count() as f32 * (scale * 5.0 / 7.0);
+                    let px = hx + (hw - text_w_px) * 0.5;
+                    let py = hy + 18.0 + i as f32 * line_h_px;
+                    let x_ndc = (px / w) * 2.0 - 1.0;
+                    let y_ndc = -(((py + line_h_px / 2.0) / h) * 2.0 - 1.0) - ch / 2.0;
+                    let (cr, cg_, cb) = if i == 0 {
+                        (0.62, 0.86, 0.55)
+                    } else {
+                        (0.82, 0.83, 0.84)
+                    };
+                    draw_text(gl, draw, atlas, line, x_ndc, y_ndc, cw, ch, cr, cg_, cb);
+                }
+            }
+            gl.Disable(ffi::BLEND);
         });
     }
 

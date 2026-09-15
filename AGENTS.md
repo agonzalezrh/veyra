@@ -1277,3 +1277,24 @@ The project is successful when a user can:
 10. Return to normal work without losing application state.
 
 Everything else is secondary.
+---
+
+# G-H1 — First-run / empty-state hints (UX phase opens)
+
+**Directive adopted (frontier + user): UX-first, architecture frozen.** Development
+ratio shifts to ~70% UX / 20% E2E-usability / 10% correctness blockers. New phase
+G-H1..G-H10: make the existing features UNDERSTANDABLE (first-run, discoverability,
+focus language, camera recovery, workspace transitions, launch experience, launcher,
+contextual actions, keyboard fallback, naive-user E2E). Architecture work continues
+only for demonstrated bugs / UX blockers / hardware requirements / lifecycle safety.
+
+- **G-H1 shipped**: one-time first-run hint card (shell.rs HintLayout +
+  hints_seen/mark_hints_seen in XDG_STATE_HOME/veyra/hints-seen; renderer draws it
+  as a screen-space rounded card with the gesture legend: "Veyra — your desktop, in
+  space · Scroll: approach · Left-drag: move · Right-drag: look · Click: focus ·
+  Right-click: actions · Open applications from the taskbar below"). Dismisses
+  permanently on the FIRST demonstrated interaction: any camera gesture (pan arm,
+  orbit, dolly), any window mapping (render-path scene-non-empty check — covers
+  every map path), or a click on the card. hints_visible() requires an empty scene
+  so the card never competes with content. VLM-verified: card readable, disappears
+  on launch, seen-flag persists across boots.

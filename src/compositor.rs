@@ -311,6 +311,8 @@ pub struct LookingGlass {
     pub session_paused: bool,
     /// R6: wake handle pinging the event loop — dirty state renders
     /// immediately instead of waiting for the pacing timer.
+    /// G-H1: one-time hint card state (dismissed by gesture/window/click).
+    pub hints_dismissed: bool,
     pub render_ping: Option<smithay::reexports::calloop::ping::Ping>,
     /// G-H0.9: set by the sigwait thread on SIGTERM/SIGINT; the render
     /// pump performs the graceful save-and-exit on the main thread.
@@ -756,6 +758,7 @@ impl LookingGlass {
             event_serial: 0,
             last_down_vid: None,
             saved_state: None,
+            hints_dismissed: crate::shell::hints_seen(),
             render_ping: None,
             shutdown_requested: None,
             pacing_timer: None,
@@ -889,7 +892,7 @@ impl LookingGlass {
                     let ids: Vec<VisualId> =
                         self.scene.visuals.iter().map(|v| v.id).collect();
                     for vid in ids {
-                        let (mut w, mut h) = {
+                        let (w, h) = {
                             match self.scene.visuals.iter().find(|v| v.id == vid) {
                                 Some(v) if v.parent.is_none() => {
                                     (v.total_width(), v.total_height())
@@ -907,13 +910,8 @@ impl LookingGlass {
                             rect.0 < r.2 && r.0 < rect.2 && rect.1 < r.3 && r.1 < rect.3
                         });
                         if overlaps {
-                            let ws_eligible: Vec<VisualId> = self
-                                .workspace_manager
-                                .active()
-                                .visual_ids
-                                .iter()
-                                .copied()
-                                .collect();
+                            let ws_eligible: Vec<VisualId> =
+                                self.workspace_manager.active().visual_ids.clone();
                             let new_pos = crate::layout::place_new_visual(
                                 w,
                                 h,
@@ -2617,6 +2615,17 @@ impl LookingGlass {
         let taskbar = self.build_taskbar();
         // G-E5.2: framebuffer size read before the backend borrow.
         let (w, h) = self.fb_size();
+        // G-H1: any window appearing demonstrates "how to open apps" —
+        // dismiss the card permanently (covers every map path).
+        if !self.hints_dismissed && !self.scene.visuals.is_empty() {
+            self.dismiss_hints();
+        }
+        // G-H1: the hint card state is decided BEFORE the backend borrow.
+        let hints_layout = if self.hints_visible() {
+            Some(crate::shell::HintLayout::for_framebuffer(w, h))
+        } else {
+            None
+        };
         let fb_h = h;
         if !self.spatial_mode {
             // H1: x/y persist (normal-mode entry centers on content; a
@@ -2733,6 +2742,7 @@ impl LookingGlass {
         let overlays = renderer::Overlays {
             context_menu,
             taskbar: Some(&taskbar),
+            hints: hints_layout.as_ref(),
         };
         let updated_ids: Vec<crate::scene::VisualId> =
             updates.iter().map(|(vid, _)| *vid).collect();
@@ -3238,6 +3248,21 @@ impl LookingGlass {
             self.workspace_manager.active_id(),
             (cam_pos.x, cam_pos.y, cam_pos.z),
         );
+    }
+
+    /// G-H1: the hint card shows until the user demonstrates any
+    /// interaction (a camera gesture, an application opening, or a
+    /// click on the card). Never shows again afterwards.
+    fn hints_visible(&self) -> bool {
+        !self.hints_dismissed && self.scene.visuals.is_empty()
+    }
+
+    fn dismiss_hints(&mut self) {
+        if !self.hints_dismissed {
+            self.hints_dismissed = true;
+            crate::shell::mark_hints_seen();
+            info!("first-run hints dismissed");
+        }
     }
 
     /// J4: assemble the taskbar model for this frame from live state —
@@ -5106,6 +5131,18 @@ impl LookingGlass {
         self.press_pos = (x, y);
         self.event_serial = self.event_serial.wrapping_add(1);
         self.interaction.window_size = self.fb_size();
+        // G-H1: a click on the hint card dismisses it (and only it).
+        if self.hints_visible() {
+            let hint = crate::shell::HintLayout::for_framebuffer(
+                self.fb_size().0,
+                self.fb_size().1,
+            );
+            if hint.contains(x, y) {
+                self.dismiss_hints();
+                self.schedule_render();
+                return;
+            }
+        }
         // J4: the shell plane owns the bottom strip — clicks there route
         // to the taskbar (workspace switch, window activate/minimize,
         // launcher) and never reach the 3D scene.
@@ -5259,6 +5296,9 @@ impl LookingGlass {
         // grab-the-world pan. The gesture is decided by the PRESS
         // location — a press on a window/shell keeps window interaction.
         // Threshold-gated at move time; release below threshold = click.
+        if background_press && self.spatial_mode {
+            self.dismiss_hints();
+        }
         self.camera_pan_grab = if background_press
             && self.spatial_mode
             && matches!(self.focus_manager.camera_mode, CameraMode::Normal)
@@ -5575,6 +5615,7 @@ impl LookingGlass {
         // manipulation only when NO window drag owns the gesture.
         if self.nav_button == 3 && !self.interaction.is_dragging() && self.right_rotate_arm.is_none() {
             self.workspace_manager.active_mut().auto_orbit = false;
+            self.dismiss_hints();
             self.handle_orbit(dx, dy);
             return;
         }
@@ -6187,6 +6228,7 @@ impl LookingGlass {
             // H0.2/H0.3: pointer over the spatial background — the
             // wheel is the PRIMARY navigation gesture: pointer-directed
             // dolly (the world point under the cursor stays there).
+            self.dismiss_hints();
             self.camera_dolly_at_pointer(x, y, wheel);
             self.debug_snapshot();
         }
