@@ -18,6 +18,13 @@ UX_XVFB_GEOMETRY="${UX_XVFB_GEOMETRY:-1280x720x24}"
 
 ux_log() { echo "[ux] $*"; }
 
+# Environment hygiene (user bug report: firefox opened on the HOST
+# desktop). A test author's shell may be a Wayland session — an
+# inherited WAYLAND_DISPLAY steers Firefox and other dual-backend
+# clients to the HOST compositor instead of veyra's XWayland. The
+# runners own their display environment: no host Wayland leaks in.
+unset WAYLAND_DISPLAY WAYLAND_SOCKET
+
 # --- session lifecycle -------------------------------------------------
 
 ux_kill_all() {
@@ -61,7 +68,10 @@ ux_launch_x11() { # <veyra-log> <cmd...> — an X11 client INSIDE veyra
         ux_log "no XWayland display found in $log"
         return 1
     fi
-    DISPLAY=":$d" setsid "$@" > /dev/null 2>&1 < /dev/null &
+    # Dual-backend clients (firefox) must see ONLY the XWayland display:
+    # strip any inherited Wayland steering variables.
+    env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET DISPLAY=":$d" \
+        setsid "$@" > /dev/null 2>&1 < /dev/null &
     disown
 }
 
@@ -343,4 +353,24 @@ ux_desktop_window() {
                 | awk '/Geometry:/{split($2,a,"x");print a[1];exit}')
             [ "${gw:-0}" -ge 1000 ] && { echo "$w"; break; }
           done | head -1
+}
+
+# ux_spawn_desktop <log> <journal> — the ONE veyra spawn path: Xvfb
+# :99 + veyra with the debug journal, environment sanitized (no host
+# Wayland variables can reach the compositor or its clients).
+ux_spawn_desktop() {
+    local log="$1" journal="$2"
+    setsid Xvfb :99 -screen 0 "$UX_XVFB_GEOMETRY" > /tmp/ux-xvfb.log 2>&1 < /dev/null &
+    disown
+    sleep 2
+    env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
+        setsid env RUST_LOG="veyra=info" VEYRA_DEBUG="$journal" \
+        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+        DISPLAY="$UX_DESKTOP_DISPLAY" "$BIN/veyra" > "$log" 2>&1 < /dev/null &
+    disown
+    for _ in $(seq 1 40); do
+        grep -q "Veyra running" "$log" 2>/dev/null && return 0
+        sleep 0.5
+    done
+    return 1
 }

@@ -46,22 +46,6 @@ SHOT() { echo "$TMP_DIR/$1.png"; }
 preflight || exit 1
 
 # ---- journal env must reach veyra --------------------------------------
-ux_spawn_desktop() { # override: add VEYRA_DEBUG journal
-    local log="$1"
-    setsid Xvfb :99 -screen 0 "$UX_XVFB_GEOMETRY" > /tmp/ux-xvfb.log 2>&1 < /dev/null &
-    disown
-    sleep 2
-    setsid env RUST_LOG="veyra=info" VEYRA_DEBUG="$UX_JOURNAL" \
-        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
-        DISPLAY="$UX_DESKTOP_DISPLAY" "$BIN/veyra" > "$log" 2>&1 < /dev/null &
-    disown
-    for _ in $(seq 1 40); do
-        grep -q "Veyra running" "$log" 2>/dev/null && return 0
-        sleep 0.5
-    done
-    return 1
-}
-
 ux_launch_wayland() { # <cmd...>
     WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
         setsid "$@" > /dev/null 2>&1 < /dev/null &
@@ -78,7 +62,7 @@ echo " Veyra UX gate — new-application usability + frozen contracts"
 echo "=============================================================="
 
 ux_kill_all
-if ux_spawn_desktop "$VEYRA_LOG"; then ok "session: veyra running"; else bad "session: veyra failed to start"; tail_log "$VEYRA_LOG"; exit 1; fi
+if ux_spawn_desktop "$VEYRA_LOG" "$UX_JOURNAL"; then ok "session: veyra running"; else bad "session: veyra failed to start"; tail_log "$VEYRA_LOG"; exit 1; fi
 ux_focus_desktop "$VEYRA_LOG" || true
 
 # ---------- S1: launch app A — must be fully reachable ------------------

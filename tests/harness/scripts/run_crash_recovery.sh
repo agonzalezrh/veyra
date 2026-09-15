@@ -34,22 +34,6 @@ SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/wayland-1"
 
 preflight || exit 1
 
-ux_spawn_desktop() { # <log> <journal>
-    local log="$1" journal="$2"
-    setsid Xvfb :99 -screen 0 "$UX_XVFB_GEOMETRY" > /tmp/ux-xvfb.log 2>&1 < /dev/null &
-    disown
-    sleep 2
-    setsid env RUST_LOG="veyra=info" VEYRA_DEBUG="$journal" \
-        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
-        DISPLAY="$UX_DESKTOP_DISPLAY" "$BIN/veyra" > "$log" 2>&1 < /dev/null &
-    disown
-    for _ in $(seq 1 40); do
-        grep -q "Veyra running" "$log" 2>/dev/null && return 0
-        sleep 0.5
-    done
-    return 1
-}
-
 cleanup() { ux_kill_all; }
 trap cleanup EXIT
 

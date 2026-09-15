@@ -33,22 +33,6 @@ SHOT() { echo "$TMP_DIR/$1.png"; }
 
 preflight || exit 1
 
-ux_spawn_desktop() {
-    local log="$1"
-    setsid Xvfb :99 -screen 0 "$UX_XVFB_GEOMETRY" > /tmp/ux-xvfb.log 2>&1 < /dev/null &
-    disown
-    sleep 2
-    setsid env RUST_LOG="veyra=info" VEYRA_DEBUG="$UX_JOURNAL" \
-        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
-        DISPLAY="$UX_DESKTOP_DISPLAY" "$BIN/veyra" > "$log" 2>&1 < /dev/null &
-    disown
-    for _ in $(seq 1 40); do
-        grep -q "Veyra running" "$log" 2>/dev/null && return 0
-        sleep 0.5
-    done
-    return 1
-}
-
 ux_launch_wayland() {
     WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
         setsid "$@" > /dev/null 2>&1 < /dev/null &
@@ -65,7 +49,7 @@ echo "=============================================================="
 # ---- 0. clean slate ------------------------------------------------------
 rm -f "$STATE_FILE"
 ux_kill_all
-if ux_spawn_desktop "$VEYRA_LOG"; then ok "restart: Veyra running (no prior state)"; else
+if ux_spawn_desktop "$VEYRA_LOG" "$UX_JOURNAL"; then ok "restart: Veyra running (no prior state)"; else
     bad "restart: Veyra failed to start"; tail_log "$VEYRA_LOG"; exit 1; fi
 grep -q "no saved workspace state found" "$VEYRA_LOG" \
     && ok "restart: started without stale state" \
@@ -137,7 +121,7 @@ grep -q "clean shutdown: saving workspace state" "$VEYRA_LOG" \
 say "restart Veyra"
 UX_JOURNAL="$TMP_DIR/journal2.jsonl"
 VEYRA_LOG="$TMP_DIR/veyra2.log"
-ux_spawn_desktop "$VEYRA_LOG" || { bad "restart: second boot failed"; exit 1; }
+ux_spawn_desktop "$VEYRA_LOG" "$UX_JOURNAL" || { bad "restart: second boot failed"; exit 1; }
 grep -q "workspace state loaded" "$VEYRA_LOG" \
     && ok "restart: state loaded on boot" \
     || bad "restart: boot did not load state ($(grep -aoE 'no saved workspace state|corrupt saved state' "$VEYRA_LOG" | head -1))"
