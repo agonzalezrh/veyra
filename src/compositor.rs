@@ -312,6 +312,9 @@ pub struct LookingGlass {
     /// R6: wake handle pinging the event loop — dirty state renders
     /// immediately instead of waiting for the pacing timer.
     pub render_ping: Option<smithay::reexports::calloop::ping::Ping>,
+    /// G-H0.9: set by the sigwait thread on SIGTERM/SIGINT; the render
+    /// pump performs the graceful save-and-exit on the main thread.
+    pub shutdown_requested: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// R6: pacing timer token (animations, pending frame callbacks).
     /// None while the compositor is idle — the timer source is dropped
     /// entirely, so an idle compositor wakes for nothing.
@@ -754,6 +757,7 @@ impl LookingGlass {
             last_down_vid: None,
             saved_state: None,
             render_ping: None,
+            shutdown_requested: None,
             pacing_timer: None,
             pacing_active: false,
             render_caches: Default::default(),
@@ -881,6 +885,11 @@ impl LookingGlass {
                     self.camera_mut().position.z = first.camera.z;
                     self.camera_mut().yaw = first.camera.yaw;
                     self.camera_mut().pitch = first.camera.pitch;
+                    // H0.9: the loaded pose IS the adapted pose — without
+                    // this the one-shot frustum fit stomped the restored
+                    // camera back to the default distance on the first
+                    // frame (the cold-restart journey caught it).
+                    self.spatial_cam_adapted = true;
                 }
 
                 // Store saved visual state for surface remapping
@@ -1438,14 +1447,6 @@ impl LookingGlass {
 
                         if let Some(x11) = x11_window.clone() {
                             // ── X11 window commit (G-C4) ──
-                            let ws_eligible = self.workspace_manager.active().visual_ids.clone();
-                            let pos = layout::place_new_visual(
-                                logical_size.w as f32,
-                                logical_size.h as f32,
-                                &self.scene,
-                                self.visible_bounds(),
-                                &ws_eligible,
-                            );
                             let mut visual = Visual::new(
                                 VisualContent::WaylandSurface(texture),
                                 smithay::utils::Rectangle::new(
@@ -1460,11 +1461,60 @@ impl LookingGlass {
                             let x11_app_id = visual.chrome.app_id.clone();
                             let x11_vid = visual.id;
                             self.register_foreign_toplevel(x11_vid, &x11_title, &x11_app_id);
-                            visual.transform.position = pos;
-                            let fit_pos = pos;
-                            let fit_w = visual.total_width();
-                            let fit_h = visual.total_height();
-                            self.fit_camera_to_placed(fit_pos, fit_w, fit_h);
+                            // H0.9: X11 windows participate in persistence —
+                            // restart/relaunch must restore the SAVED transform
+                            // (Firefox is X11; without this the cold-restart
+                            // journey found every X11 app back at the origin).
+                            let mut reopened: Option<crate::closed::PendingReopen> = None;
+                            if self
+                                .pending_reopen
+                                .as_ref()
+                                .is_some_and(|pr| pr.app_id == x11_app_id)
+                            {
+                                reopened = self.pending_reopen.take();
+                                if let Some(pr) = &reopened {
+                                    visual.transform = pr.transform.clone();
+                                    info!(app_id = %x11_app_id, "pending reopen applied (x11)");
+                                }
+                            }
+                            let restored = self.saved_state.as_mut().and_then(|s| {
+                                s.take_visual(&x11_app_id).map(|(ws_idx, vs)| {
+                                    visual.transform.position.x = vs.x;
+                                    visual.transform.position.y = vs.y;
+                                    visual.transform.position.z = vs.z;
+                                    visual.transform.rotation.s = vs.rotation[0];
+                                    visual.transform.rotation.v.x = vs.rotation[1];
+                                    visual.transform.rotation.v.y = vs.rotation[2];
+                                    visual.transform.rotation.v.z = vs.rotation[3];
+                                    visual.transform.scale.x = vs.scale[0];
+                                    visual.transform.scale.y = vs.scale[1];
+                                    visual.transform.scale.z = vs.scale[2];
+                                    if vs.detached {
+                                        self.scene.detached_set.push(visual.id);
+                                    }
+                                    ws_idx
+                                })
+                            });
+                            if restored.is_none() && reopened.is_none() {
+                                let ws_eligible =
+                                    self.workspace_manager.active().visual_ids.clone();
+                                let pos = layout::place_new_visual(
+                                    logical_size.w as f32,
+                                    logical_size.h as f32,
+                                    &self.scene,
+                                    self.visible_bounds(),
+                                    &ws_eligible,
+                                );
+                                visual.transform.position = pos;
+                                let fit_pos = pos;
+                                let fit_w = visual.total_width();
+                                let fit_h = visual.total_height();
+                                self.fit_camera_to_placed(fit_pos, fit_w, fit_h);
+                            } else {
+                                // The camera already frames this content (the
+                                // restored pose is persisted alongside it).
+                                self.spatial_cam_adapted = true;
+                            }
                             let visual_id = visual.id;
                             let x11_map_pos = visual.transform.position;
                             info!(
@@ -1479,6 +1529,23 @@ impl LookingGlass {
                             self.wayland_surfaces.insert(visual_id, surface.clone());
                             self.scene.add(visual);
                             self.workspace_manager.active_mut().add(visual_id);
+                            // R3 (x11): a restored X11 window returns to its
+                            // SAVED workspace, not the active one.
+                            if let Some(ws_idx) = restored {
+                                if ws_idx < self.workspace_manager.len()
+                                    && ws_idx != self.workspace_manager.active_id()
+                                {
+                                    if let Some(ws) = self.workspace_manager.get_mut(ws_idx) {
+                                        ws.add(visual_id);
+                                    }
+                                    self.workspace_manager.active_mut().remove(visual_id);
+                                    info!(
+                                        ?visual_id,
+                                        workspace = ws_idx,
+                                        "restored x11 window placed in saved workspace"
+                                    );
+                                }
+                            }
                             // focus-on-map policy (same as native toplevels)
                             // — EXCEPT X11 surfaces that per EWMH never take
                             // input focus: override-redirect windows
@@ -2090,6 +2157,15 @@ impl LookingGlass {
     /// callbacks). When idle, the timer source is dropped — the
     /// compositor neither renders nor wakes.
     pub fn pump_render_loop(&mut self, handle: &smithay::reexports::calloop::LoopHandle<'_, Self>) {
+        // G-H0.9: SIGTERM/SIGINT arrived — persist and exit cleanly.
+        if let Some(flag) = &self.shutdown_requested {
+            if flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                info!("clean shutdown: saving workspace state");
+                self.save_state();
+                let _ = self.session.shutdown_sequence(|| {});
+                std::process::exit(0);
+            }
+        }
         if self.scheduler.is_dirty() {
             self.render();
         }

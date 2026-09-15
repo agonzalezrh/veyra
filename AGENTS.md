@@ -1090,6 +1090,44 @@ path.
   - Suites: 587 unit, protocol 111/0/0, input 108/2 (tcfoot flake
     family), clippy 0, UX gate 20/20, golden journey 20/0/1.
 
+- **G-H0.9** cold-restart/recovery journey + THREE defects it caught
+  on its first two runs (the E2E layer's third consecutive catch):
+  1. **SIGTERM killed veyra WITHOUT saving** — logout/systemd send
+     SIGTERM; veyra only saved on the winit CloseRequested path.
+     Now: signals are blocked process-wide at startup, a sigwait
+     thread sets a flag and pings the render loop, and the pump
+     (main-thread state access) runs save_state → shutdown_sequence
+     → exit(0). "shutdown signal received — saving state" in the log.
+  2. **X11 windows never restored persisted transforms** — the X11
+     map path had no saved_state/pending_reopen consultation (Firefox
+     always came back at the origin). The Wayland restore pattern
+     (reopen + take_visual + saved-workspace membership, R3) is now
+     mirrored in the X11 commit path; restored X11 windows skip the
+     placement AND the placement auto-fit.
+  3. **The one-shot spatial frustum fit stomped the RESTORED camera**
+     on the first frame (load_saved_state set the camera, the fit
+     reset it to the default distance). load now marks
+     spatial_cam_adapted=true; restored X11 maps do the same.
+  - tests/harness/scripts/run_restart_journey.sh — start → launch
+    Firefox + Foot → manipulate spatially (drag + rotate + dolly) →
+    SIGTERM → assert the state file carries the MANIPULATED transform
+    and camera → restart → relaunch → transform restored EXACTLY
+    (298.8), camera restored EXACTLY (1064.7), workspace restored →
+    interact again (wheel approach + I1 pan). Result: 15/0/0.
+    (xdotool windowclose is NOT a clean shutdown — it destroys the X
+    window and winit panics on the dead drawable; SIGTERM is the
+    production path and the journey uses it.)
+  - run_hw_campaign.sh rewired per directive: the hardware campaign
+    REUSES the nested runners (gate fast/full + golden journey +
+    restart journey — no separate hardware suite). Environment shims
+    documented (ydotool/uinput input; VEYRA_SHOT_DIR frame capture);
+    small-first stage order f1.1 boot → f1.7 restart, then VT/hotplug/
+    reset/soak. Honest SKIP without VEYRA_HW=1 + a real driver (this
+    box's card0 is simple-framebuffer).
+  - run_overnight_gate.sh now includes the restart journey.
+  - Suites: 587 unit, clippy 0, restart journey 15/0/0; the UX gate +
+    golden journey unchanged (20/20, 20/0/1).
+
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
 rendered as chrome-only ghosts scattered around the desktop. Two root
 causes, both in the #11 subsurface path:

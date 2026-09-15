@@ -404,6 +404,7 @@ fn main() {
     use smithay::reexports::calloop::ping;
     let (render_ping, render_ping_source) =
         ping::make_ping().expect("Failed to create render ping");
+    let ping_for_signal = render_ping.clone();
     state.render_ping = Some(render_ping);
     let loop_handle_for_pump = handle.clone();
     handle
@@ -411,6 +412,39 @@ fn main() {
             state.pump_render_loop(&loop_handle_for_pump);
         })
         .expect("Failed to register render ping source");
+
+    // G-H0.9: a session manager (and any sane supervisor) stops the
+    // compositor with SIGTERM; Ctrl+C is SIGINT. Neither is a crash —
+    // both are CLEAN SHUTDOWN paths and must persist workspace state
+    // exactly like an ICCCM window close. Block the signals process-
+    // wide, then sigwait on a dedicated thread and wake the render
+    // loop; the pump (main-thread state access) performs the save.
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let sig_flag = shutdown_flag.clone();
+        unsafe {
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut mask);
+            libc::sigaddset(&mut mask, libc::SIGTERM);
+            libc::sigaddset(&mut mask, libc::SIGINT);
+            libc::pthread_sigmask(libc::SIG_BLOCK, &mask, std::ptr::null_mut());
+        }
+        std::thread::spawn(move || unsafe {
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut mask);
+            libc::sigaddset(&mut mask, libc::SIGTERM);
+            libc::sigaddset(&mut mask, libc::SIGINT);
+            let mut sig: libc::c_int = 0;
+            if libc::sigwait(&mask, &mut sig) == 0 {
+                tracing::info!(signal = sig, "shutdown signal received — saving state");
+                sig_flag.store(true, Ordering::SeqCst);
+                ping_for_signal.ping();
+            }
+        });
+        state.shutdown_requested = Some(shutdown_flag);
+    }
     // Ensure the initial frame renders
     state.schedule_render();
 

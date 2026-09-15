@@ -30,6 +30,7 @@ run_stage() { # <name> <cmd...>
 run_stage "fast-gate" "$GATE_DIR/run_ux_gate.sh" --fast
 run_stage "full-gate" "$GATE_DIR/run_ux_gate.sh"
 run_stage "golden-journey" "$GATE_DIR/run_golden_journey.sh"
+run_stage "restart-journey" "$GATE_DIR/run_restart_journey.sh"
 run_stage "scalability" "$ROOT/tests/harness/scripts/run_scalability.sh"
 if [ "${1:-}" != "--skip-torture" ]; then
     run_stage "torture" "$ROOT/tests/harness/scripts/run_torture.sh"

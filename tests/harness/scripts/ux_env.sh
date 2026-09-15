@@ -333,3 +333,14 @@ PYEOF
 ux_click2() {
     DISPLAY="$UX_DESKTOP_DISPLAY" xdotool mousemove "$2" "$3" click 1
 }
+
+# ux_desktop_window <log> → the veyra winit window id (geometry-derived)
+ux_desktop_window() {
+    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool search --onlyvisible --name "." 2>/dev/null \
+        | while read -r w; do
+            local gw
+            gw=$(DISPLAY="$UX_DESKTOP_DISPLAY" xdotool getwindowgeometry "$w" 2>/dev/null \
+                | awk '/Geometry:/{split($2,a,"x");print a[1];exit}')
+            [ "${gw:-0}" -ge 1000 ] && { echo "$w"; break; }
+          done | head -1
+}
