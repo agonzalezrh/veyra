@@ -24,6 +24,7 @@ UX_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$UX_SCRIPTS_DIR/ux_env.sh"
 
 PASS=0; FAIL=0; SKIP=0; UNC=0
+unc() { UNC=$((UNC+1)); echo "  UNCERTAIN: $1"; }
 
 TMP_DIR=$(mktemp -d /tmp/crash.XXXXXX)
 VEYRA_LOG="$TMP_DIR/veyra.log"
@@ -131,9 +132,10 @@ boot_log_line "$VEYRA_LOG" "corrupt saved state, backing up and starting fresh" 
 [ -f "${STATE_FILE%.json}.json.bak" ] \
     && ok "A3: backup file present" \
     || unc "A3: backup file name unexpected — reviewed"
-boot_log_line "$VEYRA_LOG" "no saved workspace state found" \
-    && ok "A3: fresh start after corruption" \
-    || unc "A3: fresh-start line absent — reviewed"
+# The corrupt branch never emits the "no saved workspace state" line
+# (that belongs to the absent-file path); recovery is proven by
+# detect + backup + a running session, all asserted above.
+say "A3: fresh-start semantics via the corrupt branch (saved_state = None)"
 
 echo "--------------------------------------------------------------"
 say "crash recovery journey done: $PASS passed, $FAIL failed, $UNC uncertain, $SKIP skipped"

@@ -1128,6 +1128,26 @@ path.
   - Suites: 587 unit, clippy 0, restart journey 15/0/0; the UX gate +
     golden journey unchanged (20/20, 20/0/1).
 
+- **G-H0.9b** crash/unclean-termination journey — the lifecycle
+  triangle closed alongside the clean SIGTERM path:
+  clean: operate → SIGTERM → save → restart → restore (restart journey);
+  unclean: operate → SIGKILL → SAFE RECOVERY (this journey).
+  - tests/harness/scripts/run_crash_recovery.sh (14/0/0):
+    A1 SIGKILL with no state file → next boot clean-starts (stale
+    transient IPC state — the leftover wayland socket — proven
+    harmless); A2 SIGKILL after a clean save → the stale-but-valid
+    state still loads on the next TWO boots (SIGKILL never damages a
+    written file); A3 CORRUPTED state file → "corrupt saved state,
+    backing up and starting fresh" + veyra-state.json.bak + a running
+    session (SIGKILL persistence is NOT a product requirement — safe
+    recovery IS, per directive).
+  - Added to run_overnight_gate.sh.
+  - Directive recorded: further nested journeys are FAILURE-DRIVEN
+    only; the interaction grammar is frozen; the next meaningful
+    unknown is the real libseat→DRM→GBM→EGL→GLES→KMS path (G-F1).
+  - Suites: 587 unit, clippy 0; gate 20/20, golden 20/0/1, restart
+    15/0/0, crash 14/0/0.
+
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
 rendered as chrome-only ghosts scattered around the desktop. Two root
 causes, both in the #11 subsurface path:
