@@ -43,6 +43,10 @@ pub enum MenuAction {
     Fullscreen,
     Minimize,
     Close,
+    /// H1: mouse-only access to the spatial/normal mode toggle — a
+    /// user with a stuck modifier (or no keyboard) must still be able
+    /// to switch modes; the UX gate also relies on it.
+    ToggleSpatial,
     Dismiss,
 }
 
@@ -100,6 +104,7 @@ impl ContextMenu {
             MenuItem::new("Maximize", MenuAction::Maximize),
             MenuItem::new("Fullscreen", MenuAction::Fullscreen),
             MenuItem::new("Minimize", MenuAction::Minimize),
+            MenuItem::new("Spatial Mode", MenuAction::ToggleSpatial),
             MenuItem::new("Close", MenuAction::Close),
         ];
     }
@@ -272,12 +277,22 @@ mod tests {
         let mut menu = ContextMenu::new();
         menu.show(100.0, 100.0, VisualId(1), 3);
         // Item at y=100 is index 0, y=124 is index 1, etc.
-        assert_eq!(menu.item_at(110.0, 100.0, 200.0, 24.0), Some(0));
-        assert_eq!(menu.item_at(110.0, 124.0, 200.0, 24.0), Some(1));
-        // Last item (index 8) is within menu height (100 + 9*24 = 316)
-        assert_eq!(menu.item_at(110.0, 315.0, 200.0, 24.0), Some(8));
-        // Below menu
-        assert_eq!(menu.item_at(110.0, 400.0, 200.0, 24.0), None);
+        // Geometry-relative expectations (show() anchors the item list
+        // at its own offset — derive from the stored position).
+        let (_, my) = menu.position;
+        let ih = 24.0;
+        assert_eq!(menu.item_at(110.0, my + 0.5 * ih, 200.0, ih), Some(0));
+        assert_eq!(menu.item_at(110.0, my + 1.5 * ih, 200.0, ih), Some(1));
+        let last = menu.items.len() - 1;
+        assert_eq!(
+            menu.item_at(110.0, my + (last as f64 + 0.5) * ih, 200.0, ih),
+            Some(last)
+        );
+        // Below the menu
+        assert_eq!(
+            menu.item_at(110.0, my + (last as f64 + 2.0) * ih, 200.0, ih),
+            None
+        );
     }
 
     #[test]
@@ -380,7 +395,9 @@ mod tests {
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Fullscreen));
         menu.selected = Some(10); // Minimize (I5)
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Minimize));
-        menu.selected = Some(11); // Close
+        menu.selected = Some(11); // Spatial Mode
+        assert_eq!(menu.confirm_selection(), Some(MenuAction::ToggleSpatial));
+        menu.selected = Some(12); // Close
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Close));
     }
 

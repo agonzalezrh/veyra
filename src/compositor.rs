@@ -4895,6 +4895,10 @@ impl LookingGlass {
             return;
         };
         match action {
+            MenuAction::ToggleSpatial => {
+                info!("context menu: toggle spatial mode");
+                self.handle_binding(crate::navigation::Binding::ToggleSpatial);
+            }
             MenuAction::Dismiss => {
                 self.context_menu.dismiss();
             }

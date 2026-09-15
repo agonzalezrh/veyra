@@ -47,6 +47,8 @@ def main():
         return
     url = os.environ.get("VEYRA_VLM_URL",
                          "http://localhost:8888/v1/chat/completions")
+    if url and "://" not in url:
+        url = "http://" + url
     model = os.environ.get("VEYRA_VLM_MODEL", "GLM-5.3-Flash-EXL3")
     with open(png, "rb") as f:
         b64 = base64.b64encode(f.read()).decode()

@@ -1188,6 +1188,29 @@ path.
     + URL text + autocomplete).
   - Suites: 587 unit, clippy 0.
 
+- **G-H0.10b** gate hardening from the user's hardware-independence
+  runs (three more catches):
+  1. **"Spatial Mode" added to the context menu** (MenuAction::
+     ToggleSpatial) — mouse-only mode toggle: accessibility for a
+     user with a stuck/latched modifier, and the gate's S11 no
+     longer depends on fragile keyboard delivery. The gate
+     right-clicks the FOCUSED window at its CURRENT projected
+     position (stale post-drag coordinates hit the background — the
+     menu never opened) and clicks item 11 (a one-off miscount
+     clicked Close and KILLED the target window — "close sent
+     target=VisualId(2)").
+  2. **Stuck-modifier diagnosis**: the user's F5 arrived with
+     "alt: true" even after --clearmodifiers + blind keyups — the
+     minimal Xvfb keymap can bind Super_L onto Mod1, so the "alt"
+     was the gate's own Meta+drag leftover, machine-dependently
+     mapped. The menu path removes the keyboard from the equation
+     entirely; F5 remains as the fallback (with blind releases).
+  3. **visual_check.py auto-prefixes http://** for VEYRA_VLM_URL
+     (the user's host: "unknown url type: 192.168.68.62").
+  - context_menu tests updated (geometry-relative item_at
+    expectations; Spatial Mode at index 11, Close at 12).
+  - Local: gate 23/0/1 (S11 via the menu ✓), clippy 0, 587 unit.
+
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
 rendered as chrome-only ghosts scattered around the desktop. Two root
 causes, both in the #11 subsurface path:

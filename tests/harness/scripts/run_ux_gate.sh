@@ -288,35 +288,60 @@ MOVER=$(ux_single_mover "$SNAPROT" "$SNAPD")
     || bad "I2 VIOLATED (drag): mover=$MOVER (expected $TARGET_VID)"
 
 # ---------- S11: return to normal mode -----------------------------------
-say "S11: return to normal (2D) mode"
-NZ=""
-for _ in 1 2 3; do
-    ux_focus_desktop "$VEYRA_LOG" > /dev/null 2>&1
-    # Blind modifier releases FIRST: a stuck modifier inside the
-    # compositor's XKB state (user report: "KEY ... alt: true" with
-    # no physical alt held) survives --clearmodifiers, which only
-    # clears what the X SERVER thinks is held. A synthetic release
-    # always reaches the compositor and re-syncs it.
-    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool keyup alt || true
-    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool keyup shift || true
-    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool keyup ctrl || true
-    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool keyup super || true
-    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool keyup meta || true
-    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool key --clearmodifiers F5
-    sleep 1.2
-    NZ=$(ux_snapshot_field "$(ux_last_snapshot "$UX_JOURNAL")" "ev['camera_z']")
-    python3 -c "exit(0 if abs($NZ - 500.0) < 2.0 else 1)" && break
-    NZ=""
-done
-if [ -n "$NZ" ]; then
-    ok "S11: normal mode pinned camera (z=$NZ ≈ 500)"
+say "S11: return to normal (2D) mode — mouse-only (context menu)"
+# Keyboard delivery is environment-fragile (a stuck/latched modifier on
+# the host can mask plain-F5 bindings indefinitely). The context menu
+# provides a MOUSE-ONLY mode toggle: right-click the window (release
+# below the 5px threshold opens the menu), then click the item.
+# right-click the FOCUSED window at its CURRENT projected position
+# (S10 just moved it — stale coordinates land on the background and a
+# right-click there never opens a menu).
+SNAPF=$(ux_last_snapshot "$UX_JOURNAL")
+FOCUSED_VID=$(ux_snapshot_field "$SNAPF" "ev['focused']")
+[ -n "$FOCUSED_VID" ] && [ "$FOCUSED_VID" != "null" ] || FOCUSED_VID="$TARGET_VID"
+FP=$(ux_project "$SNAPF" "$FOCUSED_VID")
+read -r RCX RCY <<< "$FP"
+say "S11: right-clicking focused window $FOCUSED_VID at $RCX,$RCY"
+ux_focus_desktop "$VEYRA_LOG" > /dev/null 2>&1
+DISPLAY="$UX_DESKTOP_DISPLAY" xdotool mousemove "$RCX" "$RCY" click 3
+sleep 0.8
+# the menu opens AT the click point; "Spatial Mode" is item index 12
+# (MenuMetrics: item_height = 24 * clamp(h/720,1,2.5); width 220*su)
+MIH=24   # MenuMetrics at 720p: item_height = 24 * clamp(h/720,1,2.5)
+# "Spatial Mode" is item index 11 (0 Focus … 10 Minimize, 11 Spatial
+# Mode, 12 Close) — a one-off miscount clicked Close and KILLED the
+# target window.
+ITEM_Y=$(python3 -c "print(round($RCY + (11 + 0.5) * $MIH))")
+MENU_X=$(python3 -c "print(round($RCX + 110))")
+say "S11: clicking menu item at $MENU_X,$ITEM_Y (menu opened at $RCX,$RCY)"
+DISPLAY="$UX_DESKTOP_DISPLAY" xdotool mousemove "$MENU_X" "$ITEM_Y" click 1
+sleep 1.2
+SNAPN=$(ux_last_snapshot "$UX_JOURNAL")
+NZ=$(ux_snapshot_field "$SNAPN" "ev['camera_z']")
+if python3 -c "exit(0 if abs($NZ - 500.0) < 2.0 else 1)"; then
+    ok "S11: normal mode restored via the menu (z=$NZ ≈ 500)"
 else
-    bad "S11: F5 did not reach the compositor after 3 attempts (last z=$(ux_snapshot_field "$(ux_last_snapshot "$UX_JOURNAL")" "ev['camera_z']"))"
-    say "S11 diagnosis — toggle lines:"
-    sed -E 's/\x1b\[[0-9;]*m//g' "$VEYRA_LOG" | grep -a "spatial mode toggled" | tail -2
-    say "S11 diagnosis — last KEY events:"
-    sed -E 's/\x1b\[[0-9;]*m//g' "$VEYRA_LOG" | grep -a "KEY raw" | tail -3
+    # Fallback: the keyboard path (clearmodifiers + blind releases)
+    say "S11: menu toggle missed — falling back to F5 with blind modifier releases"
+    for _ in 1 2; do
+        ux_focus_desktop "$VEYRA_LOG" > /dev/null 2>&1
+        for k in alt shift ctrl super meta; do
+            DISPLAY="$UX_DESKTOP_DISPLAY" xdotool keyup "$k" || true
+        done
+        DISPLAY="$UX_DESKTOP_DISPLAY" xdotool key --clearmodifiers F5
+        sleep 1.2
+        NZ=$(ux_snapshot_field "$(ux_last_snapshot "$UX_JOURNAL")" "ev['camera_z']")
+        python3 -c "exit(0 if abs($NZ - 500.0) < 2.0 else 1)" && break
+    done
+    if [ -n "$NZ" ] && python3 -c "exit(0 if abs($NZ - 500.0) < 2.0 else 1)"; then
+        ok "S11: normal mode restored via F5 (z=$NZ)"
+    else
+        bad "S11: neither the menu nor F5 restored normal mode (last z=$(ux_snapshot_field "$(ux_last_snapshot "$UX_JOURNAL")" "ev['camera_z']"))"
+        say "S11 diagnosis — toggle lines:"
+        sed -E 's/\x1b\[[0-9;]*m//g' "$VEYRA_LOG" | grep -a "spatial mode toggled" | tail -2
+    fi
 fi
+ux_shot "$(SHOT normal)"
 
 echo "--------------------------------------------------------------"
 say "ux gate done: $PASS passed, $FAIL failed, $UNC uncertain, $SKIP skipped"
