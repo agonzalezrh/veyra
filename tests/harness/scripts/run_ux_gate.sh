@@ -36,6 +36,10 @@ source "$UX_SCRIPTS_DIR/ux_env.sh"
 
 FAST=0
 [ "${1:-}" = "--fast" ] && FAST=1
+# The VLM taxonomy (G-H0.8): UNCERTAIN findings are counted and
+# reported, never silently swallowed and never failing the suite.
+UNC=0
+unc() { UNC=$((UNC+1)); echo "  UNCERTAIN: $1"; }
 
 TMP_DIR=$(mktemp -d /tmp/ux-gate.XXXXXX)
 VEYRA_LOG="$TMP_DIR/veyra.log"
@@ -120,6 +124,9 @@ sed -E 's/\x1b\[[0-9;]*m//g' "$VEYRA_LOG" | grep -q 'KEY.*sym=x' \
 # ---------- Firefox (S1-real-app) ---------------------------------------
 if [ "$FAST" -eq 0 ]; then
     say "S-FF: launch Firefox (X11 via XWayland) — real-application gate"
+    # firefox is often the snap (confined): --profile outside the snap
+    # dirs errors out, so the harness relies on the GRACEFUL kill in
+    # ux_kill_all (no kill-9 crash flag → no crash dialog on relaunch).
     ux_launch_x11 "$VEYRA_LOG" firefox --new-window --width 1000 --height 640 about:blank
     sleep 20
     FFVID=$(sed -E 's/\x1b\[[0-9;]*m//g' "$VEYRA_LOG" | grep -oP 'x11 surface mapped visual_id=VisualId\(\K[0-9]+' | tail -1)
@@ -201,19 +208,36 @@ ux_shot "$(SHOT pan)"
 ux_no_window_moved "$SNAPC2" "$SNAPP" \
     && ok "I1 (pan): window transforms untouched" \
     || bad "I1 VIOLATED (pan): a window transform moved"
+# non-vacuous: the pan must actually MOVE the camera
+python3 - "$SNAPC2" "$SNAPP" <<'PYEOF' && ok "S7: pan moved the camera" || bad "S7: pan did NOT move the camera (navigation dead)"
+import json, sys
+a = json.loads(sys.argv[1]); b = json.loads(sys.argv[2])
+ca, cb = a.get('camera'), b.get('camera')
+sys.exit(0 if ca and cb and ca != cb else 1)
+PYEOF
 
 # ---------- S8: RMB background orbit → I1 --------------------------------
 say "S8: RMB background orbit"
-ux_press_drag "$VEYRA_LOG" 1000 150 1120 150 3 3
+OBP=$(ux_background_point "$SNAPP" 1000 150)
+read -r OGX OGY <<< "$OBP"
+say "S8 orbit from background point $OGX,$OGY"
+ux_press_drag "$VEYRA_LOG" "$OGX" "$OGY" "$((OGX+120))" "$OGY" 3 3
 sleep 0.8
 SNAPR=$(ux_last_snapshot "$UX_JOURNAL")
 ux_no_window_moved "$SNAPP" "$SNAPR" \
     && ok "I1 (orbit): window transforms untouched" \
     || bad "I1 VIOLATED (orbit): a window transform moved"
+python3 - "$SNAPP" "$SNAPR" <<'PYEOF' && ok "S8: orbit moved the camera" || bad "S8: orbit did NOT move the camera"
+import json, sys
+a = json.loads(sys.argv[1]); b = json.loads(sys.argv[2])
+ca, cb = a.get('camera'), b.get('camera')
+sys.exit(0 if ca and cb and ca != cb else 1)
+PYEOF
 
 # ---------- S9: RMB window rotation — responsive, isolated ---------------
 say "S9: RMB drag on a window rotates THAT window"
 ux_type "$VEYRA_LOG" Home
+ux_shot "$(SHOT rot0)"
 sleep 1.0
 SNAPH=$(ux_last_snapshot "$UX_JOURNAL")
 TARGET=""
@@ -255,8 +279,8 @@ case "$ROTREGION" in
 esac
 
 # ---------- S10: LMB window drag → I2 ------------------------------------
-say "S10: LMB window manipulation (drag isolation)"
-ux_press_drag "$VEYRA_LOG" "$TX" "$TY" "$((TX+260))" "$TY" 1 5
+say "S10: Meta+LMB window manipulation (drag isolation)"
+ux_meta_drag "$VEYRA_LOG" "$TX" "$TY" "$((TX+260))" "$TY" 5
 sleep 0.8
 SNAPD=$(ux_last_snapshot "$UX_JOURNAL")
 MOVER=$(ux_single_mover "$SNAPROT" "$SNAPD")
@@ -267,7 +291,8 @@ MOVER=$(ux_single_mover "$SNAPROT" "$SNAPD")
 say "S11: return to normal (2D) mode"
 NZ=""
 for _ in 1 2 3; do
-    ux_type "$VEYRA_LOG" F5
+    ux_focus_desktop "$VEYRA_LOG" > /dev/null 2>&1
+    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool key --clearmodifiers F5
     sleep 1.2
     NZ=$(ux_snapshot_field "$(ux_last_snapshot "$UX_JOURNAL")" "ev['camera_z']")
     python3 -c "exit(0 if abs($NZ - 500.0) < 2.0 else 1)" && break
@@ -284,7 +309,7 @@ else
 fi
 
 echo "--------------------------------------------------------------"
-say "ux gate done: $PASS passed, $FAIL failed, $SKIP skipped"
+say "ux gate done: $PASS passed, $FAIL failed, $UNC uncertain, $SKIP skipped"
 echo "    journal: $UX_JOURNAL"
 echo "    shots:   $TMP_DIR"
 [ "$FAIL" -eq 0 ]

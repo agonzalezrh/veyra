@@ -3268,6 +3268,16 @@ impl LookingGlass {
                     self.scene.select(Some(vid));
                     self.scene.bring_to_front(vid);
                     self.set_keyboard_focus(Some(vid));
+                    // H1 (user report): activating a window that is NOT
+                    // visible on screen must bring it INTO view — the
+                    // camera frames it (camera-only op; transforms are
+                    // never touched).
+                    if !self.visual_center_onscreen(vid) {
+                        let (cam, scene) = self.camera_and_scene();
+                        if cam.frame_visual(vid, scene) {
+                            info!(?vid, "taskbar: camera framed off-view window");
+                        }
+                    }
                 }
                 true
             }
@@ -5571,12 +5581,17 @@ impl LookingGlass {
             self.camera_pan_grab = None;
         }
 
-        // If left button is held and we're not already dragging,
-        // start a content-area spatial drag on the selected visual.
+        // H1 (user report — manual evidence): a plain LMB drag on a
+        // window belongs to the APPLICATION (text selection, sliders,
+        // canvas). Window manipulation moves to the desktop-standard
+        // Meta+drag; the frozen-contract table in AGENTS.md is updated
+        // accordingly. Without Meta the moves simply flow to the client
+        // through hover routing (the pointer focus is already there).
         if self.camera_pan_grab.is_none()
             && !was_dragging
             && !self.interaction.is_dragging()
             && self.nav_button == 1
+            && self.meta_pressed
         {
             if let Some(vid) = self.scene.selected_id {
                 if self.scene.is_active(vid) {
@@ -5743,6 +5758,39 @@ impl LookingGlass {
             cam.clamp_state();
             info!(need, "camera auto-fit after placement");
         }
+    }
+
+    /// H1 (user report): is the visual's projected center inside the
+    /// framebuffer? Uses the pointer's output view (its camera and
+    /// viewport-size projection — the same math that renders).
+    fn visual_center_onscreen(&self, vid: VisualId) -> bool {
+        let Some(v) = self.scene.visuals.iter().find(|v| v.id == vid) else {
+            return false;
+        };
+        let (out_id, _lx, _ly) = self.resolve_pointer_output(
+            self.fb_size().0 as f64 / 2.0,
+            self.fb_size().1 as f64 / 2.0,
+        );
+        let Some(out_id) = out_id else {
+            return true;
+        };
+        let Some(state) = self.outputs.get(out_id) else {
+            return true;
+        };
+        let (mw, mh) = (state.mode.0 as f32, state.mode.1 as f32);
+        if mw <= 0.0 || mh <= 0.0 {
+            return true;
+        }
+        let pv = Self::projection_for(self.spatial_mode, mw, mh)
+            * self.focus_manager.interpolated_camera(&state.camera, &self.scene).view_matrix();
+        let world = v.transform.position;
+        let clip = pv * cgmath::Vector4::new(world.x, world.y, world.z, 1.0);
+        if clip.w.abs() < 1e-6 {
+            return false;
+        }
+        let ndc_x = clip.x / clip.w;
+        let ndc_y = clip.y / clip.w;
+        ndc_x > -1.05 && ndc_x < 1.05 && ndc_y > -1.05 && ndc_y < 1.05
     }
 
     fn pick_visual_at(&self, x: f64, y: f64) -> Option<VisualId> {

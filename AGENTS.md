@@ -937,10 +937,18 @@ restart — and single-output tests pass unchanged.
 ```text
 Empty spatial scene:              Window:
   LMB drag  -> camera/world pan     LMB click -> select/focus
-  RMB drag  -> camera orbit         LMB drag  -> window manipulation
-  Wheel     -> pointer-directed     RMB drag  -> rotate THAT window
-               dolly                Wheel     -> application scroll
+  RMB drag  -> camera orbit         LMB drag  -> APPLICATION CONTENT
+  Wheel     -> pointer-directed        (text selection, sliders)
+               dolly                Meta+drag -> move THAT window
+                                    RMB drag  -> rotate THAT window
+                                    Wheel     -> application scroll
 Meta + wheel -> camera dolly regardless of target
+Taskbar click on an off-view window -> camera frames it (H1)
+(Amended H1 from manual-test evidence: a plain LMB drag on a window
+belongs to the application — text selection was impossible under the
+old "LMB drag = manipulate" rule; window movement moved to the
+desktop-standard Meta+drag. Camera navigation on background and the
+5px thresholds are unchanged.)
 Right release < 5px on window -> context menu (click semantics)
 5 px threshold separates clicks from drags everywhere.
 The gesture is decided by the PRESS location.
@@ -1147,6 +1155,38 @@ path.
     unknown is the real libseat→DRM→GBM→EGL→GLES→KMS path (G-F1).
   - Suites: 587 unit, clippy 0; gate 20/20, golden 20/0/1, restart
     15/0/0, crash 14/0/0.
+
+- **G-H0.10** manual-test fix batch (four user reports) + the gate
+  fixes their gate-run exposed:
+  1. **Grammar amendment (user report #1: "can't select")**: plain LMB
+     drag on a window now delivers to the application (text selection
+     works); window movement moved to Meta+drag (mutter/kwin
+     convention). S10 of the gate updated to Meta+drag; contracts
+     table amended (above).
+  2. **Taskbar activation frames off-view windows (#4)**: activating a
+     window whose projected center is outside the framebuffer now
+     dollies the camera to frame it (camera-only; visual_center_onscreen
+     + Camera::frame_visual).
+  3. **Gate non-vacuousness**: S7 pan / S8 orbit now assert the CAMERA
+     MOVED (the I1-only asserts passed vacuously when a gesture died);
+     S7/S8 press points are journal-derived background points (the
+     fixed (150,100)/(200,200) points could land on a window after a
+     pan — S8 was silently ROTATING a window instead of orbiting).
+  4. **Gate bugs found by the user's run**: unc() was not defined in
+     the gate (their S-FF VLM finding crashed the assert); S11's F5
+     retry now uses --clearmodifiers (their machine had a LATCHED ALT:
+     "KEY raw_code=71 ... alt: true" — the F5 no-modifier binding
+     never matched); rot0 baseline-shot restored (dropped by the
+     TARGET-loop edit → SIZE-MISMATCH).
+  5. Harness hygiene: ux_kill_all TERMs firefox before kill -9 (the
+     SIGKILL sets firefox's crash flag → a crash dialog pollutes the
+     next S-FF); snap firefox rejects --profile outside its sandbox
+     (environmental on this box, noted).
+  - Live: gate 23/0/1 (the one UNCERTAIN = this box's dirty snap
+    profile dialog — logged for review); firefox select now WORKS
+    (content drags deliver); typing unchanged (gate-verified: ctrl+l
+    + URL text + autocomplete).
+  - Suites: 587 unit, clippy 0.
 
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
 rendered as chrome-only ghosts scattered around the desktop. Two root

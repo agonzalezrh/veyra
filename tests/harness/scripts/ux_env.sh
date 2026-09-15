@@ -32,6 +32,7 @@ ux_kill_all() {
     pkill -9 -f "Xvf[b] :99" 2>/dev/null
     pkill -9 xterm 2>/dev/null
     pkill -9 -f "client-ki[t]" 2>/dev/null
+    pkill -f "firefo[x]" 2>/dev/null; sleep 0.6
     pkill -9 -f "firefo[x]" 2>/dev/null
     sleep 1
 }
@@ -392,4 +393,24 @@ else:
     xs=[p[0] for p in pts]; ys=[p[1] for p in pts]
     print(min(xs), min(ys), max(xs), max(ys))
 PYEOF
+}
+
+# ux_meta_drag <log> <x0> <y0> <x1> <y1> [steps] — Meta+LMB drag:
+# the window-manipulation gesture (H1 grammar amendment).
+ux_meta_drag() {
+    local log="$1" x0="$2" y0="$3" x1="$4" y1="$5" steps="${6:-5}"
+    ux_focus_desktop "$log" > /dev/null 2>&1
+    local d="$UX_DESKTOP_DISPLAY"
+    DISPLAY="$d" xdotool keydown super
+    DISPLAY="$d" xdotool mousemove "$x0" "$y0" mousedown 1
+    local i
+    for i in $(seq 1 "$steps"); do
+        local x y
+        x=$(python3 -c "print(round($x0 + ($x1-$x0)*$i/$steps))")
+        y=$(python3 -c "print(round($y0 + ($y1-$y0)*$i/$steps))")
+        DISPLAY="$d" xdotool mousemove "$x" "$y"
+        sleep 0.08
+    done
+    DISPLAY="$d" xdotool mouseup 1
+    DISPLAY="$d" xdotool keyup super
 }
