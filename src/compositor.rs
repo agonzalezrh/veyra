@@ -6662,6 +6662,38 @@ impl LookingGlass {
                     }
                     self.spatial_cam_adapted = true;
                 }
+                // H1 (user report: "toggled spatial mode and the window
+                // disappeared"): the restored pose can predate windows
+                // mapped since (dialogs open in normal mode at the
+                // origin). If NO top-level visual of the active
+                // workspace projects on-screen after the entry, frame
+                // the content — camera-only, transforms untouched.
+                // The guard must run ONLY when ENTERING spatial (the
+                // leaving path pins the ortho camera next).
+                if self.spatial_mode {
+                let ws_ids: Vec<VisualId> =
+                        self.workspace_manager.active().visual_ids.clone();
+                    let any_visible = ws_ids.iter().any(|vid| {
+                        self.scene
+                            .visuals
+                            .iter()
+                            .find(|v| &v.id == vid)
+                            .map(|v| {
+                                v.parent.is_none()
+                                    && v.window_state != crate::scene::WindowState::Minimized
+                            })
+                            .unwrap_or(false)
+                            && self.visual_center_onscreen(*vid)
+                    });
+                    if !ws_ids.is_empty() && !any_visible {
+                        let (cam, scene) = self.camera_and_scene();
+                        if cam.frame_all(scene) {
+                            info!(pos = ?cam.position, "spatial entry: saved pose showed no windows — framed workspace content");
+                        }
+                        self.spatial_cam_adapted = true;
+                        self.debug_snapshot();
+                    }
+                }
                 if !self.spatial_mode {
                     // The per-frame pin applies from the next frame; apply
                     // it NOW so the state transition (and its journal
