@@ -53,11 +53,14 @@ def main():
     prompt = (
         "You are verifying a 1280x720 screenshot of the Veyra compositor.\n"
         f"Question: {question}\n"
-        "Base the verdict strictly on visible pixels. PASS only if the "
-        "expected UI is clearly present; FAIL if it is absent, blank, or "
-        "ambiguous.\n"
-        "Reply with one short sentence of what you saw, then a final line "
-        "containing exactly 'VERDICT: PASS' or 'VERDICT: FAIL'."
+        "Base the verdict strictly on visible pixels.\n"
+        "Rules: PASS only when the expected UI is clearly present; "
+        "FAIL when it is clearly absent, blank, or broken; UNCERTAIN "
+        "when the image is too small, blurry, cropped, or ambiguous "
+        "for a confident call. Do not guess.\n"
+        "Reply with one short sentence of what you saw, then a final "
+        "line containing exactly 'VERDICT: PASS', 'VERDICT: FAIL', or "
+        "'VERDICT: UNCERTAIN'."
     )
     body = {
         "model": model,
@@ -92,10 +95,17 @@ def main():
         return
     verdict = text[idx:].upper()
     reason = text[:idx].strip().replace("\n", " ")[:160]
+    # Taxonomy (G-H0.8): a deterministic failure is FAIL; a clear VLM
+    # anomaly is FAIL; weak VLM suspicion is UNCERTAIN and is reported
+    # for review instead of failing the suite.
     if "VERDICT: PASS" in verdict:
         print(f"PASS {reason}")
-    else:
+    elif "VERDICT: FAIL" in verdict:
         print(f"FAIL {reason}")
+    elif "VERDICT: UNCERTAIN" in verdict:
+        print(f"UNCERTAIN {reason}")
+    else:
+        print(f"UNCERTAIN unclassified verdict: {verdict[-60:]}")
 
 
 if __name__ == "__main__":

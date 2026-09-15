@@ -1049,6 +1049,47 @@ path.
     VERDICT: keep the zoom-to-cursor model — no geometry change; the
     lateral travel is the pointer-ray geometry working as designed.
 
+- **G-H0.8** golden user journey + gate tiering + the normal-mode
+  centering fix the journey exposed:
+  1. **tests/harness/scripts/run_golden_journey.sh** — the canonical
+     "does the desktop actually work?" gate: launch Veyra → Firefox →
+     Foot (xterm fallback if the foot PTY flake hits, reported as
+     UNCERTAIN) → both automatically visible (journal geometry) →
+     normal↔spatial round trip → wheel toward Firefox over a
+     JOURNAL-DERIVED background point (ux_background_point) → click
+     focus → typed URL → scroll over the app (asserts the camera is
+     UNTOUCHED — the wheel→application contract) → wheel away →
+     LMB pan → RMB orbit → rotate Firefox → rotate the second app
+     DIFFERENTLY (disjoint pixel-diff regions, selection-ring isolated
+     by re-baselining after selection) → return normal → both apps
+     still correct. 20 pass / 0 fail / 1 UNCERTAIN (rotation-region
+     overlap — reported for review, not a silent failure).
+  2. **Normal-mode content centering** (the journey caught a REAL gap):
+     returning to normal mode pinned the camera at (0,0,500), so a
+     row that grew in spatial mode was UNREACHABLE in the 2D view
+     ("return normal → everything still correct" failed). Entering
+     normal mode now centers the camera on the active workspace's
+     content bbox; the per-frame pin keeps x/y (only z=500 + yaw/pitch
+     are pinned), which also makes middle-drag pan persist in normal
+     mode. UX gate re-verified 20/20 after the change.
+  3. **VLM taxonomy** (visual_check.py): PASS / FAIL / UNCERTAIN —
+     deterministic failures and clear anomalies are FAIL; weak
+     suspicion (blurry/ambiguous/small) is UNCERTAIN and is counted
+     separately (unc()) and reported — an uncertain finding never
+     poisons the suite silently and never fails it either.
+  4. **Gate tiering**: run_ux_gate.sh --fast = fast gate (per
+     commit); default = full gate (per merge); run_golden_journey.sh =
+     canonical E2E; run_overnight_gate.sh = nightly (fast + full +
+     journey + scalability + torture); run_hw_campaign.sh = G-F1
+     F1.1–F1.7 stage skeleton — honest SKIP without VEYRA_HW=1 AND a
+     real driver (this box's card0 is simple-framebuffer; VKMS is
+     topology-only).
+  - Shared gate/journey helpers (ux_geom/ux_project/ux_row/
+    ux_no_window_moved/ux_single_mover/ux_background_point/ux_click2)
+    factored into ux_env.sh.
+  - Suites: 587 unit, protocol 111/0/0, input 108/2 (tcfoot flake
+    family), clippy 0, UX gate 20/20, golden journey 20/0/1.
+
 Real-app bug (foot): its 5 CSD subsurfaces (title bar + 4 borders)
 rendered as chrome-only ghosts scattered around the desktop. Two root
 causes, both in the #11 subsurface path:

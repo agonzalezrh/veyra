@@ -16,6 +16,13 @@
 #   I2  window transform changes ≠ other window transforms
 #       (LMB drag: ONLY the dragged window's pos row may move)
 #
+# Tiering (G-H0.8):
+#   --fast          fast gate     (every relevant commit)
+#   (default)       full gate     (every merge/main build)
+#   golden journey  run_golden_journey.sh   (canonical E2E)
+#   overnight       run_overnight_gate.sh   (fast+full+journey+scale+torture)
+#   hardware        run_hw_campaign.sh      (G-F1, target machine only)
+#
 # Usage: run_ux_gate.sh [--fast]   (--fast skips the Firefox scenario)
 set -u
 UX_GATE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -62,80 +69,6 @@ ux_launch_wayland() { # <cmd...>
 }
 
 BRIGHT='(lambda r,g,b: max(r,g,b)>90 and (max(r,g,b)-min(r,g,b))>40)'
-
-# ux_row <snapshot-line> <vid> → "x y z w h" or ""
-ux_row() {
-    ux_snapshot_field "$1" "next((','.join(map(str,r['pos']+r['size'])) for r in ev['windows'] if r['vid']==$2), '')"
-}
-# ux_pos_moved <snapA> <snapB> <vid> → rc0 if pos changed
-ux_pos_moved() {
-    local a b
-    a=$(ux_row "$1" "$2"); b=$(ux_row "$1" "$3" 2>/dev/null)
-    a=$(ux_row "$1" "$2")
-    b=$(ux_row "$3" "$2")
-    [ -n "$a" ] && [ -n "$b" ] && [ "${a%% *}" != "${b%% *}" ] \
-        && [ "${a#* }" != "${b#* }" ]
-}
-# I1: no window moved between two snapshots
-ux_no_window_moved() {
-    python3 - "$1" "$2" <<'PYEOF'
-import json, sys
-a = json.loads(sys.argv[1]); b = json.loads(sys.argv[2])
-pa = {r['vid']: r['pos'] for r in a['windows']}
-pb = {r['vid']: r['pos'] for r in b['windows']}
-common = set(pa) & set(pb)
-sys.exit(0 if all(pa[v] == pb[v] for v in common) else 1)
-PYEOF
-}
-# I2: exactly one vid moved between two snapshots; prints the vid
-ux_single_mover() {
-    python3 - "$1" "$2" <<'PYEOF'
-import json, sys
-a = json.loads(sys.argv[1]); b = json.loads(sys.argv[2])
-pa = {r['vid']: r['pos'] for r in a['windows']}
-pb = {r['vid']: r['pos'] for r in b['windows']}
-moved = [v for v in pb if pa.get(v) != pb[v]]
-print(moved[0] if len(moved) == 1 else "MANY" if moved else "NONE")
-PYEOF
-}
-# geometry from authoritative state: projected rect vs desktop
-# ux_geom <snapshot-line> <vid> intersect|fully
-ux_geom() {
-    python3 - "$1" "$2" "$3" <<'PYEOF'
-import json, math, sys
-line, vid, mode = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-ev = json.loads(line)
-row = next((r for r in ev['windows'] if r['vid'] == vid), None)
-if row is None: sys.exit(2)
-x, y, z = row['pos']; w, h = row['size']
-cx, cy, cz = ev.get('camera', (0.0, 0.0, ev['camera_z']))
-tz = math.tan(math.radians(22.5))
-aspect = 1280/720
-sx = 640.0/(cz*tz*aspect); sy = 360.0/(cz*tz)
-x0, x1 = 640+(x-cx-w/2)*sx, 640+(x-cx+w/2)*sx
-y0, y1 = 360-(y-cy+h/2)*sy, 360-(y-cy-h/2)*sy
-desk = (0, 0, 1280, 690)
-inter = not (x1 < desk[0] or x0 > desk[2] or y1 < desk[1] or y0 > desk[3])
-inside = x0 >= desk[0] and y0 >= desk[1] and x1 <= desk[2] and y1 <= desk[3]
-sys.exit(0 if (inside if mode == 'fully' else inter) else 1)
-PYEOF
-}
-
-# ux_project <snapshot-line> <vid> → "cx cy" (screen px, yaw≈0) or ""
-ux_project() {
-    python3 - "$1" "$2" <<'PYEOF'
-import json, math, sys
-line, vid = sys.argv[1], int(sys.argv[2])
-ev = json.loads(line)
-row = next((r for r in ev['windows'] if r['vid'] == vid), None)
-if row is None: print(""); sys.exit(0)
-x, y, z = row['pos']; w, h = row['size']
-cx, cy, cz = ev['camera']
-tz = math.tan(math.radians(22.5)); aspect = 1280/720
-sx = 640.0/(cz*tz*aspect); sy = 360.0/(cz*tz)
-print(round(640+(x-cx)*sx), round(360-(y-cy)*sy))
-PYEOF
-}
 
 cleanup() { ux_kill_all; }
 trap cleanup EXIT

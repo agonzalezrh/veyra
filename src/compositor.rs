@@ -2469,7 +2469,10 @@ impl LookingGlass {
         let (w, h) = self.fb_size();
         let fb_h = h;
         if !self.spatial_mode {
-            self.camera_mut().position = cgmath::Point3::new(0.0, 0.0, 500.0);
+            // H1: x/y persist (normal-mode entry centers on content; a
+            // middle-drag pan stays put) — only depth and orientation
+            // are pinned for the 1:1 plane contract.
+            self.camera_mut().position.z = 500.0;
             self.camera_mut().yaw = 0.0;
             self.camera_mut().pitch = 0.0;
         } else if self.workspace_manager.active().auto_orbit {
@@ -6417,7 +6420,31 @@ impl LookingGlass {
                     // The per-frame pin applies from the next frame; apply
                     // it NOW so the state transition (and its journal
                     // snapshot) records the settled normal-mode camera.
-                    self.camera_mut().position = cgmath::Point3::new(0.0, 0.0, 500.0);
+                    // H1 (golden journey): entering normal mode CENTERS the
+                    // view on the workspace content instead of hard (0,0) —
+                    // a row that grew in spatial mode must remain reachable
+                    // in the 2D view ("return normal → everything still
+                    // correct"). z stays pinned; the ortho scale is fixed.
+                    let ws_ids = self.workspace_manager.active().visual_ids.clone();
+                    let (mut min_x, mut max_x, mut min_y, mut max_y) =
+                        (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+                    let mut any = false;
+                    for vid in &ws_ids {
+                        if let Some(v) = self.scene.visuals.iter().find(|v| &v.id == vid) {
+                            if v.window_state == crate::scene::WindowState::Minimized {
+                                continue;
+                            }
+                            any = true;
+                            let (hw, hh) = (v.total_width() * 0.5, v.total_height() * 0.5);
+                            min_x = min_x.min(v.transform.position.x - hw);
+                            max_x = max_x.max(v.transform.position.x + hw);
+                            min_y = min_y.min(v.transform.position.y - hh);
+                            max_y = max_y.max(v.transform.position.y + hh);
+                        }
+                    }
+                    let cx = if any { (min_x + max_x) * 0.5 } else { 0.0 };
+                    let cy = if any { (min_y + max_y) * 0.5 } else { 0.0 };
+                    self.camera_mut().position = cgmath::Point3::new(cx, cy, 500.0);
                     self.camera_mut().yaw = 0.0;
                     self.camera_mut().pitch = 0.0;
                 }
