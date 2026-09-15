@@ -878,6 +878,80 @@ impl LookingGlass {
                     }
                 }
 
+                // H1 (user report): restored state can carry overlapping
+                // transforms (saved during earlier sessions/experiments)
+                // and windows can come back outside the saved view. After
+                // the load: re-place any visual that overlaps one already
+                // placed, then frame the whole content so nothing is
+                // hidden at boot.
+                {
+                    let mut placed: Vec<(f32, f32, f32, f32)> = Vec::new();
+                    let ids: Vec<VisualId> =
+                        self.scene.visuals.iter().map(|v| v.id).collect();
+                    for vid in ids {
+                        let (mut w, mut h) = {
+                            match self.scene.visuals.iter().find(|v| v.id == vid) {
+                                Some(v) if v.parent.is_none() => {
+                                    (v.total_width(), v.total_height())
+                                }
+                                _ => continue, // children follow their parent
+                            }
+                        };
+                        let Some(v) = self.scene.visuals.iter_mut().find(|v| v.id == vid)
+                        else {
+                            continue;
+                        };
+                        let (px, py) = (v.transform.position.x, v.transform.position.y);
+                        let rect = (px - w * 0.5, py - h * 0.5, px + w * 0.5, py + h * 0.5);
+                        let overlaps = placed.iter().any(|r| {
+                            rect.0 < r.2 && r.0 < rect.2 && rect.1 < r.3 && r.1 < rect.3
+                        });
+                        if overlaps {
+                            let ws_eligible: Vec<VisualId> = self
+                                .workspace_manager
+                                .active()
+                                .visual_ids
+                                .iter()
+                                .copied()
+                                .collect();
+                            let new_pos = crate::layout::place_new_visual(
+                                w,
+                                h,
+                                &self.scene,
+                                crate::layout::VisibleBounds::for_camera(
+                                    self.camera().position.z,
+                                    45.0,
+                                    self.fb_size().0 / self.fb_size().1.max(1.0),
+                                ),
+                                &ws_eligible,
+                            );
+                            if let Some(v) =
+                                self.scene.visuals.iter_mut().find(|v| v.id == vid)
+                            {
+                                v.transform.position = new_pos;
+                            }
+                            info!(?vid, "restored window re-placed (overlap with earlier restore)");
+                        }
+                        if let Some(v) = self.scene.visuals.iter().find(|v| v.id == vid) {
+                            let px = v.transform.position.x;
+                            let py = v.transform.position.y;
+                            placed.push((
+                                px - w * 0.5,
+                                py - h * 0.5,
+                                px + w * 0.5,
+                                py + h * 0.5,
+                            ));
+                        }
+                    }
+                    if !placed.is_empty() {
+                        let (cam, scene) = self.camera_and_scene();
+                        if cam.frame_all(scene) {
+                            info!("camera framed restored content at boot");
+                        }
+                        self.spatial_cam_adapted = true;
+                    }
+                }
+
                 // Apply camera from first workspace to the compositor's active camera
                 if let Some(first) = state.workspace(0) {
                     self.camera_mut().position.x = first.camera.x;
@@ -5595,7 +5669,7 @@ impl LookingGlass {
             && !was_dragging
             && !self.interaction.is_dragging()
             && self.nav_button == 1
-            && self.meta_pressed
+            && (self.meta_pressed || self.alt_pressed)
         {
             if let Some(vid) = self.scene.selected_id {
                 if self.scene.is_active(vid) {
@@ -5808,7 +5882,9 @@ impl LookingGlass {
             .filter(|id| self.scene.is_visible(*id))
             .collect();
         let (vid, _) = self.scene.pick_visible(&pv, nx, ny, &ids)?;
-        Some(vid)
+        // Children are interaction-transparent: selecting/manipulating
+        // a CSD title bar acts on the whole window.
+        Some(self.scene.interaction_root(vid))
     }
 
     fn pick_wayland_target(

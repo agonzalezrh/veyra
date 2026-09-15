@@ -545,6 +545,22 @@ impl Scene {
     /// visuals (popups, groups) are hit where they are DRAWN, not
     /// where their local coordinates happen to sit.
     #[allow(dead_code)] // reserved API surface; not yet wired
+    /// H1 (user report): the interaction root of a visual. CSD
+    /// subsurfaces and popups are CHILD visuals — grabbing the title
+    /// bar must move the WHOLE window, so selection and manipulation
+    /// climb to the top of the parent chain. Content input keeps the
+    /// child target (route_to_content); this is only for picking.
+    pub fn interaction_root(&self, id: VisualId) -> VisualId {
+        let mut cur = id;
+        for _ in 0..8 {
+            match self.visuals.iter().find(|v| v.id == cur).and_then(|v| v.parent) {
+                Some(p) => cur = p,
+                None => return cur,
+            }
+        }
+        cur
+    }
+
     pub fn world_transform(&self, id: VisualId) -> Transform3D {
         let world = self.world_matrix(id);
         let pos = Vector3::new(world[3][0], world[3][1], world[3][2]);
