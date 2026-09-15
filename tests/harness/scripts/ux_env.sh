@@ -325,7 +325,11 @@ for r in ev['windows']:
     y0 = 360-(y-cy+h/2)*sy; y1 = 360-(y-cy-h/2)*sy
     rects.append((x0, y0, x1, y1))
 def covered(px, py):
-    return any(x0-8 <= px <= x1+8 and y0-8 <= py <= y1+8 for x0,y0,x1,y1 in rects)
+    # 32px margin: windows carry a 5-deg spawn yaw, which shifts their
+    # real silhouette by more than a naive axis-aligned projection —
+    # the pick must not graze a window edge (the S8 "orbit rotated a
+    # window instead" finding).
+    return any(x0-32 <= px <= x1+32 and y0-32 <= py <= y1+32 for x0,y0,x1,y1 in rects)
 dx, dy = tx-640, ty-360
 n = math.hypot(dx, dy) or 1.0
 dx, dy = dx/n, dy/n

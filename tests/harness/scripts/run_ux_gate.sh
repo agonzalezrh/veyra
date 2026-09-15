@@ -292,6 +292,16 @@ say "S11: return to normal (2D) mode"
 NZ=""
 for _ in 1 2 3; do
     ux_focus_desktop "$VEYRA_LOG" > /dev/null 2>&1
+    # Blind modifier releases FIRST: a stuck modifier inside the
+    # compositor's XKB state (user report: "KEY ... alt: true" with
+    # no physical alt held) survives --clearmodifiers, which only
+    # clears what the X SERVER thinks is held. A synthetic release
+    # always reaches the compositor and re-syncs it.
+    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool keyup alt || true
+    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool keyup shift || true
+    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool keyup ctrl || true
+    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool keyup super || true
+    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool keyup meta || true
     DISPLAY="$UX_DESKTOP_DISPLAY" xdotool key --clearmodifiers F5
     sleep 1.2
     NZ=$(ux_snapshot_field "$(ux_last_snapshot "$UX_JOURNAL")" "ev['camera_z']")
