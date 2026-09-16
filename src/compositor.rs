@@ -5979,7 +5979,7 @@ impl LookingGlass {
 
     fn pick_visual_at(&self, x: f64, y: f64) -> Option<VisualId> {
         let (pv, nx, ny) = self.pointer_view(x, y)?;
-        let ids: Vec<VisualId> = self
+        let mut ids: Vec<VisualId> = self
             .workspace_manager
             .active()
             .visual_ids
@@ -5987,6 +5987,31 @@ impl LookingGlass {
             .copied()
             .filter(|id| self.scene.is_visible(*id))
             .collect();
+        // H2 (user: "it tries to rotate but is always going back"): the
+        // natural grab points — foot's CSD title bar and borders — are
+        // CHILD subsurface visuals, which were NOT in the candidate set.
+        // A press there picked NOTHING and the right-drag fell through
+        // to the camera orbit (the world "rotates then goes back").
+        // Children are interaction-transparent, so they must be
+        // PICKABLE: extend the candidates with each top-level's
+        // descendant chain.
+        let mut i = 0;
+        while i < ids.len() {
+            let cur = ids[i];
+            let kids: Vec<VisualId> = self
+                .scene
+                .visuals
+                .iter()
+                .filter(|v| v.parent == Some(cur) && self.scene.is_visible(v.id))
+                .map(|v| v.id)
+                .collect();
+            for k in kids {
+                if !ids.contains(&k) {
+                    ids.push(k);
+                }
+            }
+            i += 1;
+        }
         let (vid, _) = self.scene.pick_visible(&pv, nx, ny, &ids)?;
         // Children are interaction-transparent: selecting/manipulating
         // a CSD title bar acts on the whole window.
