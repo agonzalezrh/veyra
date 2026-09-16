@@ -460,17 +460,17 @@ impl InteractionController {
             }
             ManipMode::RotateY => {
                 use cgmath::Rotation3;
-                let delta_rot = cgmath::Quaternion::from_angle_y(cgmath::Deg(dx as f32 * 1.2));
+                let delta_rot = cgmath::Quaternion::from_angle_y(cgmath::Deg(dx as f32 * 2.0));
                 visual.transform.rotation = delta_rot * active.start_rotation;
             }
             ManipMode::RotateZ => {
                 use cgmath::Rotation3;
-                let delta_rot = cgmath::Quaternion::from_angle_z(cgmath::Deg(dx as f32 * 1.2));
+                let delta_rot = cgmath::Quaternion::from_angle_z(cgmath::Deg(dx as f32 * 2.0));
                 visual.transform.rotation = delta_rot * active.start_rotation;
             }
             ManipMode::RotateX => {
                 use cgmath::Rotation3;
-                let delta_rot = cgmath::Quaternion::from_angle_x(cgmath::Deg(dy as f32 * 1.2));
+                let delta_rot = cgmath::Quaternion::from_angle_x(cgmath::Deg(dy as f32 * 2.0));
                 visual.transform.rotation = delta_rot * active.start_rotation;
             }
             ManipMode::Scale | ManipMode::None => {}

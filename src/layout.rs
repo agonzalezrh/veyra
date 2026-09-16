@@ -53,6 +53,61 @@ const EDGE_MARGIN: f32 = 48.0;
 /// sliver stacks on top of windows that ARE visible (reported as
 /// "windows overlap / are cut" with three real applications open).
 /// Windows never open partially off-screen.
+/// H2 (user directive): in spatial mode a NEW window opens BESIDE the
+/// most recent one — never overlapping it — with a MIRRORED yaw so
+/// slightly-rotated neighbors face each other (a 3D conversation row).
+/// Returns None when no anchor exists or both sides fail bounds/overlap;
+/// the caller then falls back to the flat spiral.
+pub fn place_new_visual_spatial(
+    width: f32,
+    height: f32,
+    scene: &Scene,
+    bounds: VisibleBounds,
+    eligible: &[crate::scene::VisualId],
+) -> Option<(Vector3<f32>, f32)> {
+    // Anchor: the most recently added top-level eligible visual.
+    let anchor = scene.visuals.iter().rev().find(|v| {
+        v.parent.is_none()
+            && eligible.contains(&v.id)
+            && !scene.detached_set.contains(&v.id)
+            && v.window_state != crate::scene::WindowState::Minimized
+    })?;
+    let aw = anchor.total_width();
+    let (ax, ay) = (anchor.transform.position.x, anchor.transform.position.y);
+    // Mirror the anchor's yaw: the pair "sees" each other.
+    let q = anchor.transform.rotation;
+    let anchor_yaw = (2.0f32 * q.v.y.atan2(q.s)).to_degrees();
+    let gap = 90.0;
+    // Reachability is the camera auto-fit's job (a pair wider than the
+    // frustum dollies the camera out); placement only guarantees
+    // non-overlap + adjacency, so bounds are not hard-rejected here.
+    let _ = bounds;
+    let try_side = |side: f32| -> Option<(Vector3<f32>, f32)> {
+        let x = ax + side * ((aw + width) * 0.5 + gap);
+        let y = ay;
+        for v in scene.visuals.iter() {
+            if v.id == anchor.id
+                || v.parent.is_some()
+                || !eligible.contains(&v.id)
+                || scene.detached_set.contains(&v.id)
+            {
+                continue;
+            }
+            let vw = v.total_width();
+            let vh = v.total_height();
+            let dx = (x - v.transform.position.x).abs();
+            let dy = (y - v.transform.position.y).abs();
+            if dx < (vw + width) * 0.5 && dy < (vh + height) * 0.5 {
+                return None;
+            }
+        }
+        Some((Vector3::new(x, y, 0.0), -anchor_yaw))
+    };
+    // Prefer the side toward the frustum center so pairs stay reachable.
+    let first = if ax > 0.0 { -1.0 } else { 1.0 };
+    try_side(first).or_else(|| try_side(-first))
+}
+
 pub fn place_new_visual(
     width: f32,
     height: f32,
@@ -822,4 +877,80 @@ mod tests {
         assert_eq!(t1.rotation, t2.rotation);
     }
 
+
+    #[test]
+    fn spatial_placement_beside_anchor_mirrored_yaw() {
+        use cgmath::Rotation3;
+        let mut scene = crate::scene::Scene::default();
+        let a = crate::scene::Visual::new_test(400, 300);
+        scene.add(a);
+        // Anchor slightly rotated +5°.
+        scene.visuals[0].transform.rotation =
+            cgmath::Quaternion::from_angle_y(cgmath::Deg(5.0));
+        let eligible = all_eligible(&scene);
+        let (pos, yaw) = place_new_visual_spatial(
+            300.0,
+            200.0,
+            &scene,
+            bounds_16_9(),
+            &eligible,
+        )
+        .expect("anchor exists");
+        // Beside, non-overlapping: |dx| >= half-sums.
+        let dx = (pos.x - scene.visuals[0].transform.position.x).abs();
+        assert!(dx >= (400.0 + 300.0) * 0.5, "placed beside anchor, dx={dx}");
+        assert!((pos.y - scene.visuals[0].transform.position.y).abs() < 1e-3);
+        // Mirrored yaw: the pair faces each other.
+        assert!((yaw + 5.0).abs() < 1e-3, "mirrored yaw, got {yaw}");
+    }
+
+    #[test]
+    fn spatial_placement_prefers_center_side_and_respects_bounds() {
+        let mut scene = crate::scene::Scene::default();
+        let a = crate::scene::Visual::new_test(400, 300);
+        scene.add(a);
+        // Anchor on the RIGHT half → new window goes LEFT (toward center).
+        scene.visuals[0].transform.position = Vector3::new(500.0, 0.0, 0.0);
+        let eligible = all_eligible(&scene);
+        let (pos, _yaw) = place_new_visual_spatial(
+            300.0,
+            200.0,
+            &scene,
+            bounds_16_9(),
+            &eligible,
+        )
+        .expect("anchor exists");
+        assert!(pos.x < 500.0, "placed toward center (left), got {}", pos.x);
+    }
+
+    #[test]
+    fn spatial_placement_none_without_anchor_or_when_blocked() {
+        // No visuals at all → no anchor → None.
+        let scene = crate::scene::Scene::default();
+        assert!(place_new_visual_spatial(
+            300.0,
+            200.0,
+            &scene,
+            bounds_16_9(),
+            &[],
+        )
+        .is_none());
+
+        // Anchor centered + a huge neighbor on both sides → both sides
+        // blocked → None (caller falls back to the spiral).
+        let mut scene = crate::scene::Scene::default();
+        let a = crate::scene::Visual::new_test(400, 300);
+        let l = crate::scene::Visual::new_test(600, 300);
+        let r = crate::scene::Visual::new_test(600, 300);
+        scene.add(l);
+        scene.add(r);
+        scene.add(a); // the anchor is the MOST RECENTLY added visual
+        scene.visuals[0].transform.position = Vector3::new(-545.0, 0.0, 0.0);
+        scene.visuals[1].transform.position = Vector3::new(545.0, 0.0, 0.0);
+        let eligible = all_eligible(&scene);
+        assert!(
+            place_new_visual_spatial(400.0, 300.0, &scene, bounds_16_9(), &eligible).is_none(),
+            "both sides blocked → fallback"
+        );
+    }
 }

@@ -1570,14 +1570,38 @@ impl LookingGlass {
                             if restored.is_none() && reopened.is_none() {
                                 let ws_eligible =
                                     self.workspace_manager.active().visual_ids.clone();
-                                let pos = layout::place_new_visual(
-                                    logical_size.w as f32,
-                                    logical_size.h as f32,
-                                    &self.scene,
-                                    self.visible_bounds(),
-                                    &ws_eligible,
-                                );
+                                // H2: spatial mode places the new window
+                                // BESIDE the most recent one, mirrored to
+                                // face it; the flat spiral stays for the
+                                // 2D normal mode.
+                                let spatial_spot = if self.spatial_mode {
+                                    layout::place_new_visual_spatial(
+                                        logical_size.w as f32,
+                                        logical_size.h as f32,
+                                        &self.scene,
+                                        self.visible_bounds(),
+                                        &ws_eligible,
+                                    )
+                                } else {
+                                    None
+                                };
+                                let pos = spatial_spot
+                                    .map(|(p, _yaw)| p)
+                                    .unwrap_or_else(|| {
+                                        layout::place_new_visual(
+                                            logical_size.w as f32,
+                                            logical_size.h as f32,
+                                            &self.scene,
+                                            self.visible_bounds(),
+                                            &ws_eligible,
+                                        )
+                                    });
                                 visual.transform.position = pos;
+                                if let Some((_p, yaw)) = spatial_spot {
+                                    use cgmath::Rotation3;
+                                    visual.transform.rotation =
+                                        cgmath::Quaternion::from_angle_y(cgmath::Deg(yaw));
+                                }
                                 let fit_pos = pos;
                                 let fit_w = visual.total_width();
                                 let fit_h = visual.total_height();
@@ -1872,16 +1896,32 @@ impl LookingGlass {
                                 if restored.is_none() && reopened.is_none() {
                                     let ws_eligible =
                                         self.workspace_manager.active().visual_ids.clone();
-                                    let pos = layout::place_new_visual(
-                                        tex_size.w as f32 * visual.transform.scale.x,
-                                        tex_size.h as f32 * visual.transform.scale.y,
-                                        &self.scene,
-                                        self.visible_bounds(),
-                                        &ws_eligible,
-                                    );
+                                    let spatial_spot = if self.spatial_mode {
+                                        layout::place_new_visual_spatial(
+                                            tex_size.w as f32 * visual.transform.scale.x,
+                                            tex_size.h as f32 * visual.transform.scale.y,
+                                            &self.scene,
+                                            self.visible_bounds(),
+                                            &ws_eligible,
+                                        )
+                                    } else {
+                                        None
+                                    };
+                                    let pos = spatial_spot
+                                        .map(|(p, _yaw)| p)
+                                        .unwrap_or_else(|| {
+                                            layout::place_new_visual(
+                                                tex_size.w as f32 * visual.transform.scale.x,
+                                                tex_size.h as f32 * visual.transform.scale.y,
+                                                &self.scene,
+                                                self.visible_bounds(),
+                                                &ws_eligible,
+                                            )
+                                        });
                                     visual.transform.position = pos;
-                                    visual.transform.rotation =
-                                        cgmath::Quaternion::from_angle_y(Deg(angle_y));
+                                    visual.transform.rotation = cgmath::Quaternion::from_angle_y(
+                                        Deg(spatial_spot.map(|(_p, yaw)| yaw).unwrap_or(angle_y)),
+                                    );
                                     let fit_pos = pos;
                                     let fit_w = visual.total_width();
                                     let fit_h = visual.total_height();
