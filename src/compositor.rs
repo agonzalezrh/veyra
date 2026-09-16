@@ -5656,7 +5656,7 @@ impl LookingGlass {
                         crate::interaction::ManipMode::RotateX
                     };
                     let cam = self.camera().clone();
-                    self.interaction.begin_manipulation(
+                    let ok = self.interaction.begin_manipulation(
                         vid,
                         x,
                         y,
@@ -5665,6 +5665,7 @@ impl LookingGlass {
                         self.spatial_mode,
                         mode,
                     );
+                    info!(?vid, ?mode, ok, "rotation armed");
                 }
             } else {
                 self.right_rotate_arm = None;
@@ -5868,7 +5869,9 @@ impl LookingGlass {
     /// background: nothing here — nav_button=3 drives camera orbit.
     pub fn handle_right_press(&mut self, x: f64, y: f64) {
         self.press_pos = (x, y);
-        self.right_rotate_arm = self.pick_visual_at(x, y).map(|vid| (vid, x, y));
+        let picked = self.pick_visual_at(x, y);
+        info!(x, y, picked = ?picked, "right press");
+        self.right_rotate_arm = picked.map(|vid| (vid, x, y));
     }
 
     /// H0.5.3: right release. Armed but below the threshold → the
