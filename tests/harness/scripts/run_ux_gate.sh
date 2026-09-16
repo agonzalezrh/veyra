@@ -183,7 +183,10 @@ fi
 
 # ---------- S6: wheel approach → camera dollies IN -----------------------
 say "S6: wheel approach (pointer-directed dolly)"
-ux_click "$VEYRA_LOG" 300 300   # park pointer on background, away from C
+# H2: the mirror placement puts the new window BESIDE the previous one
+# (a centered row) — the old fixed (300,300) park point now lands on a
+# window. The bottom-left strip above the taskbar stays background.
+ux_click "$VEYRA_LOG" 80 610   # park pointer on background, away from C
 sleep 0.3
 for _ in 1 2 3 4 5; do DISPLAY="$UX_DESKTOP_DISPLAY" xdotool click 4; sleep 0.25; done
 sleep 0.6
@@ -201,7 +204,9 @@ ux_no_window_moved "$SNAPC" "$SNAPC2" \
 
 # ---------- S7: LMB background pan → I1 ----------------------------------
 say "S7: LMB background pan (grab-the-world)"
-ux_press_drag "$VEYRA_LOG" 200 200 420 260 1 4
+# H2: fixed (200,200) now lands on the mirror-placed window row —
+# pan from the background strip instead (same rationale as S6).
+ux_press_drag "$VEYRA_LOG" 80 610 400 610 1 4
 sleep 0.8
 SNAPP=$(ux_last_snapshot "$UX_JOURNAL")
 ux_shot "$(SHOT pan)"

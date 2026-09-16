@@ -460,17 +460,17 @@ impl InteractionController {
             }
             ManipMode::RotateY => {
                 use cgmath::Rotation3;
-                let delta_rot = cgmath::Quaternion::from_angle_y(cgmath::Deg(dx as f32 * 2.0));
+                let delta_rot = cgmath::Quaternion::from_angle_y(cgmath::Deg(dx as f32 * 3.0));
                 visual.transform.rotation = delta_rot * active.start_rotation;
             }
             ManipMode::RotateZ => {
                 use cgmath::Rotation3;
-                let delta_rot = cgmath::Quaternion::from_angle_z(cgmath::Deg(dx as f32 * 2.0));
+                let delta_rot = cgmath::Quaternion::from_angle_z(cgmath::Deg(dx as f32 * 3.0));
                 visual.transform.rotation = delta_rot * active.start_rotation;
             }
             ManipMode::RotateX => {
                 use cgmath::Rotation3;
-                let delta_rot = cgmath::Quaternion::from_angle_x(cgmath::Deg(dy as f32 * 2.0));
+                let delta_rot = cgmath::Quaternion::from_angle_x(cgmath::Deg(dy as f32 * 3.0));
                 visual.transform.rotation = delta_rot * active.start_rotation;
             }
             ManipMode::Scale | ManipMode::None => {}
@@ -777,14 +777,14 @@ mod tests {
         // Rotate A clockwise (positive yaw drag).
         ctrl.begin_manipulation(ids[0], 420.0, 300.0, &mut scene, &camera, false, ManipMode::RotateY);
         assert!(ctrl.is_dragging());
-        ctrl.handle_pointer_move(540.0, 300.0, &mut scene, &camera, false);
+        ctrl.handle_pointer_move(470.0, 300.0, &mut scene, &camera, false);
         ctrl.handle_pointer_up();
         let rot_a = scene.get(ids[0]).unwrap().transform.rotation;
         let pos_a = scene.get(ids[0]).unwrap().transform.position;
 
         // Rotate B counter-clockwise (opposite drag direction).
         ctrl.begin_manipulation(ids[1], 420.0, 300.0, &mut scene, &camera, false, ManipMode::RotateY);
-        ctrl.handle_pointer_move(300.0, 300.0, &mut scene, &camera, false);
+        ctrl.handle_pointer_move(370.0, 300.0, &mut scene, &camera, false);
         ctrl.handle_pointer_up();
         let rot_b = scene.get(ids[1]).unwrap().transform.rotation;
 

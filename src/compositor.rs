@@ -1574,17 +1574,25 @@ impl LookingGlass {
                                 // BESIDE the most recent one, mirrored to
                                 // face it; the flat spiral stays for the
                                 // 2D normal mode.
-                                let spatial_spot = if self.spatial_mode {
-                                    layout::place_new_visual_spatial(
-                                        logical_size.w as f32,
-                                        logical_size.h as f32,
-                                        &self.scene,
-                                        self.visible_bounds(),
-                                        &ws_eligible,
-                                    )
-                                } else {
-                                    None
-                                };
+                                // H2: BOTH modes place the new window
+                                // beside the most recent one, mirrored to
+                                // face it (dialogs map in normal mode too
+                                // and must not hide behind a rotated
+                                // window). The flat spiral is the
+                                // fallback when both sides are blocked.
+                                let spatial_spot = layout::place_new_visual_spatial(
+                                    logical_size.w as f32,
+                                    logical_size.h as f32,
+                                    &self.scene,
+                                    self.visible_bounds(),
+                                    &ws_eligible,
+                                );
+                                info!(
+                                    spot = ?spatial_spot,
+                                    eligible = ws_eligible.len(),
+                                    scene_top = self.scene.visuals.len(),
+                                    "H2 placement decision"
+                                );
                                 let pos = spatial_spot
                                     .map(|(p, _yaw)| p)
                                     .unwrap_or_else(|| {
@@ -1896,17 +1904,19 @@ impl LookingGlass {
                                 if restored.is_none() && reopened.is_none() {
                                     let ws_eligible =
                                         self.workspace_manager.active().visual_ids.clone();
-                                    let spatial_spot = if self.spatial_mode {
-                                        layout::place_new_visual_spatial(
-                                            tex_size.w as f32 * visual.transform.scale.x,
-                                            tex_size.h as f32 * visual.transform.scale.y,
-                                            &self.scene,
-                                            self.visible_bounds(),
-                                            &ws_eligible,
-                                        )
-                                    } else {
-                                        None
-                                    };
+                                    let spatial_spot = layout::place_new_visual_spatial(
+                                        tex_size.w as f32 * visual.transform.scale.x,
+                                        tex_size.h as f32 * visual.transform.scale.y,
+                                        &self.scene,
+                                        self.visible_bounds(),
+                                        &ws_eligible,
+                                    );
+                                    info!(
+                                        spot = ?spatial_spot,
+                                        eligible = ws_eligible.len(),
+                                        scene_n = self.scene.visuals.len(),
+                                        "H2 placement decision"
+                                    );
                                     let pos = spatial_spot
                                         .map(|(p, _yaw)| p)
                                         .unwrap_or_else(|| {

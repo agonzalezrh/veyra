@@ -1298,3 +1298,23 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
   every map path), or a click on the card. hints_visible() requires an empty scene
   so the card never competes with content. VLM-verified: card readable, disappears
   on launch, seen-flag persists across boots.
+
+### G-H2 — Spatial placement + rotation ergonomics (user-driven)
+- **Mirror placement** (layout.rs place_new_visual_spatial): a new window
+  opens BESIDE the most recent one — offset (w1+w2)/2+90, never
+  overlapping — with its YAW MIRRORED so tilted neighbors face each
+  other (A +5° → B −5°). Applies in BOTH modes (dialogs map in normal
+  mode and must not hide behind a rotated window); the flat spiral is
+  the fallback when both sides are blocked. Overlap check is
+  ROTATION-AWARE (w·cos+h·sin footprint). Live-verified: dialog beside
+  rotated foot at (662,0,0) yaw −5°.
+- **KEY RULE: detached windows OCCUPY SPACE.** Detached (manually
+  moved/rotated) visuals are exempt from being MOVED by layout, NOT
+  from colliding — the user flow "rotate a window, then open the next
+  one" previously stacked the new window on the rotated one (the
+  anchor/overlap checks skipped detached). Fixed in both placements.
+- **Window rotation 1.2 → 3.0 °/px** (user: "too slow" twice; 2.0 still
+  read as slow because in-place rotation produces less visual change
+  than camera orbit; 3.0 = 120px drag = full turn, gate tests adjusted).
+- Gate S6/S7 fixed points (300,300)/(200,200) now land on the
+  mirror-placed row → background strip (80,610) instead. Gate 24/0/0.

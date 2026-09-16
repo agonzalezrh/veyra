@@ -66,10 +66,13 @@ pub fn place_new_visual_spatial(
     eligible: &[crate::scene::VisualId],
 ) -> Option<(Vector3<f32>, f32)> {
     // Anchor: the most recently added top-level eligible visual.
+    // NOTE: detached visuals (manually moved/rotated) are VALID anchors
+    // and OCCUPY SPACE — the user's flow is "rotate a window, then open
+    // the next one", and the rotated window must not be invisible to
+    // placement. Detached only means "layout must not MOVE it".
     let anchor = scene.visuals.iter().rev().find(|v| {
         v.parent.is_none()
             && eligible.contains(&v.id)
-            && !scene.detached_set.contains(&v.id)
             && v.window_state != crate::scene::WindowState::Minimized
     })?;
     let aw = anchor.total_width();
@@ -86,15 +89,17 @@ pub fn place_new_visual_spatial(
         let x = ax + side * ((aw + width) * 0.5 + gap);
         let y = ay;
         for v in scene.visuals.iter() {
-            if v.id == anchor.id
-                || v.parent.is_some()
-                || !eligible.contains(&v.id)
-                || scene.detached_set.contains(&v.id)
-            {
+            if v.id == anchor.id || v.parent.is_some() || !eligible.contains(&v.id) {
                 continue;
+                // detached visuals are NOT skipped: they occupy space.
             }
-            let vw = v.total_width();
-            let vh = v.total_height();
+            // Rotation-aware footprint: a yawed window's world extent
+            // exceeds its AABB (w*cos+h*sin on each axis).
+            let q = v.transform.rotation;
+            let yaw_abs = q.v.y.atan2(q.s).abs();
+            let (sin_y, cos_y) = yaw_abs.sin_cos();
+            let vw = v.total_width() * cos_y + v.total_height() * sin_y;
+            let vh = v.total_height() * cos_y + v.total_width() * sin_y;
             let dx = (x - v.transform.position.x).abs();
             let dy = (y - v.transform.position.y).abs();
             if dx < (vw + width) * 0.5 && dy < (vh + height) * 0.5 {
@@ -105,7 +110,9 @@ pub fn place_new_visual_spatial(
     };
     // Prefer the side toward the frustum center so pairs stay reachable.
     let first = if ax > 0.0 { -1.0 } else { 1.0 };
-    try_side(first).or_else(|| try_side(-first))
+    let r = try_side(first).or_else(|| try_side(-first));
+    tracing::debug!("H2 try_side result: {r:?} (ax={ax} aw={aw} w={width})");
+    r
 }
 
 pub fn place_new_visual(
@@ -131,9 +138,8 @@ pub fn place_new_visual(
     };
     let overlaps_existing = |x: f32, y: f32| -> bool {
         scene.visuals.iter().any(|v| {
-            if scene.detached_set.contains(&v.id) {
-                return false;
-            }
+            // Detached windows STILL OCCUPY SPACE (H2 fix): they are
+            // exempt from being MOVED by layout, not from colliding.
             // Workspace-scoped (same rule as apply_layout, I6): windows
             // on OTHER workspaces must not influence placement here, or
             // a fresh workspace's first window appends to another
