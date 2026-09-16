@@ -5646,6 +5646,15 @@ impl LookingGlass {
                 if !self.interaction.is_dragging()
                     && ((x - px).abs() > 5.0 || (y - py).abs() > 5.0)
                 {
+                    // The FIRST drag direction picks the axis: horizontal
+                    // = yaw (door swing), vertical = tilt. A vertical drag
+                    // under a fixed RotateY arm produced ZERO rotation —
+                    // the literal "can't rotate" report.
+                    let mode = if (x - px).abs() >= (y - py).abs() {
+                        crate::interaction::ManipMode::RotateY
+                    } else {
+                        crate::interaction::ManipMode::RotateX
+                    };
                     let cam = self.camera().clone();
                     self.interaction.begin_manipulation(
                         vid,
@@ -5654,7 +5663,7 @@ impl LookingGlass {
                         &mut self.scene,
                         &cam,
                         self.spatial_mode,
-                        crate::interaction::ManipMode::RotateY,
+                        mode,
                     );
                 }
             } else {
@@ -5874,8 +5883,14 @@ impl LookingGlass {
         // stale target instead of translating it (caught by the UX
         // gate's drag-isolation invariant I2).
         self.interaction.handle_pointer_up();
-        if let Some((_vid, _px, _py)) = arm {
-            if !moved {
+        if let Some((vid, _px, _py)) = arm {
+            if moved {
+                if let Some(v) = self.scene.visuals.iter().find(|v| v.id == vid) {
+                    let q = v.transform.rotation;
+                    let yaw_deg = (2.0 * q.v.y.atan2(q.s)).to_degrees();
+                    info!(?vid, yaw = yaw_deg as i32, "window rotated");
+                }
+            } else {
                 self.handle_context_menu(x, y);
             }
         }
