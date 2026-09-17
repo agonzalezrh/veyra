@@ -5909,6 +5909,9 @@ impl LookingGlass {
         // manipulation alive made every subsequent left-drag rotate the
         // stale target instead of translating it (caught by the UX
         // gate's drag-isolation invariant I2).
+        if let Some((events, tdx, tdy)) = self.interaction.rotate_drag_summary() {
+            info!(events, dx = tdx as i32, dy = tdy as i32, "rotate drag motion");
+        }
         self.interaction.handle_pointer_up();
         if let Some((vid, _px, _py)) = arm {
             if moved {

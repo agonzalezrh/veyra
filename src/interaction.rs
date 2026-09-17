@@ -46,6 +46,9 @@ struct ActiveManip {
     /// Original transform values for relative manipulation.
     start_position: Vector3<f32>,
     start_rotation: cgmath::Quaternion<f32>,
+    drag_dx: f64,
+    drag_dy: f64,
+    drag_events: u32,
 }
 
 /// Translates raw pointer events into scene/camera operations.
@@ -227,6 +230,11 @@ impl InteractionController {
                     plane_normal,
                     start_position: pos,
                     start_rotation: visual.transform.rotation,
+                    // H2 field diagnosis: how much motion the drag
+                    // actually received (sum of per-event deltas).
+                    drag_dx: 0.0,
+                    drag_dy: 0.0,
+                    drag_events: 0,
                 });
                 return true;
             }
@@ -353,6 +361,9 @@ impl InteractionController {
                     plane_normal,
                     start_position: pos,
                     start_rotation: visual.transform.rotation,
+                    drag_dx: 0.0,
+                    drag_dy: 0.0,
+                    drag_events: 0,
                 });
                 return Some(mode);
             }
@@ -409,6 +420,9 @@ impl InteractionController {
                     plane_normal,
                     start_position: pos,
                     start_rotation: visual.transform.rotation,
+                    drag_dx: 0.0,
+                    drag_dy: 0.0,
+                    drag_events: 0,
                 });
             }
         }
@@ -417,6 +431,13 @@ impl InteractionController {
     /// Handle pointer button release.
     pub fn handle_pointer_up(&mut self) {
         self.active = None;
+    }
+
+    /// H2 field diagnosis: motion received during the finished drag.
+    pub fn rotate_drag_summary(&self) -> Option<(u32, f64, f64)> {
+        self.active
+            .as_ref()
+            .map(|a| (a.drag_events, a.drag_dx, a.drag_dy))
     }
 
     /// Handle pointer motion during drag.
@@ -437,6 +458,11 @@ impl InteractionController {
         let Some(ref active) = self.active.clone() else {
             return;
         };
+        if let Some(a) = self.active.as_mut() {
+            a.drag_dx += dx;
+            a.drag_dy += dy;
+            a.drag_events += 1;
+        }
         let visual = match scene.get_mut(active.vid) {
             Some(v) => v,
             None => return,
