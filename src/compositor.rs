@@ -5663,6 +5663,19 @@ impl LookingGlass {
             self.last_hover_pick = (x, y);
             self.hovered_visual = self.pick_visual_at(x, y);
         }
+        // UX-F4: over the taskbar, identity is SPATIAL — hovering a
+        // window button lights that window's hover ring in the scene
+        // (transient, no permanent chrome). The scene pick is ignored
+        // while the pointer owns the bar.
+        let (_, fb_h) = self.fb_size();
+        if y >= (fb_h - crate::shell::TaskbarLayout::bar_height(fb_h)) as f64 {
+            let layout = self.build_taskbar();
+            self.hovered_visual = layout.items.iter().find_map(|it| match it.hit {
+                crate::shell::TaskbarHit::Window(vid) if it.hover => Some(vid),
+                _ => None,
+            });
+            self.scene.hovered_id = self.hovered_visual;
+        }
         // UX-F2: the open menu tracks the hovered row for the highlight.
         if self.context_menu.visible {
             let m = crate::context_menu::MenuMetrics::for_framebuffer(

@@ -1392,3 +1392,16 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
 - Known limitation: same-app instances differ only by title (MRU order
   communicates recency); per-window icons would need icon infra.
 - Gate 24/0/0, 592 tests, clippy 0.
+
+### UX-F4 — Window identity (audit: no permanent chrome required)
+- Identity already carried by: spatial position, taskbar titles with
+  ·N workspace markers, MRU order, focus ring (green), hover ring,
+  hover hint line. With several IDENTICAL windows the one gap was
+  bar-to-scene ambiguity ("which button is which window?").
+- Fix (transient, no chrome): hovering a taskbar window button lights
+  THAT window's hover ring in the scene (pointer owns the bar ->
+  scene.hovered_id = the hovered button's visual). Same G-H3 ring,
+  nothing permanent added. E2E: three identical "term" windows in a
+  row; hovering button 2 + activating it focused exactly that window.
+- VERDICT: audit complete — title bars remain unnecessary.
+- Gate 24/0/0, 592 tests, clippy 0.
