@@ -11,17 +11,18 @@ pub struct MenuMetrics {
 }
 
 impl MenuMetrics {
-    /// Derive metrics from the framebuffer size. Baseline: 220px menu,
-    /// 24px rows, 2x glyphs at 1280x720. The glyph fills ~58% of the row
-    /// height at every size (round per-step, not even-only scales, so
+    /// Derive metrics from the framebuffer size. UX-F1: menu rows use
+    /// the BODY glyph tier (3x = 21px glyphs) — baseline 32px rows,
+    /// 260px panel at 1280x720. The glyph fills ~58% of the row height
+    /// at every size (round per-step, not even-only scales, so
     /// 1.5x/3x displays get 3x/6x glyphs instead of staying at 2x).
     pub fn for_framebuffer(w: f32, h: f32) -> Self {
         let su = (w / 1280.0).clamp(1.0, 2.5);
         let sv = (h / 720.0).clamp(1.0, 2.5);
-        let item_height = 24.0 * sv;
+        let item_height = 32.0 * sv;
         let glyph_scale = ((item_height * 0.58) / 7.0).round().clamp(2.0, 6.0);
         MenuMetrics {
-            menu_width: 220.0 * su,
+            menu_width: 260.0 * su,
             item_height,
             glyph_scale,
         }
@@ -214,32 +215,32 @@ mod tests {
     #[test]
     fn metrics_baseline_matches_verified_geometry() {
         let m = MenuMetrics::for_framebuffer(1280.0, 720.0);
-        assert_eq!(m.menu_width, 220.0);
-        assert_eq!(m.item_height, 24.0);
-        assert_eq!(m.glyph_scale, 2.0);
+        assert_eq!(m.menu_width, 260.0);
+        assert_eq!(m.item_height, 32.0);
+        assert_eq!(m.glyph_scale, 3.0); // UX-F1: BODY tier
     }
 
     #[test]
     fn metrics_scale_up_on_hidpi() {
         let m = MenuMetrics::for_framebuffer(2560.0, 1440.0);
-        assert_eq!(m.menu_width, 440.0);
-        assert_eq!(m.item_height, 48.0);
-        assert_eq!(m.glyph_scale, 4.0); // 28px glyphs in 48px rows
+        assert_eq!(m.menu_width, 520.0);
+        assert_eq!(m.item_height, 64.0);
+        assert_eq!(m.glyph_scale, 5.0); // 35px glyphs in 64px rows
                                         // Glyph fills ~58% of the row at every size (readable)
         let ink = 7.0 * m.glyph_scale;
         assert!((ink / m.item_height - 0.58).abs() < 0.06);
         // 1.5x display (e.g. 1080p panel): must get 3x glyphs, not 2x
         let m15 = MenuMetrics::for_framebuffer(1920.0, 1080.0);
-        assert_eq!(m15.glyph_scale, 3.0);
-        assert_eq!(m15.item_height, 36.0);
+        assert_eq!(m15.glyph_scale, 4.0);
+        assert_eq!(m15.item_height, 48.0);
     }
 
     #[test]
     fn metrics_small_displays_keep_baseline() {
         let m = MenuMetrics::for_framebuffer(800.0, 600.0);
-        assert_eq!(m.menu_width, 220.0);
-        assert_eq!(m.item_height, 24.0);
-        assert_eq!(m.glyph_scale, 2.0);
+        assert_eq!(m.menu_width, 260.0);
+        assert_eq!(m.item_height, 32.0);
+        assert_eq!(m.glyph_scale, 3.0);
     }
 
     #[test]

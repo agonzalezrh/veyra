@@ -1352,3 +1352,15 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
 - Hint-line centering fix (chars are 5*scale px, was scale*5/7 — the
   line clipped at the right edge; VLM caught it, now full text reads).
 - Gate 24/0/0, 592 tests.
+
+### UX-F1 — Typography pass
+- Single type scale (renderer.rs mod typography): TITLE=3, BODY=3,
+  CAPTION=2 (5x7 atlas glyph tiers; integer scales keep NEAREST crisp).
+- Context menu promoted to BODY: 24px rows/220px panel -> 32px/260px
+  at 720p (glyph_scale 2->3, matches the taskbar; metrics tests updated).
+- Hint card: TITLE headline (green) + BODY body lines with 24px rows
+  (was all-3 shouty, 26px rows); hint line stays CAPTION.
+- No interaction changes. Gate 24/0/0, 592 tests, clippy 0.
+- Known limitation: the 5x7 bitmap family itself reads retro/lo-fi; a
+  vector font (TTF atlas) is a future slice (needs glyph-rasterization
+  infrastructure).

@@ -445,7 +445,7 @@ impl HintLayout {
             "Open applications from the taskbar below".to_string(),
         ];
         let card_w = (w * 0.44).clamp(420.0, 640.0);
-        let line_h = 26.0f32;
+        let line_h = 24.0f32;
         let card_h = lines.len() as f32 * line_h + 36.0;
         let x = (w - card_w) * 0.5;
         let y = (h - card_h - 90.0).max(24.0); // above the taskbar strip

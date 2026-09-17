@@ -491,6 +491,25 @@ pub const fn atlas_rows(cols: u32) -> u32 {
     (font_glyph_count() as u32).div_ceil(cols)
 }
 
+/// UX-F1: the coherent type scale for the 5×7 bitmap atlas. A glyph
+/// at scale S is 7·S px tall and 5·S px wide. Integer scales only
+/// (NEAREST sampling stays crisp). Hierarchy: TITLE ≥ BODY > CAPTION.
+pub mod typography {
+    /// Panel/page titles (the first-run hint card headline).
+    pub const TITLE: f32 = 3.0;
+    /// Labels and body copy (taskbar, context menu, hint card body).
+    pub const BODY: f32 = 3.0;
+    /// Secondary annotations (the hover hint line).
+    pub const CAPTION: f32 = 2.0;
+    /// Pixel width/height of one glyph at a scale.
+    pub const fn glyph_w(scale: f32) -> f32 {
+        5.0 * scale
+    }
+    pub const fn glyph_h(scale: f32) -> f32 {
+        7.0 * scale
+    }
+}
+
 unsafe fn new_font_atlas(gl: &ffi::Gles2) -> FontAtlas {
     const GW: u32 = 5;
     const GH: u32 = 7;
@@ -1595,19 +1614,23 @@ pub fn render_scene(
             }
             // Text lines, centered, first line emphasized.
             {
-                // draw/atlas are the render-scene-local caches (matched
-                // earlier; both initialized before any drawing).
-                let scale = 3.0f32;
-                let ch = (7.0f32 * scale / h) * 2.0;
-                let cw = (5.0f32 * scale / w) * 2.0;
-                let line_h_px = 26.0f32;
+                // UX-F1: the card carries the TITLE/BODY hierarchy —
+                // headline at TITLE, body lines at BODY, tighter rows.
+                let line_h_px = 24.0f32;
                 for (i, line) in hints.lines.iter().enumerate() {
                     if line.is_empty() {
                         continue;
                     }
-                    let text_w_px = line.chars().count() as f32 * (scale * 5.0 / 7.0);
+                    let scale = if i == 0 {
+                        typography::TITLE
+                    } else {
+                        typography::BODY
+                    };
+                    let ch = (typography::glyph_h(scale) / h) * 2.0;
+                    let cw = (typography::glyph_w(scale) / w) * 2.0;
+                    let text_w_px = line.chars().count() as f32 * typography::glyph_w(scale);
                     let px = hx + (hw - text_w_px) * 0.5;
-                    let py = hy + 18.0 + i as f32 * line_h_px;
+                    let py = hy + 16.0 + i as f32 * line_h_px;
                     let x_ndc = (px / w) * 2.0 - 1.0;
                     let y_ndc = -(((py + line_h_px / 2.0) / h) * 2.0 - 1.0) - ch / 2.0;
                     let (cr, cg_, cb) = if i == 0 {
@@ -1632,12 +1655,11 @@ pub fn render_scene(
             gl.Enable(ffi::BLEND);
             gl.BlendFunc(ffi::SRC_ALPHA, ffi::ONE_MINUS_SRC_ALPHA);
             {
-                // draw/atlas are the render-scene-local cache bindings.
-                let scale = 2.0f32;
-                let ch = (7.0f32 * scale / h) * 2.0;
-                let cw = (5.0f32 * scale / w) * 2.0;
-                // Each atlas char spans 5*scale px (cw NDC = 5*scale/w*2).
-                let text_w_px = line.chars().count() as f32 * (5.0 * scale);
+                // UX-F1: the hover hint line is the CAPTION tier.
+                let scale = typography::CAPTION;
+                let ch = (typography::glyph_h(scale) / h) * 2.0;
+                let cw = (typography::glyph_w(scale) / w) * 2.0;
+                let text_w_px = line.chars().count() as f32 * typography::glyph_w(scale);
                 let px = (w - text_w_px) * 0.5;
                 let py = h - crate::shell::TaskbarLayout::bar_height(h) - 26.0;
                 let x_ndc = (px / w) * 2.0 - 1.0;
@@ -1760,8 +1782,11 @@ pub fn render_scene(
             // Top hairline: bright edge for separation from the scene.
             solid_rect(0.0, bar_y, w, 1.0, 0.42, 0.45, 0.50, 0.22);
 
-            // DPI-scaled glyph metrics (same family as before).
-            let scale = (((tb.bar_h - 6.0) * 0.58) / 7.0).round().clamp(2.0, 6.0);
+            // UX-F1: taskbar labels sit at the BODY tier (clamped to
+            // fit the bar height; BODY=3 at the standard 48px bar).
+            let scale = (((tb.bar_h - 6.0) * 0.58) / 7.0)
+                .round()
+                .clamp(2.0, typography::BODY.max(2.0));
             let ch = (7.0f32 * scale / h) * 2.0;
             let cw = (5.0f32 * scale / w) * 2.0;
 
