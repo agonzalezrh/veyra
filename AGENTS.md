@@ -1423,3 +1423,17 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
 - Screenshots: overview / browser_near / zoomout / term_work / lost /
   home. VLM: 4-window row coherent; taskbar labels readable.
 - Gate 24/0/0, 592 tests, clippy 0.
+
+### UX-F6 — Interaction consistency audit
+- All combinations verified across F2-F5 + this slice: hover->focus,
+  hover->drag (content vs Meta+move), selected->focus precedence,
+  menu->camera-gesture dismiss, menu->workspace-switch dismiss,
+  taskbar->focus/minimize/restore, +N overflow hover (lights the hidden
+  window via F4's ring), Home->normal interaction.
+- Drag feedback: the window follows the cursor + focused ring —
+  sufficient; no extra grab state added.
+- Findings (no fixes required): P3 — a wheel aimed at "background"
+  beside a window may hit the window and scroll it (rule-correct; the
+  hint line communicates the target); P3 — identical same-app titles
+  in the bar are resolved interactively by F4's hover ring.
+- No new colored states introduced. Gate 24/0/0, 592 tests, clippy 0.
