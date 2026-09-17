@@ -1329,3 +1329,11 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
   green, selected = amber, HOVERED = dim cool blue-gray (new u_hovered
   uniform; previously hover only exempted frustum culling with no
   visual state). Answers "what will the next drag affect?" at a glance.
+
+### G-H4 — Camera recovery ("Home: show desktop")
+- Kept minimal per directive: the background hint line gained
+  "Home: show desktop" (the existing FrameAll binding = cam.frame_all,
+  camera-only). E2E-verified the LOST-CAMERA case: two background pans
+  put the camera at x=2480 (window off-view, empty screen + hint line
+  visible) -> Home -> journal camera (0,0,1179) = the frame_all pose,
+  window large and centered (VLM + journal). No new recovery mechanism.

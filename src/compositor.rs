@@ -2709,7 +2709,7 @@ impl LookingGlass {
         } else if self.hovered_visual.is_some() && !win_mastered {
             Some("Click: focus | Alt+drag: move | Right-drag: rotate | Wheel: scroll")
         } else if self.hovered_visual.is_none() && self.spatial_mode && !bg_mastered {
-            Some("Scroll: approach | Left-drag: pan | Right-drag: look")
+            Some("Scroll: approach | Left-drag: pan | Right-drag: look | Home: show desktop")
         } else {
             None
         };
