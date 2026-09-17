@@ -219,7 +219,11 @@ fn main() {
         )
         .init();
 
-    tracing::info!("Veyra starting");
+    tracing::info!(
+        profile = option_env!("VEYRA_PROFILE").unwrap_or("unknown"),
+        built = option_env!("VEYRA_BUILD_TS").unwrap_or("unknown"),
+        "Veyra starting"
+    );
 
     // Load configuration
     let config = Config::load();
