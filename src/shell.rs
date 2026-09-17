@@ -456,10 +456,11 @@ impl HintLayout {
             "Veyra — your desktop, in space".to_string(),
             String::new(),
             "Scroll · approach the desktop".to_string(),
-            "Left-drag · move (pan the world)".to_string(),
+            "Left-drag · move around".to_string(),
             "Right-drag · look around".to_string(),
             "Click a window · focus it".to_string(),
-            "Right-click a window · actions".to_string(),
+            "Right-click a window · menu".to_string(),
+            "Home · show the whole desktop".to_string(),
             String::new(),
             "Open applications from the taskbar below".to_string(),
         ];

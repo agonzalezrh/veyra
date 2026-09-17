@@ -1473,3 +1473,19 @@ navigation loop), F6 f7daac4 (consistency audit), F7 09594c4-era
 taskbar=index, camera=navigation, rings=interaction state, menu=actions,
 Home=recovery. NO permanent title bars, no new managers, no font
 replacement, wheel/camera semantics preserved throughout.
+
+### UX-F8 (partial) + URGENT FIXES (user reports)
+- F8 card copy pass: "Left-drag · move around" (was "pan the world"),
+  "Right-click a window · menu" (was "actions"), added the missing
+  "Home · show the whole desktop" line (the newcomer's safety net).
+- **X11 override-redirect windows now render + receive input** (user:
+  chrome's float bubbles were not clickable): OR windows (chrome
+  bubbles/menus/tooltips) were a documented unmanaged gap — they never
+  became visuals. mapped_override_redirect_window now registers them
+  in x11_windows so the existing commit pipeline renders them as
+  visuals and routes input; keyboard focus is still excluded
+  (x11_focusable, BUG_LIST #19); unmap removes the visual.
+- Wheel delivery VERIFIED working for both Wayland (client-kit: 8 axis
+  events) and X11 (xev: 96 button 4/5 events) in the current build —
+  the user's wheel report is either a stale binary (the startup stamp
+  line now identifies builds) or chrome-specific pending their retest.

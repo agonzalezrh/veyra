@@ -168,7 +168,22 @@ impl XwmHandler for LookingGlass {
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        debug!(class = %window.class(), "x11 override-redirect window mapped (unmanaged)");
+        // UX fix (user report: chrome's float bubbles are not clickable):
+        // override-redirect windows (menus, tooltips, bubbles) DO have
+        // wl_surfaces paired by XWayland — route them through the SAME
+        // commit pipeline as managed X11 windows so they render as
+        // visuals and receive input. They are excluded from keyboard
+        // focus by the existing x11_focusable check, and their unmap
+        // removes the visual via unmapped_window.
+        if let Some(wl_surface) = window.wl_surface() {
+            self.x11_windows.insert(wl_surface.clone(), window.clone());
+            info!(
+                class = %window.class(),
+                "x11 override-redirect window mapped (rendered + clickable)"
+            );
+        } else {
+            debug!(class = %window.class(), "x11 override-redirect window mapped (no wl_surface)");
+        }
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
