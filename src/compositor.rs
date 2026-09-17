@@ -5867,10 +5867,34 @@ impl LookingGlass {
     /// H0.5.3: right press. On a WINDOW: arm per-window rotation
     /// (the drag decides rotation vs menu by the threshold). On EMPTY
     /// background: nothing here — nav_button=3 drives camera orbit.
+    /// Field diagnostics (H2): the full pose of a visual as one log line.
+    fn log_pose(&self, label: &str, vid: VisualId) {
+        if let Some(v) = self.scene.visuals.iter().find(|v| v.id == vid) {
+            let q = v.transform.rotation;
+            let yaw = (2.0 * q.v.y.atan2(q.s)).to_degrees();
+            let pitch = (2.0 * (q.s * q.v.x).atan2(1.0)).to_degrees();
+            info!(
+                label,
+                ?vid,
+                px = v.transform.position.x as i32,
+                py = v.transform.position.y as i32,
+                pz = v.transform.position.z as i32,
+                yaw = yaw as i32,
+                pitch = pitch as i32,
+                "pose"
+            );
+        }
+    }
+
     pub fn handle_right_press(&mut self, x: f64, y: f64) {
         self.press_pos = (x, y);
         let picked = self.pick_visual_at(x, y);
         info!(x, y, picked = ?picked, "right press");
+        if let Some(vid) = picked {
+            // The pose NOW — if a previous drag's rotation reverted after
+            // its release, this line catches the revert.
+            self.log_pose("rotate-start", vid);
+        }
         self.right_rotate_arm = picked.map(|vid| (vid, x, y));
     }
 
@@ -5888,11 +5912,7 @@ impl LookingGlass {
         self.interaction.handle_pointer_up();
         if let Some((vid, _px, _py)) = arm {
             if moved {
-                if let Some(v) = self.scene.visuals.iter().find(|v| v.id == vid) {
-                    let q = v.transform.rotation;
-                    let yaw_deg = (2.0 * q.v.y.atan2(q.s)).to_degrees();
-                    info!(?vid, yaw = yaw_deg as i32, "window rotated");
-                }
+                self.log_pose("rotate-end", vid);
             } else {
                 self.handle_context_menu(x, y);
             }
