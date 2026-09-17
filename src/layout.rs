@@ -106,7 +106,18 @@ pub fn place_new_visual_spatial(
                 return None;
             }
         }
-        Some((Vector3::new(x, y, 0.0), -anchor_yaw))
+        // Mirror within the camera-facing hemisphere: negating a
+        // back-facing anchor (|yaw| > 90°, e.g. a window the user
+        // rotated past edge-on) yields another back-facing window —
+        // the pair must always face the viewer, so wrap into (−90, 90].
+        let mut yaw = -anchor_yaw;
+        while yaw > 90.0 {
+            yaw -= 180.0;
+        }
+        while yaw <= -90.0 {
+            yaw += 180.0;
+        }
+        Some((Vector3::new(x, y, 0.0), yaw))
     };
     // Prefer the side toward the frustum center so pairs stay reachable.
     let first = if ax > 0.0 { -1.0 } else { 1.0 };
@@ -927,6 +938,33 @@ mod tests {
         )
         .expect("anchor exists");
         assert!(pos.x < 500.0, "placed toward center (left), got {}", pos.x);
+    }
+
+    #[test]
+    fn spatial_mirror_wraps_back_facing_anchor() {
+        use cgmath::Rotation3;
+        let mut scene = crate::scene::Scene::default();
+        let a = crate::scene::Visual::new_test(400, 300);
+        scene.add(a);
+        // Anchor rotated to nearly 180° (user spun it around).
+        scene.visuals[0].transform.rotation =
+            cgmath::Quaternion::from_angle_y(cgmath::Deg(178.0));
+        let eligible = all_eligible(&scene);
+        let (_pos, yaw) = place_new_visual_spatial(
+            300.0,
+            200.0,
+            &scene,
+            bounds_16_9(),
+            &eligible,
+        )
+        .expect("anchor exists");
+        // The naive mirror (−178°) is back-facing; the wrap must land
+        // the new window within the facing hemisphere.
+        assert!(
+            yaw > -90.0 && yaw <= 90.0,
+            "new window must face the viewer, got {yaw}"
+        );
+        assert!((yaw - 2.0).abs() < 1e-2, "wrapped mirror, got {yaw}");
     }
 
     #[test]
