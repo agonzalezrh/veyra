@@ -1377,3 +1377,18 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
 - Menu dismisses on camera gestures (pan/orbit/dolly/frame_all) and on
   workspace switch — it belongs to the spatial moment it opened on.
 - No interaction-model changes otherwise. 592 tests, gate 24/0/0.
+
+### UX-F3 — Taskbar (the desktop's index)
+- The bar now indexes EVERY workspace (one monitor = many monitors):
+  off-workspace window buttons carry a "·N" workspace marker; clicking
+  one travels via the camera transition to its workspace and focuses it
+  (E2E-verified both directions: AAA<-ws0 <-> CCC<-ws1).
+- Overflow is INDEXED not dropped: a compact "+N" button activates the
+  first hidden (least-recently-focused) window; min button width
+  84->64 fits more labels.
+- Active/focused = green accent, minimized = dim, hover lift (existing)
+  — all verified. BODY typography (F1). No spatial-organization change:
+  the bar is the index, the scene stays the workspace.
+- Known limitation: same-app instances differ only by title (MRU order
+  communicates recency); per-window icons would need icon infra.
+- Gate 24/0/0, 592 tests, clippy 0.

@@ -3408,10 +3408,20 @@ impl LookingGlass {
     /// shell owns nothing.
     fn build_taskbar(&self) -> crate::shell::TaskbarLayout {
         let (w, h) = self.fb_size();
-        // Window buttons: STABLE map order (toplevel registration
-        // order), active workspace only. Selection is communicated by
-        // highlighting, never by reordering.
-        let ws_ids = self.workspace_manager.active().visual_ids.clone();
+        // UX-F3: window buttons cover EVERY workspace (one monitor =
+        // many monitors: the bar is the index of the whole desktop);
+        // off-workspace buttons carry a "·N" suffix so spatial memory
+        // ("browser lives on 2") survives the summary view. Ordering is
+        // stable (registration order), active workspace first.
+        let active_ws = self.workspace_manager.active_id();
+        let mut ws_ids = self.workspace_manager.active().visual_ids.clone();
+        for i in 0..self.workspace_manager.len() {
+            if i != active_ws {
+                if let Some(ws) = self.workspace_manager.get(i) {
+                    ws_ids.extend(ws.visual_ids.iter().copied());
+                }
+            }
+        }
         let label_of = |vid: VisualId| -> String {
             self.toplevels
                 .iter()
@@ -3434,9 +3444,15 @@ impl LookingGlass {
         let windows: Vec<(VisualId, String, bool, bool)> = order
             .iter()
             .map(|vid| {
+                let ws_of = self.workspace_for_visual(*vid);
+                let label = if ws_of == Some(active_ws) {
+                    label_of(*vid)
+                } else {
+                    format!("{} ·{}", label_of(*vid), ws_of.map(|w| w + 1).unwrap_or(0))
+                };
                 (
                     *vid,
-                    label_of(*vid),
+                    label,
                     self.scene.focused_id == Some(*vid),
                     self.is_minimized(*vid),
                 )
@@ -3480,6 +3496,17 @@ impl LookingGlass {
         };
         match item.hit.clone() {
             crate::shell::TaskbarHit::Window(vid) => {
+                // UX-F3: the bar indexes every workspace — activating an
+                // off-workspace window first travels to its workspace
+                // (the camera transition communicates the trip), then the
+                // normal activate flow runs there.
+                if let Some(ws_of) = self.workspace_for_visual(vid) {
+                    if ws_of != self.workspace_manager.active_id()
+                        && self.workspace_manager.active_id() != ws_of
+                    {
+                        self.switch_workspace(ws_of);
+                    }
+                }
                 // GNOME semantics: a taskbar click ALWAYS activates (or
                 // restores) — it never minimizes. The earlier minimize-
                 // on-focused-click toggle read as erratic ("sometimes

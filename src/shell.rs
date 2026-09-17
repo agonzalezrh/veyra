@@ -57,7 +57,7 @@ const WS_ZONE_LEFT: f32 = 8.0;
 const LAUNCH_BTN_W: f32 = 104.0;
 const LAUNCH_GAP: f32 = 4.0;
 const WIN_BTN_MAX_W: f32 = 170.0;
-const WIN_BTN_MIN_W: f32 = 84.0;
+const WIN_BTN_MIN_W: f32 = 64.0;
 const WIN_BTN_GAP: f32 = 5.0;
 const SECTION_PAD: f32 = 10.0;
 
@@ -134,12 +134,31 @@ impl TaskbarLayout {
         let zone_w = (win_zone_r - win_zone_l).max(0.0);
         let n = windows.len() as f32;
         let mut w_cursor = win_zone_l;
-        for (vid, label, focused, minimized) in windows.iter() {
+        for (i, (vid, label, focused, minimized)) in windows.iter().enumerate() {
             // Fair share of the zone, clamped to [min, max].
             let share = ((zone_w - WIN_BTN_GAP * (n - 1.0).max(0.0)) / n)
                 .clamp(WIN_BTN_MIN_W, WIN_BTN_MAX_W);
             if w_cursor + share > win_zone_r {
-                break; // out of room; remaining windows are not shown
+                // UX-F3: overflow is INDEXED, not dropped — a compact
+                // "+N" button activates the first hidden (least recently
+                // focused) window; the bar stays a complete index.
+                let hidden = &windows[i..];
+                if !hidden.is_empty() {
+                    let label = format!("+{}", hidden.len());
+                    let w_btn = 46.0f32.min((win_zone_r - w_cursor).max(0.0));
+                    if w_btn >= 30.0 {
+                        items.push(TaskbarItem {
+                            hit: TaskbarHit::Window(hidden[0].0),
+                            x: w_cursor,
+                            w: w_btn,
+                            label,
+                            active: false,
+                            dim: hidden.iter().any(|(_, _, _, m)| *m),
+                            hover: Self::hovered(hover, w_cursor, bar_h, w_btn),
+                        });
+                    }
+                }
+                break;
             }
             items.push(TaskbarItem {
                 hit: TaskbarHit::Window(*vid),
