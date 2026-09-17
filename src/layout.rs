@@ -997,4 +997,14 @@ mod tests {
             "both sides blocked → fallback"
         );
     }
+
+    #[test]
+    fn smoothstep_eases_endpoints_and_midpoint() {
+        assert_eq!(crate::compositor::smoothstep(0.0), 0.0);
+        assert_eq!(crate::compositor::smoothstep(1.0), 1.0);
+        assert!((crate::compositor::smoothstep(0.5) - 0.5).abs() < 1e-9);
+        // Monotone and eased (slower at the ends than the middle).
+        assert!(crate::compositor::smoothstep(0.25) < 0.25);
+        assert!(crate::compositor::smoothstep(0.75) > 0.75);
+    }
 }

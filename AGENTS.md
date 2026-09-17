@@ -1337,3 +1337,18 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
   put the camera at x=2480 (window off-view, empty screen + hint line
   visible) -> Home -> journal camera (0,0,1179) = the frame_all pose,
   window large and centered (VLM + journal). No new recovery mechanism.
+
+### G-H5 — Workspace transitions (camera property, not machinery)
+- One WsTransition {from, to, t0, dur_ms=350} field; switch_workspace
+  starts it when spatial && the poses differ, else instant. The render
+  pump advances smoothstep(k) and lands EXACTLY on the destination pose.
+  Any camera gesture (pan/orbit/dolly/frame_all) cancels; a new switch
+  re-targets from the current pose (rapid A->B->C safe by construction).
+  Normal mode stays instant (the ortho pin would fight interpolation);
+  same-workspace switch is a no-op before the transition code runs.
+- E2E (h5 probe): before/mid/after screenshots (mid = skewed off-center
+  camera), A->B->A restores A's saved pose, rapid 1->2->3 lands on the
+  final pose, 4 ws_transition journal events. No-op switch verified.
+- Hint-line centering fix (chars are 5*scale px, was scale*5/7 — the
+  line clipped at the right edge; VLM caught it, now full text reads).
+- Gate 24/0/0, 592 tests.

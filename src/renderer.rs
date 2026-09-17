@@ -1636,7 +1636,8 @@ pub fn render_scene(
                 let scale = 2.0f32;
                 let ch = (7.0f32 * scale / h) * 2.0;
                 let cw = (5.0f32 * scale / w) * 2.0;
-                let text_w_px = line.chars().count() as f32 * (scale * 5.0 / 7.0);
+                // Each atlas char spans 5*scale px (cw NDC = 5*scale/w*2).
+                let text_w_px = line.chars().count() as f32 * (5.0 * scale);
                 let px = (w - text_w_px) * 0.5;
                 let py = h - crate::shell::TaskbarLayout::bar_height(h) - 26.0;
                 let x_ndc = (px / w) * 2.0 - 1.0;

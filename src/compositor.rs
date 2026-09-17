@@ -209,6 +209,25 @@ const BEGIN_FRAME_FAILURE_LIMIT: u32 = 3;
 /// 20th frame with successes in between — never consecutive).
 const PRODUCER_ERROR_LIMIT: u32 = 60;
 
+/// G-H5: one in-flight workspace camera transition.
+#[derive(Debug, Clone)]
+struct WsTransition {
+    from: crate::input::Camera,
+    to: crate::input::Camera,
+    t0: std::time::Instant,
+    dur_ms: u64,
+}
+
+/// G-H5: smoothstep easing (pure, unit-tested).
+pub fn smoothstep(k: f64) -> f64 {
+    let k = k.clamp(0.0, 1.0);
+    k * k * (3.0 - 2.0 * k)
+}
+
+fn lerp_f32(a: f32, b: f32, s: f64) -> f32 {
+    a + (b - a) * s as f32
+}
+
 pub struct LookingGlass {
     pub display_handle: DisplayHandle,
     pub compositor_state: CompositorState,
@@ -313,6 +332,11 @@ pub struct LookingGlass {
     /// immediately instead of waiting for the pacing timer.
     /// G-H1: one-time hint card state (dismissed by gesture/window/click).
     pub hints_dismissed: bool,
+    /// G-H5: in-flight workspace camera transition (a property of the
+    /// switch, not a subsystem): interpolate the camera from the leaving
+    /// pose to the destination pose over ~350ms. Any camera gesture or
+    /// Home cancels it; a new switch re-targets from the current pose.
+    ws_transition: Option<WsTransition>,
     /// G-H2: contextual hover hints — the pointer's window target and
     /// which gestures the user has already demonstrated (each hint line
     /// retires once its whole set was performed).
@@ -771,6 +795,7 @@ impl LookingGlass {
             last_down_vid: None,
             saved_state: None,
             hints_dismissed: crate::shell::hints_seen(),
+            ws_transition: None,
             hovered_visual: None,
             last_hover_pick: (f64::MIN, f64::MIN),
             g_focus: false,
@@ -2714,6 +2739,29 @@ impl LookingGlass {
             None
         };
         let fb_h = h;
+        // G-H5: advance the workspace camera transition. Cancels happen
+        // in the gesture entry points; a completed step lands exactly on
+        // the destination pose.
+        if let Some(t) = self.ws_transition.clone() {
+            let k = t.t0.elapsed().as_secs_f64() / (t.dur_ms as f64 / 1000.0);
+            if k >= 1.0 {
+                *self.camera_mut() = t.to;
+                self.ws_transition = None;
+            } else {
+                let s = smoothstep(k);
+                {
+                    let cam = self.camera_mut();
+                    cam.position = cgmath::Point3::new(
+                        lerp_f32(t.from.position.x, t.to.position.x, s),
+                        lerp_f32(t.from.position.y, t.to.position.y, s),
+                        lerp_f32(t.from.position.z, t.to.position.z, s),
+                    );
+                    cam.yaw = lerp_f32(t.from.yaw, t.to.yaw, s);
+                    cam.pitch = lerp_f32(t.from.pitch, t.to.pitch, s);
+                }
+                self.ws_transition = Some(t);
+            }
+        }
         if !self.spatial_mode {
             // H1: x/y persist (normal-mode entry centers on content; a
             // middle-drag pan stays put) — only depth and orientation
@@ -6206,6 +6254,7 @@ impl LookingGlass {
 
     /// Frame all visuals in view.
     pub fn frame_all(&mut self) -> bool {
+        self.ws_transition = None;
         let (cam, scene) = self.camera_and_scene();
         let result = cam.frame_all(scene);
         if result {
@@ -6320,11 +6369,13 @@ impl LookingGlass {
 
     /// Orbit camera (right-drag).
     pub fn handle_orbit(&mut self, dx: f64, dy: f64) {
+        self.ws_transition = None;
         self.camera_mut().handle_orbit(dx, dy);
     }
 
     /// Pan camera (middle-drag).
     pub fn handle_pan(&mut self, dx: f64, dy: f64) {
+        self.ws_transition = None;
         self.camera_mut().handle_pan(dx, dy, 0.05);
     }
 
@@ -6405,6 +6456,7 @@ impl LookingGlass {
     /// Camera state only: visual transforms, workspace membership, and
     /// application coordinates are untouched.
     fn camera_dolly_at_pointer(&mut self, x: f64, y: f64, wheel: f64) {
+        self.ws_transition = None;
         let fallback = |s: &mut Self| {
             // No ray available (degenerate output/projection): plain
             // look-direction zoom keeps the gesture functional.
@@ -6504,7 +6556,33 @@ impl LookingGlass {
             )
         };
         let (ws_camera, ws_detached, ws_fm, saved, ws_visual_ids) = ws_snap;
-        *self.camera_mut() = ws_camera;
+        // G-H5: spatial switches glide (leaving pose -> destination pose,
+        // ~350ms smoothstep); normal mode stays instant (the ortho pin
+        // would fight the interpolation). Same-pose switches stay instant.
+        let from = self.camera().clone();
+        let poses_differ = from.position != ws_camera.position
+            || from.yaw != ws_camera.yaw
+            || from.pitch != ws_camera.pitch;
+        if self.spatial_mode && poses_differ {
+            let t = WsTransition {
+                from,
+                to: ws_camera,
+                t0: std::time::Instant::now(),
+                dur_ms: 350,
+            };
+            crate::debug_journal::event(
+                "ws_transition",
+                &[
+                    ("to", idx.to_string()),
+                    ("from", old_id.to_string()),
+                    ("from_pos", format!("{:?}", t.from.position)),
+                    ("to_pos", format!("{:?}", t.to.position)),
+                ],
+            );
+            self.ws_transition = Some(t);
+        } else {
+            *self.camera_mut() = ws_camera;
+        }
         self.scene.detached_set = ws_detached;
         // Sync focus manager state
         self.focus_manager = ws_fm;
