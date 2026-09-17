@@ -1318,3 +1318,7 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
   than camera orbit; 3.0 = 120px drag = full turn, gate tests adjusted).
 - Gate S6/S7 fixed points (300,300)/(200,200) now land on the
   mirror-placed row → background strip (80,610) instead. Gate 24/0/0.
+- **Wheel grammar amendment (user rule, G-H2)**: the wheel SCROLLS the
+  window under the cursor — ALWAYS, modifiers included (a latched Meta
+  used to force camera dolly over windows). Camera dolly is ONLY for
+  the background (Meta+wheel on background behaves as before).

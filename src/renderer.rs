@@ -979,6 +979,8 @@ pub struct Overlays<'a> {
     pub taskbar: Option<&'a crate::shell::TaskbarLayout>,
     /// G-H1: the first-run hint card (None = not visible this frame).
     pub hints: Option<&'a crate::shell::HintLayout>,
+    /// G-H2: the contextual hover hint line (None = hidden).
+    pub hint_line: Option<&'a str>,
 }
 
 /// R1 contract: DRAW-ONLY. The frame lifecycle (begin_frame /
@@ -1605,6 +1607,31 @@ pub fn render_scene(
                     };
                     draw_text(gl, draw, atlas, line, x_ndc, y_ndc, cw, ch, cr, cg_, cb);
                 }
+            }
+            gl.Disable(ffi::BLEND);
+        });
+    }
+
+    // G-H2: the contextual hint line — one dim centered line just above
+    // the taskbar, ASCII-only for the bitmap atlas.
+    if let Some(line) = overlays.hint_line {
+        let _ = renderer.with_context(|gl| unsafe {
+            rebind_surface(gl);
+            gl.Disable(ffi::SCISSOR_TEST);
+            gl.Disable(ffi::DEPTH_TEST);
+            gl.Enable(ffi::BLEND);
+            gl.BlendFunc(ffi::SRC_ALPHA, ffi::ONE_MINUS_SRC_ALPHA);
+            {
+                // draw/atlas are the render-scene-local cache bindings.
+                let scale = 2.0f32;
+                let ch = (7.0f32 * scale / h) * 2.0;
+                let cw = (5.0f32 * scale / w) * 2.0;
+                let text_w_px = line.chars().count() as f32 * (scale * 5.0 / 7.0);
+                let px = (w - text_w_px) * 0.5;
+                let py = h - crate::shell::TaskbarLayout::bar_height(h) - 26.0;
+                let x_ndc = (px / w) * 2.0 - 1.0;
+                let y_ndc = -(((py + 14.0) / h) * 2.0 - 1.0) - ch / 2.0;
+                draw_text(gl, draw, atlas, line, x_ndc, y_ndc, cw, ch, 0.62, 0.63, 0.65);
             }
             gl.Disable(ffi::BLEND);
         });

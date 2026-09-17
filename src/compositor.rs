@@ -313,6 +313,18 @@ pub struct LookingGlass {
     /// immediately instead of waiting for the pacing timer.
     /// G-H1: one-time hint card state (dismissed by gesture/window/click).
     pub hints_dismissed: bool,
+    /// G-H2: contextual hover hints — the pointer's window target and
+    /// which gestures the user has already demonstrated (each hint line
+    /// retires once its whole set was performed).
+    hovered_visual: Option<VisualId>,
+    last_hover_pick: (f64, f64),
+    g_focus: bool,
+    g_move: bool,
+    g_rotate: bool,
+    g_scroll: bool,
+    g_pan: bool,
+    g_orbit: bool,
+    g_dolly: bool,
     pub render_ping: Option<smithay::reexports::calloop::ping::Ping>,
     /// G-H0.9: set by the sigwait thread on SIGTERM/SIGINT; the render
     /// pump performs the graceful save-and-exit on the main thread.
@@ -759,6 +771,15 @@ impl LookingGlass {
             last_down_vid: None,
             saved_state: None,
             hints_dismissed: crate::shell::hints_seen(),
+            hovered_visual: None,
+            last_hover_pick: (f64::MIN, f64::MIN),
+            g_focus: false,
+            g_move: false,
+            g_rotate: false,
+            g_scroll: false,
+            g_pan: false,
+            g_orbit: false,
+            g_dolly: false,
             render_ping: None,
             shutdown_requested: None,
             pacing_timer: None,
@@ -2676,6 +2697,22 @@ impl LookingGlass {
         } else {
             None
         };
+        // G-H2: the contextual hover hint line — one dim line above the
+        // taskbar for the CURRENT context (window vs background); each
+        // line retires once its gestures were demonstrated.
+        let win_mastered = self.g_focus && self.g_move && self.g_rotate && self.g_scroll;
+        let bg_mastered = self.g_pan && self.g_orbit && self.g_dolly;
+        let hint_line: Option<&'static str> = if hints_layout.is_some()
+            || self.interaction.is_dragging()
+        {
+            None
+        } else if self.hovered_visual.is_some() && !win_mastered {
+            Some("Click: focus | Alt+drag: move | Right-drag: rotate | Wheel: scroll")
+        } else if self.hovered_visual.is_none() && self.spatial_mode && !bg_mastered {
+            Some("Scroll: approach | Left-drag: pan | Right-drag: look")
+        } else {
+            None
+        };
         let fb_h = h;
         if !self.spatial_mode {
             // H1: x/y persist (normal-mode entry centers on content; a
@@ -2793,6 +2830,7 @@ impl LookingGlass {
             context_menu,
             taskbar: Some(&taskbar),
             hints: hints_layout.as_ref(),
+            hint_line,
         };
         let updated_ids: Vec<crate::scene::VisualId> =
             updates.iter().map(|(vid, _)| *vid).collect();
@@ -5261,6 +5299,9 @@ impl LookingGlass {
         // receives the resolved target and only decides manipulation;
         // it no longer picks with its own full-fb NDC math.
         let picked_vid = self.pick_visual_at(x, y);
+        if picked_vid.is_some() {
+            self.g_focus = true; // a click on a window demonstrated focus
+        }
         let cam = self.camera().clone();
         let mode = self.interaction.handle_pointer_down_picked(
             picked_vid,
@@ -5330,6 +5371,7 @@ impl LookingGlass {
                     if self.route_to_content(PointerEventKind::Down, x, y)
                         == ContentRouting::TitleBarHit
                     {
+                        self.g_move = true;
                         let cam = self.camera().clone();
                         self.interaction.force_translate(
                             x,
@@ -5348,6 +5390,7 @@ impl LookingGlass {
         // Threshold-gated at move time; release below threshold = click.
         if background_press && self.spatial_mode {
             self.dismiss_hints();
+            self.g_pan = true;
         }
         self.camera_pan_grab = if background_press
             && self.spatial_mode
@@ -5539,6 +5582,13 @@ impl LookingGlass {
         let dy = y - self.last_mouse.1;
         self.last_mouse = (x, y);
 
+        // G-H2: the hover target feeds the contextual hint line; a cheap
+        // re-pick only when the pointer travelled far enough to matter.
+        if (x - self.last_hover_pick.0).abs() > 4.0 || (y - self.last_hover_pick.1).abs() > 4.0 {
+            self.last_hover_pick = (x, y);
+            self.hovered_visual = self.pick_visual_at(x, y);
+        }
+
         // When pointer is locked, route relative motion to the locked client
         // and skip all spatial interaction.
         if self.pointer_constraints.pointer_locked {
@@ -5665,6 +5715,7 @@ impl LookingGlass {
                         self.spatial_mode,
                         mode,
                     );
+                    self.g_rotate = true;
                     info!(?vid, ?mode, ok, "rotation armed");
                 }
             } else {
@@ -5676,6 +5727,7 @@ impl LookingGlass {
         if self.nav_button == 3 && !self.interaction.is_dragging() && self.right_rotate_arm.is_none() {
             self.workspace_manager.active_mut().auto_orbit = false;
             self.dismiss_hints();
+            self.g_orbit = true;
             self.handle_orbit(dx, dy);
             return;
         }
@@ -6291,25 +6343,15 @@ impl LookingGlass {
         // H0.4 wheel ownership: Meta+wheel ALWAYS drives the camera —
         // even over a client surface — so the spatial desktop stays
         // navigable without hunting for background pixels.
-        let meta_held = self
-            .keyboard_handle
-            .as_ref()
-            .map(|kh| kh.modifier_state().logo)
-            .unwrap_or(false);
+        // H2 (user rule): the wheel SCROLLS the window under the cursor
+        // — ALWAYS, modifiers included (a latched/stuck Meta on some
+        // keymaps used to turn every wheel over a window into a camera
+        // dolly). The camera zoom is ONLY for the background.
         let wheel = if dx.abs() > dy.abs() { dx } else { dy };
-        // The wheel dolly is a SPATIAL navigation gesture. In normal
-        // (2D) mode the ortho camera is pinned for 1:1 world↔screen
-        // mapping — camera motion there would break the pointer
-        // contract, so background wheel is a no-op.
-        if meta_held && self.spatial_mode {
-            self.camera_dolly_at_pointer(x, y, wheel);
-            return;
-        }
-        if meta_held {
-            return;
-        }
         let Some(ph) = self.pointer_handle.clone() else {
-            self.camera_dolly_at_pointer(x, y, wheel);
+            if self.spatial_mode {
+                self.camera_dolly_at_pointer(x, y, wheel);
+            }
             return;
         };
 
@@ -6317,6 +6359,7 @@ impl LookingGlass {
         // pointer_view() resolves the output internally (passing
         // output-local coords here would convert twice).
         if let Some((vid, wl_surface, pos)) = self.pick_wayland_target(x, y) {
+            self.g_scroll = true;
             // Ensure pointer focus is on the target surface before axis events.
             self.last_wayland_focus = Some(wl_surface.clone());
             // BUG_LIST #18: deliver the unprojected surface coordinate
@@ -6344,7 +6387,10 @@ impl LookingGlass {
             // H0.2/H0.3: pointer over the spatial background — the
             // wheel is the PRIMARY navigation gesture: pointer-directed
             // dolly (the world point under the cursor stays there).
+            // Meta+wheel behaves identically here (the window case
+            // above already took precedence).
             self.dismiss_hints();
+            self.g_dolly = true;
             self.camera_dolly_at_pointer(x, y, wheel);
             self.debug_snapshot();
         }
