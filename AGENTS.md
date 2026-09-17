@@ -1364,3 +1364,16 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
 - Known limitation: the 5x7 bitmap family itself reads retro/lo-fi; a
   vector font (TTF atlas) is a future slice (needs glyph-rasterization
   infrastructure).
+
+### UX-F2 — Context menu
+- Reordered common-first with an advanced cluster behind a divider
+  (new MenuItem::separator; confirm_selection skips separator rows):
+  0 Focus, 1 Move to Workspace, 2 Minimize, 3 Maximize, 4 Fullscreen,
+  5 Spatial Mode, 6 Close, 7 ─, 8 Arrange, 9 Group, 10 Ungroup,
+  11 De-emphasize, 12 Restore, 13 Reset Transform. Gate S11 updated
+  (label-index 5, item_height 32).
+- Hover row highlight (context_menu.hover_item tracked from pointer
+  move; a quiet accent fill under the row; separators not hoverable).
+- Menu dismisses on camera gestures (pan/orbit/dolly/frame_all) and on
+  workspace switch — it belongs to the spatial moment it opened on.
+- No interaction-model changes otherwise. 592 tests, gate 24/0/0.

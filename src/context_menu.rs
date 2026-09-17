@@ -55,6 +55,8 @@ pub enum MenuAction {
 pub struct MenuItem {
     pub label: String,
     pub action: MenuAction,
+    /// UX-F2: a visual divider row (not selectable, not hoverable).
+    pub separator: bool,
 }
 
 impl MenuItem {
@@ -62,6 +64,14 @@ impl MenuItem {
         MenuItem {
             label: label.into(),
             action,
+            separator: false,
+        }
+    }
+    pub fn separator() -> Self {
+        MenuItem {
+            label: String::new(),
+            action: MenuAction::Dismiss,
+            separator: true,
         }
     }
 }
@@ -73,6 +83,8 @@ pub struct ContextMenu {
     pub target: Option<VisualId>,
     pub items: Vec<MenuItem>,
     pub selected: Option<usize>,
+    /// UX-F2: the row under the pointer (None = no hover).
+    pub hover_item: Option<usize>,
 }
 
 impl ContextMenu {
@@ -83,6 +95,7 @@ impl ContextMenu {
             target: None,
             items: Vec::new(),
             selected: None,
+            hover_item: None,
         }
     }
 
@@ -92,21 +105,25 @@ impl ContextMenu {
         self.position = (x, y);
         self.target = Some(target);
         self.selected = None;
+        self.hover_item = None;
 
         self.items = vec![
+            // UX-F2: common window management first; the spatial
+            // organization cluster sits behind a divider.
             MenuItem::new("Focus", MenuAction::Focus),
-            MenuItem::new("Arrange", MenuAction::Arrange),
             MenuItem::new("Move to Workspace ▸", MenuAction::MoveToWorkspace(0)),
+            MenuItem::new("Minimize", MenuAction::Minimize),
+            MenuItem::new("Maximize", MenuAction::Maximize),
+            MenuItem::new("Fullscreen", MenuAction::Fullscreen),
+            MenuItem::new("Spatial Mode", MenuAction::ToggleSpatial),
+            MenuItem::new("Close", MenuAction::Close),
+            MenuItem::separator(),
+            MenuItem::new("Arrange", MenuAction::Arrange),
             MenuItem::new("Group", MenuAction::Group),
             MenuItem::new("Ungroup", MenuAction::Ungroup),
             MenuItem::new("De-emphasize", MenuAction::DeEmphasize),
             MenuItem::new("Restore", MenuAction::Restore),
             MenuItem::new("Reset Transform", MenuAction::ResetTransform),
-            MenuItem::new("Maximize", MenuAction::Maximize),
-            MenuItem::new("Fullscreen", MenuAction::Fullscreen),
-            MenuItem::new("Minimize", MenuAction::Minimize),
-            MenuItem::new("Spatial Mode", MenuAction::ToggleSpatial),
-            MenuItem::new("Close", MenuAction::Close),
         ];
     }
 
@@ -115,6 +132,7 @@ impl ContextMenu {
         self.target = None;
         self.selected = None;
         self.items.clear();
+        self.hover_item = None;
     }
 
     /// Rename the Maximize item for an already-maximized target.
@@ -190,6 +208,7 @@ impl ContextMenu {
     pub fn confirm_selection(&self) -> Option<MenuAction> {
         self.selected
             .and_then(|idx| self.items.get(idx))
+            .filter(|item| !item.separator)
             .map(|item| item.action)
     }
 }
@@ -390,15 +409,18 @@ mod tests {
         assert!(menu.confirm_selection().is_none());
         menu.selected = Some(0);
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Focus));
-        menu.selected = Some(8); // Maximize
+        // UX-F2 order: 0 Focus, 1 MoveToWs, 2 Minimize, 3 Maximize,
+        // 4 Fullscreen, 5 Spatial Mode, 6 Close, 7 separator,
+        // 8 Arrange, ... 13 Reset Transform.
+        menu.selected = Some(3); // Maximize
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Maximize));
-        menu.selected = Some(9); // Fullscreen (I7)
+        menu.selected = Some(4); // Fullscreen (I7)
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Fullscreen));
-        menu.selected = Some(10); // Minimize (I5)
+        menu.selected = Some(2); // Minimize (I5)
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Minimize));
-        menu.selected = Some(11); // Spatial Mode
+        menu.selected = Some(5); // Spatial Mode
         assert_eq!(menu.confirm_selection(), Some(MenuAction::ToggleSpatial));
-        menu.selected = Some(12); // Close
+        menu.selected = Some(6); // Close
         assert_eq!(menu.confirm_selection(), Some(MenuAction::Close));
     }
 

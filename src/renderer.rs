@@ -1937,8 +1937,91 @@ pub fn render_scene(
                 solid_rect(mx32, my32, menu_width, menu_height, 0.13, 0.13, 0.15, 0.97);
 
                 let ndc_ih = item_height / h * 2.0;
+                // UX-F2: hover row — a quiet accent fill under the row
+                // the pointer is on (clear active state, no glow).
+                if let Some(hi) = menu.hover_item {
+                    if menu.items.get(hi).map(|it| !it.separator).unwrap_or(false) {
+                        let row_y = my as f32 + hi as f32 * item_height;
+                        let row_top_ndc =
+                            -((row_y + item_height) / h) * 2.0 + 1.0;
+                        let cx = ((mx32 + menu_width / 2.0) / w) * 2.0 - 1.0;
+                        let cy = -(row_top_ndc) - ndc_ih / 2.0;
+                        let mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
+                            cx, cy, 0.0,
+                        )) * cgmath::Matrix4::from_nonuniform_scale(
+                            menu_width / w * 2.0,
+                            ndc_ih,
+                            1.0,
+                        );
+                        gl.UseProgram(draw.solid_prog);
+                        gl.UniformMatrix4fv(draw.solid_u_mvp, 1, 0, mvp.as_ptr());
+                        gl.Uniform4f(draw.solid_u_color, 0.22, 0.26, 0.24, 1.0);
+                        gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
+                        gl.EnableVertexAttribArray(draw.solid_a_pos);
+                        gl.VertexAttribPointer(
+                            draw.solid_a_pos,
+                            2,
+                            ffi::FLOAT,
+                            0,
+                            4 * std::mem::size_of::<f32>() as i32,
+                            std::ptr::null(),
+                        );
+                        gl.EnableVertexAttribArray(draw.solid_a_uv);
+                        gl.VertexAttribPointer(
+                            draw.solid_a_uv,
+                            2,
+                            ffi::FLOAT,
+                            0,
+                            4 * std::mem::size_of::<f32>() as i32,
+                            std::ptr::null(),
+                        );
+                        gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+                        gl.DisableVertexAttribArray(draw.solid_a_pos);
+                        gl.DisableVertexAttribArray(draw.solid_a_uv);
+                    }
+                }
                 // Draw each menu item
                 for (i, _item) in menu.items.iter().enumerate() {
+                    // UX-F2: separator rows render as a hairline, no text.
+                    if _item.separator {
+                        let row_y = my as f32 + i as f32 * item_height;
+                        let line_y = row_y + item_height * 0.5;
+                        let y_ndc = -(line_y / h) * 2.0 + 1.0;
+                        let cx = ((mx32 + menu_width / 2.0) / w) * 2.0 - 1.0;
+                        let mvp = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
+                            cx, y_ndc, 0.0,
+                        )) * cgmath::Matrix4::from_nonuniform_scale(
+                            (menu_width - 12.0) / w * 2.0,
+                            1.0 / h * 2.0,
+                            1.0,
+                        );
+                        gl.UseProgram(draw.solid_prog);
+                        gl.UniformMatrix4fv(draw.solid_u_mvp, 1, 0, mvp.as_ptr());
+                        gl.Uniform4f(draw.solid_u_color, 0.32, 0.32, 0.35, 1.0);
+                        gl.BindBuffer(ffi::ARRAY_BUFFER, draw.vbo);
+                        gl.EnableVertexAttribArray(draw.solid_a_pos);
+                        gl.VertexAttribPointer(
+                            draw.solid_a_pos,
+                            2,
+                            ffi::FLOAT,
+                            0,
+                            4 * std::mem::size_of::<f32>() as i32,
+                            std::ptr::null(),
+                        );
+                        gl.EnableVertexAttribArray(draw.solid_a_uv);
+                        gl.VertexAttribPointer(
+                            draw.solid_a_uv,
+                            2,
+                            ffi::FLOAT,
+                            0,
+                            4 * std::mem::size_of::<f32>() as i32,
+                            std::ptr::null(),
+                        );
+                        gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
+                        gl.DisableVertexAttribArray(draw.solid_a_pos);
+                        gl.DisableVertexAttribArray(draw.solid_a_uv);
+                        continue;
+                    }
                     let item_iy = -((my as f32 + (i as f32 * item_height)) / h) * 2.0 + 1.0;
                     let item_ix = (mx as f32 / w) * 2.0 - 1.0 + ndc_w / 2.0;
                     let item_iy_c = item_iy - ndc_ih / 2.0;

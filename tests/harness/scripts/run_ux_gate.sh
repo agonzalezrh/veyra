@@ -310,14 +310,13 @@ say "S11: right-clicking focused window $FOCUSED_VID at $RCX,$RCY"
 ux_focus_desktop "$VEYRA_LOG" > /dev/null 2>&1
 DISPLAY="$UX_DESKTOP_DISPLAY" xdotool mousemove "$RCX" "$RCY" click 3
 sleep 0.8
-# the menu opens AT the click point; "Spatial Mode" is item index 12
-# (MenuMetrics: item_height = 24 * clamp(h/720,1,2.5); width 220*su)
-MIH=24   # MenuMetrics at 720p: item_height = 24 * clamp(h/720,1,2.5)
-# "Spatial Mode" is item index 11 (0 Focus … 10 Minimize, 11 Spatial
-# Mode, 12 Close) — a one-off miscount clicked Close and KILLED the
-# target window.
-ITEM_Y=$(python3 -c "print(round($RCY + (11 + 0.5) * $MIH))")
-MENU_X=$(python3 -c "print(round($RCX + 110))")
+# the menu opens AT the click point; "Spatial Mode" is item index 5
+# (UX-F2 order: 0 Focus, 1 Move to Workspace, 2 Minimize, 3 Maximize,
+# 4 Fullscreen, 5 Spatial Mode, 6 Close, 7 separator, 8.. advanced)
+# (MenuMetrics: item_height = 32 * clamp(h/720,1,2.5); width 260*su)
+MIH=32   # MenuMetrics at 720p: item_height = 32 * clamp(h/720,1,2.5)
+ITEM_Y=$(python3 -c "print(round($RCY + (5 + 0.5) * $MIH))")
+MENU_X=$(python3 -c "print(round($RCX + 130))")
 say "S11: clicking menu item at $MENU_X,$ITEM_Y (menu opened at $RCX,$RCY)"
 DISPLAY="$UX_DESKTOP_DISPLAY" xdotool mousemove "$MENU_X" "$ITEM_Y" click 1
 sleep 1.2

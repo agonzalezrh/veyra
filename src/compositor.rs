@@ -5636,6 +5636,24 @@ impl LookingGlass {
             self.last_hover_pick = (x, y);
             self.hovered_visual = self.pick_visual_at(x, y);
         }
+        // UX-F2: the open menu tracks the hovered row for the highlight.
+        if self.context_menu.visible {
+            let m = crate::context_menu::MenuMetrics::for_framebuffer(
+                self.fb_size().0,
+                self.fb_size().1,
+            );
+            self.context_menu.hover_item =
+                self.context_menu
+                    .item_at(x, y, m.menu_width as f64, m.item_height as f64)
+                    .filter(|&i| {
+                        !self
+                            .context_menu
+                            .items
+                            .get(i)
+                            .map(|it| it.separator)
+                            .unwrap_or(true)
+                    });
+        }
 
         // When pointer is locked, route relative motion to the locked client
         // and skip all spatial interaction.
@@ -6255,6 +6273,7 @@ impl LookingGlass {
     /// Frame all visuals in view.
     pub fn frame_all(&mut self) -> bool {
         self.ws_transition = None;
+        self.context_menu.dismiss();
         let (cam, scene) = self.camera_and_scene();
         let result = cam.frame_all(scene);
         if result {
@@ -6370,12 +6389,14 @@ impl LookingGlass {
     /// Orbit camera (right-drag).
     pub fn handle_orbit(&mut self, dx: f64, dy: f64) {
         self.ws_transition = None;
+        self.context_menu.dismiss();
         self.camera_mut().handle_orbit(dx, dy);
     }
 
     /// Pan camera (middle-drag).
     pub fn handle_pan(&mut self, dx: f64, dy: f64) {
         self.ws_transition = None;
+        self.context_menu.dismiss();
         self.camera_mut().handle_pan(dx, dy, 0.05);
     }
 
@@ -6457,6 +6478,7 @@ impl LookingGlass {
     /// application coordinates are untouched.
     fn camera_dolly_at_pointer(&mut self, x: f64, y: f64, wheel: f64) {
         self.ws_transition = None;
+        self.context_menu.dismiss();
         let fallback = |s: &mut Self| {
             // No ray available (degenerate output/projection): plain
             // look-direction zoom keeps the gesture functional.
@@ -6612,6 +6634,8 @@ impl LookingGlass {
                 .or_else(|| ws_visual_ids.first().copied())
         };
         self.set_keyboard_focus(focus_target);
+        // UX-F2: the menu belongs to the workspace it was opened on.
+        self.context_menu.dismiss();
         info!(workspace = idx, old = old_id, restored = ?focus_target, "switched workspace");
         crate::debug_journal::event(
             "workspace",
