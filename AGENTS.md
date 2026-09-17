@@ -1322,3 +1322,10 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
   window under the cursor — ALWAYS, modifiers included (a latched Meta
   used to force camera dolly over windows). Camera dolly is ONLY for
   the background (Meta+wheel on background behaves as before).
+
+### G-H3 — Focus/selection/hover visual language
+- Three-level edge ring hierarchy in the quad shader (precedence
+  focused > selected > hovered, never competing): focused = accent
+  green, selected = amber, HOVERED = dim cool blue-gray (new u_hovered
+  uniform; previously hover only exempted frustum culling with no
+  visual state). Answers "what will the next drag affect?" at a glance.

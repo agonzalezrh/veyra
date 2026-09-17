@@ -597,6 +597,7 @@ varying vec2 v_uv;
 uniform sampler2D u_tex;
 uniform float u_selected;
 uniform float u_focused;
+uniform float u_hovered;
 uniform float u_title_h;
 uniform float u_edge;
 uniform vec4 u_tint;
@@ -654,6 +655,9 @@ void main() {
                     gl_FragColor = vec4(0.62, 0.50, 0.10, 1.0);
                 } else if (u_focused > 0.5) {
                     gl_FragColor = vec4(0.24, 0.52, 0.24, 1.0);
+                } else if (u_hovered > 0.5) {
+                    // G-H3: hover = the subtlest level (dim cool gray-blue).
+                    gl_FragColor = vec4(0.34, 0.44, 0.50, 1.0);
                 } else {
                     gl_FragColor = vec4(0.16, 0.26, 0.27, 1.0);
                 }
@@ -673,6 +677,7 @@ struct DrawGl {
     u_tex: i32,
     u_selected: i32,
     u_focused: i32,
+    u_hovered: i32,
     u_title_h: i32,
     u_edge: i32,
     u_tint: i32,
@@ -772,6 +777,7 @@ impl DrawGl {
         let u_mvp = unsafe { gl.GetUniformLocation(program, c"u_mvp".as_ptr()) };
         let u_tex = unsafe { gl.GetUniformLocation(program, c"u_tex".as_ptr()) };
         let u_selected = unsafe { gl.GetUniformLocation(program, c"u_selected".as_ptr()) };
+        let u_hovered = unsafe { gl.GetUniformLocation(program, c"u_hovered".as_ptr()) };
         let u_focused = unsafe { gl.GetUniformLocation(program, c"u_focused".as_ptr()) };
         let u_title_h = unsafe { gl.GetUniformLocation(program, c"u_title_h".as_ptr()) };
         let u_edge = unsafe { gl.GetUniformLocation(program, c"u_edge".as_ptr()) };
@@ -864,6 +870,7 @@ impl DrawGl {
             u_mvp,
             u_tex,
             u_selected,
+            u_hovered,
             u_focused,
             u_title_h,
             u_edge,
@@ -923,6 +930,7 @@ fn draw_textured_quad(
     tex_id: u32,
     selected: bool,
     focused: bool,
+    hovered: bool,
     title_h: f32,
     gw: f32,
     gh: f32,
@@ -934,6 +942,7 @@ fn draw_textured_quad(
         gl.UniformMatrix4fv(draw.u_mvp, 1, 0, mvp.as_ptr());
         gl.Uniform1f(draw.u_selected, if selected { 1.0 } else { 0.0 });
         gl.Uniform1f(draw.u_focused, if focused { 1.0 } else { 0.0 });
+        gl.Uniform1f(draw.u_hovered, if hovered { 1.0 } else { 0.0 });
         gl.Uniform1f(draw.u_title_h, title_h);
         // Parented visuals (subsurfaces, IME popups) are raw client
         // content: no veyra chrome ring, no title strip carve — the
@@ -1467,6 +1476,7 @@ pub fn render_scene(
                     tex_id,
                     visual.selected,
                     visual.focused,
+                    scene.hovered_id == Some(visual.id),
                     title_h,
                     gw,
                     gh,
