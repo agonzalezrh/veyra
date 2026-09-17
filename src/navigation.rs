@@ -180,12 +180,19 @@ impl NavigationModel {
         alt: bool,
         meta: bool,
     ) -> Option<Binding> {
+        // G-H4 hardening (the third stuck-modifier incident): Home is
+        // THE recovery key — "show my desktop" must never be blocked by
+        // a latched modifier (XTEST/keyboard releases are dropped in
+        // the wild). Modifier-free keys match regardless of the
+        // modifier state; modifier-required combos keep exact matching.
         for (binding, kb) in &self.bindings {
+            let modifier_free = !kb.ctrl && !kb.shift && !kb.alt && !kb.meta;
             if kb.key == key
-                && kb.ctrl == ctrl
-                && kb.shift == shift
-                && kb.alt == alt
-                && kb.meta == meta
+                && (modifier_free
+                    || (kb.ctrl == ctrl
+                        && kb.shift == shift
+                        && kb.alt == alt
+                        && kb.meta == meta))
             {
                 return Some(*binding);
             }

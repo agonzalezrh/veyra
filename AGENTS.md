@@ -1437,3 +1437,39 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
   hint line communicates the target); P3 — identical same-app titles
   in the bar are resolved interactively by F4's hover ring.
 - No new colored states introduced. Gate 24/0/0, 592 tests, clippy 0.
+
+### UX-F7 — Real user journey (20 steps) + UX report
+- Journey executed 3x (probe iterations exposed probe mechanics, not
+  product bugs): launch Browser/Terminal/Editor -> Alt+drag arrange ->
+  approach -> scroll IN the browser (axis events in the client log) ->
+  type (key events delivered) -> zoom out -> travel -> right-click menu
+  -> Focus action -> taskbar switch -> minimize -> restore -> pan lost
+  -> Home -> ws trip and back -> navigate+type. Evidence: client logs
+  (F5: 6 axis + 44 keys Browser; F7: 12 axis Terminal), journal camera
+  trace (approach 2849->1901, lost x=9157, Home->framed 865,0,2430),
+  10 screenshots, VLM reads.
+- **P0 FIXED (the third stuck-modifier incident)**: Home (and every
+  modifier-free binding) now matches REGARDLESS of latched modifiers
+  (navigation::match_binding: modifier-free keys ignore the modifier
+  state; combos keep exact matching). The F7 session's Alt+drag latched
+  alt and Home went dead until the process restarted — the exact
+  failure mode of the user's machine (G-H0.10b). Recovery must be
+  unconditional.
+- P2 (open): approaching a window requires background pixels beside it
+  (wheel over the window scrolls the app — rule-correct; the hint line
+  communicates it). A first-time user aiming AT the window to approach
+  gets a scroll. Mitigation exists; UX-accepted for now.
+- P2 (solved by F3): off-screen windows remain reachable via the bar
+  (the click travels + focuses).
+- P3: identical same-app titles (F4 hover-ring resolves interactively).
+- P3: the 5x7 bitmap aesthetic (intentional for now).
+- Gate 24/0/0, 592 tests, clippy 0.
+
+## UX PROGRAM RESULT (F3-F7)
+All five slices shipped as separate commits: F3 ead218b (taskbar
+index), F4 17d5d77 (identity audit: no chrome), F5 20a65e4 (spatial
+navigation loop), F6 f7daac4 (consistency audit), F7 09594c4-era
+(journey + P0 fix). The product model: scene=where work lives,
+taskbar=index, camera=navigation, rings=interaction state, menu=actions,
+Home=recovery. NO permanent title bars, no new managers, no font
+replacement, wheel/camera semantics preserved throughout.
