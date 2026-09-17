@@ -1405,3 +1405,21 @@ only for demonstrated bugs / UX blockers / hardware requirements / lifecycle saf
   row; hovering button 2 + activating it focused exactly that window.
 - VERDICT: audit complete — title bars remain unnecessary.
 - Gate 24/0/0, 592 tests, clippy 0.
+
+### UX-F5 — Spatial navigation / multi-monitor feel
+- The full loop verified with 4 distinct apps (BROWSER/TERM/EDITOR/CHAT,
+  mirror-placed row, auto-fit frames all four): Home -> approach (wheel
+  at a journal-derived bg point dollies 2849->1901) -> work (pointer on
+  BROWSER: 6 axis + 44 key events DELIVERED to the client log) -> zoom
+  out (pointer-directed retreat) -> pan travel -> lost-camera test
+  (grab-the-world pans scaled with altitude reached x=9157 — correct
+  cursor-anchored geometry) -> Home -> framed pose (865,0,2430), all 4
+  windows visible. Window positions NEVER moved across every leg (I1:
+  spatial memory intact; only the placement auto-fit touched them).
+- Probe lesson (not a product bug): bg-point helpers must verify the
+  point is background — one wheel aimed "beside TERM" landed on
+  BROWSER and scrolled it (the wheel-over-window rule working as
+  designed; the hint line even said so). Filed as UX-F6 observation.
+- Screenshots: overview / browser_near / zoomout / term_work / lost /
+  home. VLM: 4-window row coherent; taskbar labels readable.
+- Gate 24/0/0, 592 tests, clippy 0.
