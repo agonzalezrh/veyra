@@ -1489,3 +1489,17 @@ replacement, wheel/camera semantics preserved throughout.
   events) and X11 (xev: 96 button 4/5 events) in the current build —
   the user's wheel report is either a stale binary (the startup stamp
   line now identifies builds) or chrome-specific pending their retest.
+
+### UX-F8/F9 — cold start + organization at scale (program resumed)
+- F8 AUDIT COMPLETE (copy pass shipped in 65b7949): the card covers
+  interaction, camera, recovery (Home line added), launching. Evidence:
+  code + prior VLM reads. First-time discoverability judged adequate;
+  no tutorial needed.
+- F9 (10 windows: Browser/Term/Editor/Chat/Mail/Docs/Notes/Music/Files
+  +1): the mirror row + auto-fit keep all visible and non-overlapping
+  (x-range 0..4620, camera framed); the bar indexes all (with +N);
+  I1 held (no window moved on its own). VLM: the row reads at overview,
+  close view works. AUDIT COMPLETE — no code change required. Note: a
+  20-window single row pulls the camera very far back; a 2-row
+  arrangement would serve better at that scale (future, only if
+  demonstrated).
