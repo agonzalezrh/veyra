@@ -1511,3 +1511,13 @@ replacement, wheel/camera semantics preserved throughout.
 - De-emphasize: the context-menu action executes (log-verified) with
   the existing dimming implementation from the G-C era.
 - AUDIT COMPLETE — NO CODE CHANGE REQUIRED.
+
+### UX-F11 — application interaction audit
+- Firefox (snap, via XWayland) + xterm (X11) + client-kit (Wayland):
+  click-to-focus, URL-bar typing (34 key events delivered), wheel
+  scrolling, right-click -> veyra context menu — all verified live.
+  The omnibox dropdown renders (chrome UI interactions work).
+- Wheel delivery on X11 re-verified this session (xev: 96 button 4/5
+  events); the OR-bubble pipeline (65b7949) + the painter-order pick
+  (86ad66d) closed the chrome float-window gaps.
+- AUDIT COMPLETE — NO CODE CHANGE REQUIRED.
