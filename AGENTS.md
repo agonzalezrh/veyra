@@ -1503,3 +1503,11 @@ replacement, wheel/camera semantics preserved throughout.
   20-window single row pulls the camera very far back; a 2-row
   arrangement would serve better at that scale (future, only if
   demonstrated).
+
+### UX-F10 — focus/attention (audit)
+- Focus dominance: the green ring + all windows staying visible
+  (spatial context retained — no hiding, no rearrangement). Verified
+  across F5/F9/F10 sessions with 6-10 window scenes.
+- De-emphasize: the context-menu action executes (log-verified) with
+  the existing dimming implementation from the G-C era.
+- AUDIT COMPLETE — NO CODE CHANGE REQUIRED.
