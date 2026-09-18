@@ -1043,8 +1043,13 @@ fn pick_visual_items(
     let near = Vector3::new(near.x / near.w, near.y / near.w, near.z / near.w);
     let far = Vector3::new(far.x / far.w, far.y / far.w, far.z / far.w);
     let dir = (far - near).normalize();
-    let mut closest: Option<(VisualId, f32)> = None;
-    for (id, transform, (gw, gh)) in items {
+    // Painter's-order tie-break: the renderer draws LATER items on top,
+    // so overlapping coplanar windows must resolve to the TOP-most hit
+    // when the ray distances are effectively equal (clicking chrome's
+    // bubble hit the main window underneath instead). Iterate in REVERSE
+    // draw order and keep a later item on a near-tie.
+    let mut closest: Option<(VisualId, f32, usize)> = None;
+    for (draw_idx, (id, transform, (gw, gh))) in items.iter().enumerate().rev() {
         let model = Matrix4::from_translation(transform.position)
             * Matrix4::from(transform.rotation)
             * Matrix4::from_nonuniform_scale(*gw, *gh, 1.0);
@@ -1073,16 +1078,44 @@ fn pick_visual_items(
         let dist = (world_hit - near).magnitude();
 
         match closest {
-            Some((_, closest_dist)) if dist > closest_dist => {}
-            _ => closest = Some((*id, dist)),
+            // Strictly farther than the current best → skip. Near-equal
+            // (within 1 world unit) → the LATER-drawn visual wins.
+            Some((_, closest_dist, _)) if dist > closest_dist + 1.0 => {}
+            Some((_, closest_dist, best_idx)) if dist >= closest_dist - 1.0 => {
+                if draw_idx > best_idx {
+                    closest = Some((*id, dist, draw_idx));
+                }
+            }
+            _ => closest = Some((*id, dist, draw_idx)),
         }
     }
-    closest
+    closest.map(|(id, dist, _)| (id, dist))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pick_overlap_prefers_top_most_drawn() {
+        use cgmath::One;
+        // Two coplanar items at the same z, overlapping in screen space.
+        // The SECOND item draws on top (painter's algorithm).
+        let t = Transform3D {
+            position: Vector3::new(0.0, 0.0, 0.0),
+            rotation: cgmath::Quaternion::one(),
+            scale: Vector3::new(1.0, 1.0, 1.0),
+        };
+        let items = vec![
+            (VisualId(1), t.clone(), (400.0, 300.0)),
+            (VisualId(2), t, (400.0, 300.0)),
+        ];
+        let pv = Matrix4::identity();
+        // A ray straight down -z at NDC (0,0) hits both; the top-most
+        // (later-drawn) must win.
+        let (vid, _) = pick_visual_items(&pv, 0.0, 0.0, &items).expect("hit");
+        assert_eq!(vid, VisualId(2), "top-most drawn visual wins the overlap");
+    }
 
     #[test]
     fn pick_center_hit() {
