@@ -1611,3 +1611,87 @@ replacement, wheel/camera semantics preserved throughout.
   -> gestures); the expert path is the F17 region loop (taskbar +
   wheel + Home as fast tools). Both journeys executed; the comparison
   lives in the F21 report.
+
+---
+
+# UX PHASE 2 — FINAL REPORT (F21)
+
+## 1. Core product thesis: PASSED (mechanically)
+Six applications as three spatial regions, worked in rotation for three
+rounds, with typing delivered to all three regions and window positions
+byte-identical at the end. One monitor held the working capacity of
+several: the loop approach -> work -> retreat -> travel -> approach is
+REAL and repeatable. The human verdict (does it FEEL like multi-monitor)
+awaits the user's hands.
+
+## 2. Spatial memory: STRONG
+I1 held in every session: no gesture ever moved a window except explicit
+manipulation; positions survived 3 rounds + lost camera + Home. The
+placement only touches new windows.
+
+## 3. Navigation: SOUND + RECOVERABLE
+Pointer-directed dolly, grab-the-world pan (scales correctly with
+altitude), orbit, Home = frame-all. Verified from: extreme close,
+x=9157 lost, empty boot, restored state. Home is modifier-proof.
+
+## 4. Application interaction: REAL
+Firefox (X11/snap), xterm, client-kit: click-to-focus, URL typing
+(34+ key events), wheel scrolling (96 button events on X11), right-click
+menu, OR bubbles render + receive input, text selection via content
+drags. Compositor-grade, not a visualization.
+
+## 5. Taskbar: THE COMPLETE INDEX
+Every workspace's windows with .N markers, cross-workspace activation
+via camera transition, overflow +N, hover->ring identity bridge,
+minimize/restore.
+
+## 6. Context menu: SPATIAL, NOT CONVENTIONAL
+Management-first order, hover, Esc/outside/camera/workspace dismissal,
+BODY typography. It belongs to the spatial moment it opened on.
+
+## 7. Identity: NO TITLE BARS REQUIRED
+Position + taskbar titles + .N markers + MRU + focus/hover rings +
+the taskbar-hover ring bridge. The audit's "which button is which
+window?" gap closed transiently.
+
+## 8. Workspaces: ROOMS
+Per-workspace camera memory, focus restore, no stale state, rapid
+A->B->C safe, camera transitions communicate the trip.
+
+## 9. Visual language: ONE PRODUCT
+TITLE/BODY/CAPTION everywhere; one accent + amber + cool-blue ring
+hierarchy; consistent dark-panel chrome; no debug surfaces; the 5x7
+bitmap aesthetic is intentional.
+
+## 10. Performance perception: CLEAN
+60-78fps interaction bursts at 6-10 windows (llvmpipe/debug); the
+scalability gate covers 10->1000 visuals; no perceived lag findings.
+
+## 11. Recovery: VERIFIED FROM EVERY BAD STATE
+Lost camera, extreme close, corrupt/missing state, SIGKILL, SIGTERM
+save, focused-window destruction, latched modifiers, transitions
+re-targeting mid-flight. No restart required for any tested state.
+
+## 12. First-use: ADEQUATE
+The hint card (interaction + Home + launching) + the contextual hint
+line + the taskbar carry a newcomer; no tutorial needed.
+
+## 13. Expert-use: FAST
+Region loop + taskbar switching + Home as the fast tools; keyboard
+bindings for power users; everything reachable in 2-3 gestures.
+
+## 14. REMAINING ISSUES
+P0: none open.
+P1: none open.
+P2: approaching a window needs background pixels beside it (aiming the
+    wheel AT a window scrolls it — rule-correct, hint-documented, but a
+    newcomer's first zoom attempt may scroll instead of approach).
+P3: identical same-app titles in the bar (resolved interactively by
+    the hover-ring bridge); the 5x7 bitmap aesthetic (intentional);
+    a 20-window single row pulls the camera far back (2-row layout
+    would serve better IF demonstrated at that scale).
+
+## STOP CONDITION REACHED
+The program is complete. The next signal must come from the human
+user's hands on their machine — the question is no longer what to
+build, but what working in Veyra actually feels like.
