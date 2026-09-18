@@ -1,43 +1,94 @@
-# Veyra
+# Veyra — One Monitor, A Larger Workspace
 
-A native 3D Wayland compositor and spatial desktop. Runs ordinary Wayland applications as persistent 3D objects in a spatial workspace.
+Veyra is a spatial Wayland compositor: it turns **one physical monitor
+into a much larger desktop** by letting your applications live in a
+navigable 3D workspace. Arrange windows side by side, near and far —
+then move between them the way you move around a real desk.
 
-## Status
+```
+        ONE PHYSICAL MONITOR
+                 |
+      [ Browser+Docs ]  [ IDE+Term ]  [ Chat+Mail ]
+           spatial regions you travel between
+```
 
-Advanced development. Runs nested (winit) and natively (DRM/KMS via libseat).
-Ordinary Wayland applications — terminals, GTK/Qt, Electron, Chromium,
-Firefox (XWayland) — run with keyboard, pointer, clipboard, drag-and-drop,
-IME, popups, subsurfaces, and fractional scaling. X11 applications run
-through the built-in XWayland manager. The spatial desktop (workspaces,
-overview, focus, arrangement) is presentation-only: applications never
-see the 3D layer. Nested multi-output simulation is implemented
-(VEYRA_SIM_OUTPUTS=N: N logical outputs with independent cameras,
-viewports, and modes inside one window, over a shared scene). Native
-DRM multi-connector output support is in progress (G-E5.6). See
-COMPATIBILITY_MATRIX.md for the current compatibility assessment and
-AGENTS.md for the roadmap.
+## The idea
 
-## Building
+Normal desktops cram everything onto one flat screen or hide it behind
+alt-tab. Veyra keeps your applications **in places**: the browser on the
+left, the terminal on the right, the IDE further back. Your memory of
+*where things are* becomes the primary navigation — the camera just
+takes you there.
+
+Applications are ordinary Wayland (and X11) programs. They never know
+the desktop is 3D.
+
+## Getting started
+
+Build and run (a nested window on your existing desktop):
 
 ```sh
 cargo build --release
+./target/release/veyra
 ```
 
-## Running
+Requirements: Rust 1.98+, a Wayland session, OpenGL/GLES (software
+rendering works). Wayland client apps need `WAYLAND_DISPLAY=wayland-1`;
+X11 apps connect to veyra's XWayland display automatically.
 
-```sh
-WAYLAND_DISPLAY=wayland-1 cargo run          # nested (winit) session
-cargo run -- --native                        # native DRM/KMS session (libseat)
-```
+## Controls
 
-Set `BENCHMARK_VISUALS=N` to spawn N benchmark windows for performance testing.
+**Camera (empty space):**
 
-## Requirements
+| Input | Effect |
+|---|---|
+| Wheel | Approach / back away (toward the pointer) |
+| Left-drag | Move the world (pan) |
+| Right-drag | Look around (orbit) |
+| `Home` | Show the whole desktop (always works, even when lost) |
 
-- Rust 1.85+
-- OpenGL/GLES support
-- Linux with DRM/KMS (native backend) or any system with winit (nested backend)
+**Windows:**
 
-## License
+| Input | Effect |
+|---|---|
+| Click | Focus |
+| Left-drag | The application (text selection, sliders) |
+| Alt+drag (or Meta+drag) | Move the window |
+| Right-drag | Rotate the window (release without moving = menu) |
+| Wheel | Scroll the application |
 
-MIT
+**Shell:**
+
+| Input | Effect |
+|---|---|
+| Taskbar | Every window on every workspace (`·N` = its workspace); click to travel there |
+| Right-click a window | Actions menu (focus, move, minimize, close, arrange…) |
+| `F5` or the menu | Toggle spatial mode |
+
+## Workspaces
+
+Three rooms ship by default. Each remembers its own camera and windows.
+Switch with the taskbar (the numbered buttons) or keyboard bindings; the
+camera glides between rooms. Home frames the current room.
+
+## Persistence
+
+Window positions, rotations, workspace membership and cameras are saved
+on exit and restored on the next launch. Corrupt state backs up and
+starts fresh; a lost camera is always one `Home` away.
+
+## Known limitations
+
+- Aiming the wheel *at* a window scrolls that window (approach via
+  nearby empty space). Intentional; the hint line reminds you.
+- Identical same-app windows are distinguished by title only (hover a
+  taskbar button to light that window in the scene).
+- The bitmap font is an intentional aesthetic for now.
+- Very large single rows (20+ windows) pull the camera far back.
+
+## For developers
+
+Architecture, milestones and the full testing program live in
+`AGENTS.md`. The E2E harness is under `tests/harness/scripts/`:
+`run_ux_gate.sh` (fast gate), `run_golden_journey.sh`,
+`run_restart_journey.sh`, `run_overnight_gate.sh` (full suite).

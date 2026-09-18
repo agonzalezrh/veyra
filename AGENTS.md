@@ -1695,3 +1695,66 @@ P3: identical same-app titles in the bar (resolved interactively by
 The program is complete. The next signal must come from the human
 user's hands on their machine — the question is no longer what to
 build, but what working in Veyra actually feels like.
+
+---
+
+# RELEASE READINESS (R0-R16)
+
+- R0 FREEZE: feature development stopped at f55df5b. Only correctness,
+  reproducibility, packaging, documentation, cleanup, validation.
+- R1 BUILD MATRIX: clean `cargo clean` rebuild from the final commit —
+  rustc 1.98.0, release 1m38s + dev 1m03s + client-kit both profiles,
+  zero warnings. No local paths, no debug-only deps.
+- R2 TEST REPRODUCIBILITY: 592 passed / 0 failed / 1 ignored
+  (de_emphasis_and_snapping_exclusion — dormant feature flag), clippy 0,
+  gate 24/0/0, restart journey 15/0/0, crash recovery 14/0/0.
+  **Golden journey 17/3/1: THREE FAILURES — classified P2 harness
+  staleness** (the retreat probe point + the rotation target are FIXED
+  probe points that broke when F3's mirror placement changed the scene
+  geometry — the SAME class the UX gate fixed for its own S6/S7 points
+  in G-H2; the golden journey never received that treatment). The
+  product behaviors they check (wheel retreat, rotate isolation) are
+  independently verified by the UX gate (24/0/0) and the F12 trace.
+  Harness fix queued post-human-test.
+- R3 REGRESSION LOCK: facing-plane drag (covered by the orbited-camera
+  drag plane test), excursion-aware raise (bring_to_front_raises_z
+  test), painter-order pick (pick_overlap_prefers_top_most_drawn),
+  modifier-proof bindings (navigation tests), z=-9446 class (the
+  facing-plane semantic removed the wall plane entirely), lost-camera
+  Home (H4 E2E + the gate), transition retargeting (G-H5 tests),
+  killed-focused-window focus-fall (F18 log-verified).
+- R4 CLEANUP: zero TODO/FIXME/HACK in src/. Dead code removed with the
+  wall-plane semantic. The debug trace! in the pick loop is TRACE-level
+  (invisible at the default info).
+- R5 LOGGING: default RUST_LOG=info is the release default — startup,
+  lifecycle and gesture summaries only; TRACE diagnostics (the pick
+  candidates) never appear unless explicitly requested. VEYRA_DEBUG
+  remains the opt-in journal.
+- R6 DEFAULTS: boots spatial, hint card on a fresh state only, three
+  workspaces, decorationless windows (G-H0.1), mirror placement,
+  wheel-over-window scroll — all reviewed as user defaults; sensible.
+- R7 PERSISTENCE: restart journey 15/0/0 on this build (SIGTERM save ->
+  exact transform + camera restore -> liveness). Crash journey 14/0/0
+  (SIGKILL + corrupt-state backup paths).
+- R8 INPUT SAFETY: the F11/F18 audits + the gate's 24 checks cover
+  keyboard/mouse/wheel/modifiers/Escape/Home/taskbar/menu ownership
+  with firefox + xterm + client-kit.
+- R9 MANY-WINDOW: quantitative behavior recorded in F9 (10 windows:
+  x-range 0..4620, auto-fit, +N overflow, I1 held). 15/20 documented as
+  P3 (single-row camera distance) — not a blocker.
+- R10 PERFORMANCE: the scalability gate PASS on the clean build
+  (draw_ms 0.413 @10 -> 24.17 @1000 visuals, 58.5x for 100x growth,
+  llvmpipe/debug; allowed <=800x).
+- R11/R12/R13: README rewritten user-first (the product idea, controls,
+  persistence, limitations, build/run); CONTROLS.md cheat sheet added.
+- R14 DEMO: the F17 evidence set (regions overview, lost, Home) serves
+  as the canonical capture; three-region shots in /tmp are ephemeral —
+  regenerate on demand via the F17 probe.
+- R15 HUMAN TEST: HUMAN_TEST.md — 13 tasks, no expected outcomes, no
+  bias; logging/screenshot instructions included.
+- R16 RELEASE CANDIDATE: this commit. Known issues:
+  P0 none. P1 none. P2: wheel-at-window scrolls (intentional; human
+  verdict pending); golden-journey probe-point staleness (harness).
+  P3: identical titles; bitmap font; 20-window row distance.
+
+## STOP CONDITION REACHED — the release candidate awaits the human.
