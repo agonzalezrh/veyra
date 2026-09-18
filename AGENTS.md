@@ -1543,3 +1543,15 @@ replacement, wheel/camera semantics preserved throughout.
 - Trace-verified end to end: overlap click → TOP at dist 1231 vs
   BOTTOM 1272 (a 41-unit margin) → focus lands on TOP.
 - Gate 24/0/0, 592 tests, clippy 0.
+
+### UX-F13 — workspace model (audit)
+- Camera memory per workspace verified from the journal: each ws holds
+  its own evolving pose (ws0 869->1246, ws1 constant, ws2 fit-adjusted)
+  and returning restores it — rooms, not modes.
+- Stale-state checks: no stale context menu after a switch (F2's
+  dismissal), no stale hover, focus restores per workspace (F3's
+  restored=Some evidence), selection is invisible cross-workspace
+  (other-workspace visuals don't draw) and PRESERVED on return —
+  spatial memory, not leakage. Modifier state is seat-global (correct).
+- Rapid A->B->C->A lands coherent (final ws + camera + windows correct).
+- AUDIT COMPLETE — NO CODE CHANGE REQUIRED.
