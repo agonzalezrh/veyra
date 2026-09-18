@@ -1555,3 +1555,27 @@ replacement, wheel/camera semantics preserved throughout.
   spatial memory, not leakage. Modifier state is seat-global (correct).
 - Rapid A->B->C->A lands coherent (final ws + camera + windows correct).
 - AUDIT COMPLETE — NO CODE CHANGE REQUIRED.
+
+### UX-F14 — spatial scale / readability (audit)
+- The scale relationship is ALREADY the intended design: the SCENE is
+  world-scaled (windows, rings), the SHELL is screen-fixed (taskbar,
+  hint line, hint card, context menu — readable at every camera
+  distance by construction). Evidence: F9 overview/medium/close shots
+  (the bar + hints legible at overview while windows scale), F5's
+  lost-camera shot (the hint line readable with NOTHING else visible).
+- Ring visibility at distance: 1.5px rings shrink with the projection;
+  at overview they are subtle — acceptable (hover/selection still
+  exempt from culling, and the taskbar-hover ring bridge identifies
+  windows without needing to see a 1px ring).
+- The approach->work->overview loop: verified repeatedly (F5/F9).
+- AUDIT COMPLETE — NO CODE CHANGE REQUIRED.
+
+### UX-F15 — visual language (audit)
+- One product voice: TITLE/BODY/CAPTION typography everywhere (F1),
+  one accent green + amber + cool-blue ring hierarchy (G-H3), the
+  taskbar/menu/hints share the dark-panel + hairline treatment,
+  terminology consistent (approach/look/show desktop/menu).
+- No debug-UI surfaces remain (the old 'pan the world'/'actions'
+  wording replaced in F8; the hint card reads product, not dev).
+- Known intentional: the 5x7 bitmap aesthetic (per directive, kept).
+- AUDIT COMPLETE — NO CODE CHANGE REQUIRED.
