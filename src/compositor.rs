@@ -1975,6 +1975,19 @@ impl LookingGlass {
                                             )
                                         });
                                     visual.transform.position = pos;
+                                    // OR floats (chrome bubbles/menus) ride
+                                    // ABOVE their owner: coplanar visuals
+                                    // made the picker ambiguous (clicking
+                                    // the bubble hit the main window); a
+                                    // strict z-lift disambiguates picking
+                                    // AND matches the painter's order.
+                                    if x11_window
+                                        .as_ref()
+                                        .map(|w| w.is_override_redirect())
+                                        .unwrap_or(false)
+                                    {
+                                        visual.transform.position.z += 24.0;
+                                    }
                                     visual.transform.rotation = cgmath::Quaternion::from_angle_y(
                                         Deg(spatial_spot.map(|(_p, yaw)| yaw).unwrap_or(angle_y)),
                                     );
