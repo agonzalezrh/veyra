@@ -834,15 +834,92 @@ impl Scene {
     /// Move a visual to the top of the stacking order.
     /// Returns true if the visual was found and moved.
     #[allow(dead_code)] // reserved API surface; not yet wired
+    /// UX-F12: the z a window needs to render AND pick above every
+    /// other top-level — its own yaw tilt excavates z across
+    /// (width/2)·|sin(yaw)| on each side, so the raise must clear the
+    /// stack's max z PLUS the window's own tilt excursion (a +2 raise
+    /// under a ±22 excursion left the far half of the window behind
+    /// the coplanar stack: clicks still hit the window underneath).
+    fn raise_height(&self, id: VisualId) -> f32 {
+        match self
+            .visuals
+            .iter()
+            .find(|v| v.id == id && v.parent.is_none())
+            .map(|v| (v.total_width(), 2.0 * v.transform.rotation.v.y.atan2(v.transform.rotation.s).abs()))
+        {
+            Some((w, yaw)) => self.raise_above_stack(w, yaw, id),
+            None => 0.0,
+        }
+    }
+
+    /// The z that puts a window of `own_w`/`own_yaw` above every other
+    /// top-level, clearing its own tilt excursion.
+    fn raise_above_stack(&self, own_w: f32, own_yaw: f32, exclude: VisualId) -> f32 {
+        let excursion = own_w * 0.5 * own_yaw.sin();
+        let max_z = self
+            .visuals
+            .iter()
+            .filter(|v| v.parent.is_none() && v.id != exclude)
+            .map(|v| {
+                let w = v.total_width();
+                let yaw = 2.0 * v.transform.rotation.v.y.atan2(v.transform.rotation.s).abs();
+                v.transform.position.z + w * 0.5 * yaw.sin()
+            })
+            .fold(f32::MIN, f32::max);
+        if max_z <= f32::MIN {
+            return 0.0;
+        }
+        (max_z + excursion + 2.0).min(200.0)
+    }
+
     pub fn bring_to_front(&mut self, id: VisualId) -> bool {
         let idx = match self.find_index(id) {
             Some(i) => i,
             None => return false,
         };
+        // UX-F12: raise z EVEN when already last in the vec — the
+        // renderer depth-tests, so at equal z the FIRST-drawn window
+        // wins the pixels and a vec-"top" window stays visually buried
+        // (the chrome-bubble click report: the bubble mapped last, was
+        // never z-raised, and every click resolved to the main window).
         if idx == self.visuals.len() - 1 {
-            return true; // already on top
+            let id = self.visuals[idx].id;
+            let raise = self.raise_height(id);
+            if let Some(v) = self.visuals.get_mut(idx) {
+                v.transform.position.z = raise;
+            }
+            return true;
         }
-        let visual = self.visuals.remove(idx);
+        // UX-F12: stacking is a REAL z raise — the renderer depth-tests,
+        // so coplanar overlaps favor the first-drawn window and the
+        // raised window stayed visually buried (the chrome-bubble /
+        // overlap click reports). Geometry is captured BEFORE the
+        // remove (the raise must know the window's own tilt excursion).
+        let (own_w, own_yaw) = match self.visuals.iter().find(|v| v.id == id) {
+            Some(v) => (
+                v.total_width(),
+                2.0 * v.transform.rotation.v.y.atan2(v.transform.rotation.s).abs(),
+            ),
+            None => (0.0, 0.0),
+        };
+        let mut visual = self.visuals.remove(idx);
+        let new_z = self.raise_above_stack(own_w, own_yaw, id);
+        let max_z = new_z - 2.0;
+        if max_z > f32::MIN {
+            if new_z > 200.0 {
+                // Renormalize: shift every top-level down by 200 so the
+                // stack stays near the working plane (relative order and
+                // the OR-float +24 offset are preserved).
+                for v in self.visuals.iter_mut() {
+                    if v.parent.is_none() {
+                        v.transform.position.z -= 200.0;
+                    }
+                }
+                visual.transform.position.z = new_z - 200.0;
+            } else {
+                visual.transform.position.z = new_z;
+            }
+        }
         self.visuals.push(visual);
         true
     }
@@ -1077,6 +1154,7 @@ fn pick_visual_items(
         let world_hit = Vector3::new(world_hit_4.x, world_hit_4.y, world_hit_4.z) / world_hit_4.w;
         let dist = (world_hit - near).magnitude();
 
+        tracing::trace!(?id, dist, ?closest, "pick candidate");
         match closest {
             // Strictly farther than the current best → skip. Near-equal
             // (within 1 world unit) → the LATER-drawn visual wins.
@@ -1095,6 +1173,24 @@ fn pick_visual_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bring_to_front_raises_z_above_others() {
+        let mut scene = Scene::default();
+        let a = crate::scene::Visual::new_test(400, 300);
+        let b = crate::scene::Visual::new_test(400, 300);
+        let c = crate::scene::Visual::new_test(400, 300);
+        scene.add(a);
+        scene.add(b);
+        scene.add(c);
+        // Raise the FIRST visual (buried) — it must end up above both.
+        let a_id = scene.visuals[0].id;
+        assert!(scene.bring_to_front(a_id));
+        let za = scene.get(a_id).unwrap().transform.position.z;
+        let zb = scene.visuals[0].transform.position.z;
+        let zc = scene.visuals[1].transform.position.z;
+        assert!(za > zb && za > zc, "raised window above the stack");
+    }
 
     #[test]
     fn pick_overlap_prefers_top_most_drawn() {

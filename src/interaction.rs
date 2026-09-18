@@ -137,45 +137,6 @@ impl InteractionController {
         Some(ray_origin + ray_dir * t)
     }
 
-    /// Compute the drag translation plane normal.
-    ///
-    /// The plane is vertical and perpendicular to the camera's horizontal
-    /// view direction so drags slide windows along a wall facing the camera.
-    /// When that plane is edge-on to the view ray (front-facing camera,
-    /// e.g. normal 2D mode with yaw = 0), it falls back to a screen-parallel
-    /// plane (normal = camera forward) so drags still start and the window
-    /// follows the cursor at constant depth.
-    fn drag_plane_normal(
-        fwd: Vector3<f32>,
-        ray_dir: Vector3<f32>,
-        cam_pos: Vector3<f32>,
-        plane_point: Vector3<f32>,
-    ) -> Vector3<f32> {
-        let mut n = Vector3::new(fwd.z, 0.0, -fwd.x);
-        if n.magnitude2() < 1e-12 {
-            n = fwd;
-        }
-        let n = n.normalize();
-        // The wall plane is unusable when the ray never crosses it
-        // ahead of the camera: t = num/denom ≤ 0 means the plane is
-        // behind the view (the drag "grab point" collapses and the
-        // delta is stuck at zero — observed as a window that follows
-        // neither cursor nor plane), the camera lies in the plane
-        // (t≈0 for every ray), or the ray is near-parallel. Any of
-        // those falls back to the camera-facing plane through the
-        // grab point, which the ray always crosses at camera distance.
-        let num = (plane_point - cam_pos).dot(n);
-        let denom = n.dot(ray_dir);
-        let camera_in_plane = num.abs() < 1.0;
-        let ray_parallel = denom.abs() < 1e-3;
-        let plane_behind_ray = num * denom < 0.0;
-        if camera_in_plane || ray_parallel || plane_behind_ray {
-            fwd.normalize()
-        } else {
-            n
-        }
-    }
-
     /// Handle a pointer button press.
     ///
     /// Always picks and selects the visual under the cursor (if any).
@@ -212,8 +173,13 @@ impl InteractionController {
         if let Some(visual) = scene.visuals.iter().find(|v| v.id == vid) {
             let pos = visual.transform.position;
             let fwd = camera.forward();
-            let plane_normal =
-                Self::drag_plane_normal(fwd, ray_dir, cgmath::Vector3::new(camera.position.x, camera.position.y, camera.position.z), pos);
+            // UX-F12 fix: window translation drags on the CAMERA-FACING
+            // plane through the grab point. The old wall-plane candidate
+            // (normal ⊥ view axis) turned horizontal drags into Z motion
+            // (a window right of the camera axis flew into the screen,
+            // z=-9446 observed). The facing plane is always crossed
+            // ahead of the ray and moves windows screen-parallel.
+            let plane_normal = fwd.normalize();
 
             // Mark as detached from layout when user starts manipulating
             if !scene.detached_set.contains(&vid) {
@@ -343,8 +309,13 @@ impl InteractionController {
         if let Some(visual) = scene.visuals.iter().find(|v| v.id == vid) {
             let pos = visual.transform.position;
             let fwd = camera.forward();
-            let plane_normal =
-                Self::drag_plane_normal(fwd, ray_dir, cgmath::Vector3::new(camera.position.x, camera.position.y, camera.position.z), pos);
+            // UX-F12 fix: window translation drags on the CAMERA-FACING
+            // plane through the grab point. The old wall-plane candidate
+            // (normal ⊥ view axis) turned horizontal drags into Z motion
+            // (a window right of the camera axis flew into the screen,
+            // z=-9446 observed). The facing plane is always crossed
+            // ahead of the ray and moves windows screen-parallel.
+            let plane_normal = fwd.normalize();
 
             // Mark as detached from layout when user starts manipulating
             if !scene.detached_set.contains(&vid) {
@@ -398,10 +369,9 @@ impl InteractionController {
 
         if let Some(visual) = scene.visuals.iter().find(|v| v.id == vid) {
             let pos = visual.transform.position;
-            // Compute camera forward in world space using camera orientation
+            // UX-F12 fix: camera-facing drag plane (see above).
             let fwd = camera.forward();
-            let plane_normal =
-                Self::drag_plane_normal(fwd, ray_dir, cgmath::Vector3::new(camera.position.x, camera.position.y, camera.position.z), pos);
+            let plane_normal = fwd.normalize();
 
             let plane_point = pos;
             if !scene.detached_set.contains(&vid) {
@@ -586,60 +556,7 @@ mod tests {
         assert!(approx_eq(ny, 1.0, 1e-4));
     }
 
-    #[test]
-    fn drag_plane_normal_camera_in_wall_plane_falls_back() {
-        // Regression (UX gate I2): a front-facing camera sits IN the
-        // wall plane x = plane_point.x when the window shares the
-        // camera's x. Every ray then met the plane at t=0 and the drag
-        // delta was stuck at zero. The fallback must kick in.
-        let fwd = Vector3::new(0.0, 0.0, -1.0);
-        let ray = Vector3::new(0.05, 0.0, -1.0).normalize();
-        let n = InteractionController::drag_plane_normal(
-            fwd,
-            ray,
-            Vector3::new(0.0, 0.0, 869.0),
-            Vector3::new(0.0, 0.0, 0.0),
-        );
-        assert!(
-            n.dot(ray).abs() > 0.5,
-            "plane must cross the ray at camera distance"
-        );
-    }
 
-    #[test]
-    fn drag_plane_normal_front_facing_camera_falls_back_to_forward() {
-        // Regression: with a front-facing camera (yaw = 0) the vertical
-        // wall plane is edge-on to the view ray; the fallback keeps drags
-        // working by using a screen-parallel plane.
-        let fwd = Vector3::new(0.0, 0.0, -1.0);
-        let ray = Vector3::new(0.0, 0.0, -1.0);
-        let n = InteractionController::drag_plane_normal(
-            fwd,
-            ray,
-            Vector3::new(0.0, 0.0, 869.0),
-            Vector3::new(0.0, 0.0, 0.0),
-        );
-        assert!(
-            n.dot(ray).abs() > 0.5,
-            "plane must not be parallel to the view ray"
-        );
-        // Orbited camera with an off-center ray keeps the vertical wall plane.
-        let yaw = 0.5f32;
-        let fwd2 = Vector3::new(-yaw.sin(), 0.0, -yaw.cos());
-        let right2 = Vector3::new(yaw.cos(), 0.0, -yaw.sin());
-        let ray2 = (fwd2 + right2 * 0.3).normalize();
-        let n2 = InteractionController::drag_plane_normal(
-            fwd2,
-            ray2,
-            Vector3::new(0.0, 0.0, 869.0),
-            Vector3::new(0.0, 0.0, 0.0),
-        );
-        assert!(approx_eq(n2.y, 0.0, 1e-6), "wall plane stays vertical");
-        assert!(
-            n2.dot(ray2).abs() > 1e-3,
-            "wall plane intersects an off-center view ray"
-        );
-    }
 
     // ── I2: interaction state machine regression tests ──────────────
 
@@ -1013,19 +930,10 @@ mod tests {
         ctrl.handle_pointer_move(800.0, 420.0, &mut scene, &camera, true);
         ctrl.handle_pointer_move(500.0, 250.0, &mut scene, &camera, true);
         let after = scene.get(vid).unwrap().transform.position;
-        // Translation moves along the drag plane captured at drag start, so
-        // the delta from the start position must be perpendicular to it.
+        // Translation drags on the CAMERA-FACING plane (UX-F12 fix), so
+        // the delta must be perpendicular to the camera forward.
         let fwd = camera.forward();
-        let center_ray = {
-            let (near, far) = ctrl.world_ray(0.0, 0.0, &camera, true);
-            (far - near).normalize()
-        };
-        let normal = InteractionController::drag_plane_normal(
-            fwd,
-            center_ray,
-            cgmath::Vector3::new(camera.position.x, camera.position.y, camera.position.z),
-            cgmath::Vector3::new(0.0, 0.0, 0.0),
-        );
+        let normal = fwd;
         let drift = (after - start).dot(normal);
         assert!(
             drift.abs() < 1.0,
