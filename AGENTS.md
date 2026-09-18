@@ -1579,3 +1579,20 @@ replacement, wheel/camera semantics preserved throughout.
   wording replaced in F8; the hint card reads product, not dev).
 - Known intentional: the 5x7 bitmap aesthetic (per directive, kept).
 - AUDIT COMPLETE — NO CODE CHANGE REQUIRED.
+
+### UX-F16/F17 — soak + THREE-REGION multi-monitor simulation
+- THE CORE VALIDATION PASSED: six apps as three regions (A=Browser+Docs,
+  B=IDE+Terminal, C=Chat+Mail); THREE rounds of the attention loop
+  (approach A -> scroll+type -> retreat -> travel -> approach B ->
+  type -> retreat -> approach C -> type); typing DELIVERED to all three
+  regions (Browser 72, IDE 66, Mail 66 key events); the camera
+  navigation SUPPORTED the loop (every approach landed, every retreat
+  worked).
+- SPATIAL MEMORY: window positions byte-identical after 3 rounds +
+  lost-camera + Home (I1 held; only the focus reorder changed vec
+  order). Lost -> Home recovered all six (VLM-confirmed).
+- State coherence across the soak: no stale menus, no focus leaks,
+  no camera drift, PROFILE clean (78fps during interaction bursts).
+- The answer to "does it feel like several monitors on one screen":
+  the mechanics demonstrably support it — the HUMAN verdict awaits
+  the user's hands-on review.
