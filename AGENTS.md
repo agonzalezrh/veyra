@@ -1521,3 +1521,25 @@ replacement, wheel/camera semantics preserved throughout.
   events); the OR-bubble pipeline (65b7949) + the painter-order pick
   (86ad66d) closed the chrome float-window gaps.
 - AUDIT COMPLETE — NO CODE CHANGE REQUIRED.
+
+### UX-F12 — spatial targeting (three real defects found and fixed)
+1. **Facing-plane window drags**: Translate used a "wall plane" (normal
+   ⊥ view axis) — a horizontal drag on a window right of the camera
+   axis pushed it INTO THE SCREEN (z=-9446 observed in F12 testing).
+   Window translation now drags on the camera-facing plane through the
+   grab point (screen-parallel, always well-behaved). The plane helper
+   + its two regression tests were removed with the semantic.
+2. **bring_to_front raises REAL z**: the renderer depth-tests, so
+   coplanar ties favor the FIRST-drawn window — a vec-"top" window
+   stayed visually buried and every click resolved to the window
+   underneath (the chrome-bubble report). Raises are now
+   EXCURSION-AWARE: the z clears the stack's max z PLUS the window's
+   own tilt excavation ((w/2)·|sin yaw| — a ±5° 500-wide window spans
+   ±22 in z, which beat the naive +2 raise in testing), applied on
+   BOTH paths (reorder + already-last early return), with
+   renormalization past z=200.
+3. **Pick ties resolve to the top-most drawn** (painter's-order
+   tie-break in pick_visual_items, unit-tested).
+- Trace-verified end to end: overlap click → TOP at dist 1231 vs
+  BOTTOM 1272 (a 41-unit margin) → focus lands on TOP.
+- Gate 24/0/0, 592 tests, clippy 0.
