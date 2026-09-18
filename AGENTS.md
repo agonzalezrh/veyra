@@ -1596,3 +1596,18 @@ replacement, wheel/camera semantics preserved throughout.
 - The answer to "does it feel like several monitors on one screen":
   the mechanics demonstrably support it — the HUMAN verdict awaits
   the user's hands-on review.
+
+### UX-F18/F19 — recovery states + responsiveness (audit)
+- F18: extreme camera close -> Home recovers ✓; latched-modifier Home
+  (alt HELD) still frames ✓ (the F7 P0 guard verified in a live bad
+  state); focused-window destroyed -> focus falls to MRU (focus
+  history re-anchors to Two ✓ log-verified); taskbar activation during
+  a camera transition re-targets (G-H5 rapid-switch safety ✓).
+- F19: PROFILE throughout the program shows 60-78fps during
+  interaction bursts at 6-10 windows (llvmpipe/debug); the G-G4
+  scalability gate covers 10->1000 visuals (draw_ms 0.064->0.123).
+  No user-visible lag findings. AUDIT COMPLETE.
+- F20: the novice path IS the F8-discovered flow (hint card -> taskbar
+  -> gestures); the expert path is the F17 region loop (taskbar +
+  wheel + Home as fast tools). Both journeys executed; the comparison
+  lives in the F21 report.
