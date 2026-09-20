@@ -235,6 +235,34 @@ impl XwmHandler for LookingGlass {
         _above: Option<smithay::reexports::x11rb::protocol::xproto::Window>,
     ) {
         debug!(class = %window.class(), ?geometry, "x11 window reconfigured");
+        // Anchored transients (menus, dropdowns, tooltips) FOLLOW their
+        // X-side placement: chrome positions menu windows after mapping,
+        // so the map-time anchor is stale the moment the real configure
+        // arrives (live: the kebab menu anchored mostly above the screen
+        // edge from the pre-positioning geometry).
+        if let Some(vid) = self.x11_visual_for(&window) {
+            if self.anchored_transients.contains_key(&vid) {
+                if let Some((top_left, rot, _owner)) = self.x11_transient_anchor(&window) {
+                    let wh = self
+                        .scene
+                        .visuals
+                        .iter()
+                        .find(|v| v.id == vid)
+                        .map(|v| (v.total_width(), v.total_height()))
+                        .unwrap_or((0.0, 0.0));
+                    let (w, h) = wh;
+                    if let Some(v) = self.scene.get_mut(vid) {
+                        let z = v.transform.position.z;
+                        v.transform.position = top_left
+                            + rot * cgmath::Vector3::new(w / 2.0, -h / 2.0, 0.0)
+                            + cgmath::Vector3::new(0.0, 0.0, z);
+                        v.transform.rotation = rot;
+                    }
+                    info!(?vid, ?geometry, "x11 transient re-anchored on configure");
+                    self.schedule_render();
+                }
+            }
+        }
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {

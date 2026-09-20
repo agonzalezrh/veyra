@@ -379,6 +379,10 @@ pub struct LookingGlass {
     pub x11_wm: Option<smithay::xwayland::xwm::X11Wm>,
     /// G-C4: X11 windows by their associated wl_surface (xwayland shell).
     pub x11_windows: HashMap<WlSurface, smithay::xwayland::xwm::X11Surface>,
+    /// X11 transients anchored to their owner visual (menus, dropdowns,
+    /// tooltips). chrome moves these windows AFTER mapping; the anchored
+    /// position must follow every X-side configure.
+    pub anchored_transients: HashMap<VisualId, WlSurface>,
     /// G-C4: X11 display number (for spawning X clients with DISPLAY).
     pub x11_display: Option<u32>,
     /// G-C4: the Wayland client identity of the XWayland server.
@@ -833,6 +837,7 @@ impl LookingGlass {
             xwayland_shell_state,
             x11_wm: None,
             x11_windows: HashMap::new(),
+            anchored_transients: HashMap::new(),
             x11_display: None,
             xwayland_client: None,
             loop_handle: None,
@@ -1614,6 +1619,31 @@ impl LookingGlass {
                                 })
                             });
                             if restored.is_none() && reopened.is_none() {
+                                // X11 transients (menus, dropdowns,
+                                // tooltips, dialogs) anchor to their
+                                // OWNER: chrome positions them relative
+                                // to its own X geometry, and mirror
+                                // placement floats them mid-air (live
+                                // repro: the Alt+F menu at (963,0)).
+                                // Anchored popups never move the camera.
+                                if let Some((top_left, rot, owner_surface)) =
+                                    self.x11_transient_anchor(&x11)
+                                {
+                                    visual.transform.position = top_left
+                                        + rot
+                                            * cgmath::Vector3::new(
+                                                visual.total_width() / 2.0,
+                                                -visual.total_height() / 2.0,
+                                                0.0,
+                                            )
+                                        + cgmath::Vector3::new(0.0, 0.0, 2.0);
+                                    visual.transform.rotation = rot;
+                                    // Follow later X-side configures (chrome
+                                    // repositions menus after mapping).
+                                    self.anchored_transients
+                                        .insert(x11_vid, owner_surface);
+                                    info!(?x11_vid, "x11 transient anchored to owner");
+                                } else {
                                 let ws_eligible =
                                     self.workspace_manager.active().visual_ids.clone();
                                 // H2: spatial mode places the new window
@@ -1660,6 +1690,7 @@ impl LookingGlass {
                                 let fit_w = visual.total_width();
                                 let fit_h = visual.total_height();
                                 self.fit_camera_to_placed(fit_pos, fit_w, fit_h);
+                                }
                             } else {
                                 // The camera already frames this content (the
                                 // restored pose is persisted alongside it).
@@ -3783,6 +3814,26 @@ impl LookingGlass {
                         }
                         PointerEventKind::Down | PointerEventKind::Up => {
                             self.last_wayland_focus = Some(wl_surface.clone());
+                            // XWayland pointer wedge fix: XWayland
+                            // reconstructs the X cursor at `window_root +
+                            // surface_local` and the X core hit-test
+                            // resolves the button target to the TOPMOST
+                            // window at that point. Every X window shares
+                            // the same root origin (the XWM never spreads
+                            // them), so without this raise the newest-
+                            // mapped client ate every older client's
+                            // clicks (live-repro: two xev windows; chrome's
+                            // own clicks died whenever any other X11 client
+                            // existed). Raise the PICKED window before
+                            // delivery so the hit-test resolves to it.
+                            // Keyboard is protocol-routed and unaffected.
+                            if let Some(x11) =
+                                self.x11_windows.get(&wl_surface).cloned()
+                            {
+                                if let Some(wm) = self.x11_wm.as_mut() {
+                                    let _ = wm.raise_window(&x11);
+                                }
+                            }
                             ph.motion(self, origin.map(|o| (wl_surface.clone(), o)), &mot_ev);
                             ph.button(self, &btn_ev);
                             ph.frame(self);
@@ -3895,10 +3946,102 @@ impl LookingGlass {
             .map(|(vid, _)| *vid)
     }
 
+    /// Anchor an X11 transient (menu, dropdown, tooltip, dialog) to its
+    /// owner visual instead of mirror placement: chrome positions these
+    /// windows relative to its own X geometry, so a mirror-placed menu
+    /// floats mid-air (live repro: the Alt+F menu at (963,0)). The owner
+    /// is WM_TRANSIENT_FOR when present, else the client's most recently
+    /// mapped window (OR popups rarely carry transient-for). Returns the
+    /// anchored world TOP-LEFT of the popup and the owner's rotation
+    /// (popups align with their owner's tilt).
+    pub(crate) fn x11_transient_anchor(
+        &self,
+        x11: &smithay::xwayland::xwm::X11Surface,
+    ) -> Option<(cgmath::Vector3<f32>, cgmath::Quaternion<f32>, WlSurface)> {
+        use cgmath::Vector3;
+        let my_surface = x11.wl_surface()?;
+        let my_client = my_surface.client();
+        let transient = x11.is_transient_for();
+        // The same-client fallback applies ONLY to popup-ish windows:
+        // OR menus/tooltips/dialogs. A client's MAIN window must never
+        // anchor to a helper visual (live: chrome's main window was
+        // displaced to a helper-relative spot, breaking every aim).
+        use smithay::xwayland::xwm::WmWindowType;
+        let popupish = x11.is_override_redirect()
+            || matches!(
+                x11.window_type(),
+                Some(WmWindowType::DropdownMenu)
+                    | Some(WmWindowType::Menu)
+                    | Some(WmWindowType::PopupMenu)
+                    | Some(WmWindowType::Tooltip)
+                    | Some(WmWindowType::Notification)
+            );
+        let my_client = match transient.is_some() || popupish {
+            true => my_client,
+            false => return None,
+        };
+        // Owner candidates: the exact transient-for target, or (fallback)
+        // every other mapped window of the same X client.
+        let mut candidates: Vec<(WlSurface, smithay::xwayland::xwm::X11Surface)> = self
+            .x11_windows
+            .iter()
+            .filter(|(s, w)| {
+                if w.window_id() == x11.window_id() {
+                    return false;
+                }
+                match &transient {
+                    Some(ow) => w.window_id() == *ow,
+                    None => s.client().map(|c| Some(c) == my_client).unwrap_or(false),
+                }
+            })
+            .map(|(s, w)| (s.clone(), w.clone()))
+            .collect();
+        if transient.is_none() {
+            // Same-client heuristic: prefer the most recently mapped
+            // window (highest visual id) - chrome's popups follow the
+            // newest toplevel in practice.
+            candidates.sort_by_key(|(s, _)| {
+                self.wayland_surfaces
+                    .iter()
+                    .find(|(_, vs)| *vs == s)
+                    .map(|(vid, _)| vid.0)
+                    .unwrap_or(0)
+            });
+        }
+        let (owner_surface, owner_window) = candidates.pop()?;
+        let owner_vid = self
+            .wayland_surfaces
+            .iter()
+            .find(|(_, vs)| **vs == owner_surface)
+            .map(|(vid, _)| *vid)?;
+        let owner_visual = self.scene.visuals.iter().find(|v| v.id == owner_vid)?;
+        let owner_x11_geom = owner_window.geometry();
+        let my_geom = x11.geometry();
+        let owner_xw = owner_x11_geom.size.w.max(1) as f32;
+        // Scale X pixels into the owner visual's world size (the visual
+        // may have adopted a different buffer geometry than its X size).
+        let scale = owner_visual.total_width() / owner_xw;
+        let dx = (my_geom.loc.x - owner_x11_geom.loc.x) as f32 * scale;
+        let dy = (my_geom.loc.y - owner_x11_geom.loc.y) as f32 * scale;
+        // Owner visual center -> its top-left in world (X y grows down,
+        // world y grows up): top-left = center + R*(-w/2, +h/2).
+        let rot = owner_visual.transform.rotation;
+        let half = Vector3::new(
+            -owner_visual.total_width() / 2.0,
+            owner_visual.total_height() / 2.0,
+            0.0,
+        );
+        let top_left = owner_visual.transform.position + rot * half;
+        // Add the X delta in world axes.
+        let anchored = Vector3::new(top_left.x + dx, top_left.y - dy, top_left.z);
+        Some((anchored, rot, owner_surface))
+    }
+
     /// G-C4: remove an X11 window's visual + bookkeeping (map loss,
     /// destroy, minimize). The X window itself stays alive where the
     /// protocol allows remapping.
     pub fn destroy_x11_visual(&mut self, vid: VisualId) {
+        self.anchored_transients.remove(&vid);
         // #11: child subsurfaces die with the parent
         if let Some(surface) = self.wayland_surfaces.get(&vid).cloned() {
             self.remove_subsurfaces_of(&surface);

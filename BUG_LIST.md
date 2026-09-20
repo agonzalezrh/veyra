@@ -144,3 +144,86 @@ PERMANENT RULE for any future input-path work:
   camera path; client forwarding passes the raw v120 value through);
 - regression coverage lives in `wheel_zoom_tests` (compositor.rs) via
   the pure `dolly_step` semantics plus the live wheel demos.
+
+## #21 (PARTIALLY FIXED) — chrome: "can't click Restore", dead toolbar clicks, floating menus
+
+User report (2026-09-19): chrome's "Restore pages?" bubble's Restore
+button is not clickable; toolbar interactions die. A second report
+(add) described a BLACK window appearing when opening the address bar.
+
+### Root cause 1 — FIXED: the multi-client X stacking wedge
+
+Every X11 window mapped by smithay's XWM sits at the SAME root origin
+(xdotool: all frames at +2+2 / +20+20 — the XWM never spreads them).
+XWayland reconstructs the X cursor as `window_root + surface_local`
+and the X core hit-test resolves the button target to the TOPMOST
+window at that point. Consequence: **the newest-mapped X11 client ate
+every older client's pointer buttons** — with two xev windows, clicks
+aimed at client #1 were received by client #2 (live-reproduced); with
+chrome + any other X11 client, chrome's own clicks died. Keyboard was
+unaffected (protocol-routed, no X hit-testing).
+
+FIX: raise the PICKED window (`X11Wm::raise_window`) before delivering
+the button, so the hit-test resolves to the window veyra picked.
+Verified: two xevs both receive their own clicks; a click aimed at a
+window partially behind another lands on the picked one.
+
+### Root cause 2 — FIXED: X11 transients were mirror-placed
+
+chrome's menus/popups/tooltips map as separate X11 windows positioned
+RELATIVE to chrome's own X geometry. veyra mirror-placed every new
+visual (H2), so the Alt+F menu floated mid-air at (963,0) (live
+capture) instead of hanging under the kebab.
+
+FIX: `x11_transient_anchor` — transient-for owner (or same-client
+popup-type fallback) + X-geometry delta (scaled to the owner visual),
+owner yaw inherited, +2 z. `configure_notify` re-anchors (chrome moves
+menu windows AFTER mapping — the map-time geometry is stale).
+Verified: the Alt+F menu renders with its right edge just below the
+three-dot button.
+
+### Investigated, NOT fixed: chrome's Views layer ignores compositor-mediated presses
+
+Even with delivery proven pixel-exact (xev receives the exact coords,
+1:1, with full [Enter, Motion, Press, Release] streams), chrome's
+Views widgets (toolbar buttons, the bubble's Restore) do not react,
+while PAGE clicks (WebUI/renderer) do. Discriminating experiments:
+
+- Same coords: a direct XTEST click on chrome's X window (bypassing
+  the compositor) opens the kebab menu; the compositor-routed press at
+  the identical surface coords does not.
+- Wire capture (strace): the working sequence is CORE WarpPointer +
+  XTEST press/release with 100ms/50ms spacing.
+- A helper process running the identical byte sequence with identical
+  spacing WORKS when driven from a shell, and FAILS when the same
+  bytes come from veyra's pipe (unresolved; ptrace of the compositor
+  is sandbox-blocked).
+- Leading theory: chromium's Views layer routes presses by the X
+  server's CURSOR POSITION (XQueryPointer), not the event's
+  coordinates; Xwayland's wl_pointer delivery never moves the server
+  cursor, so every compositor-mediated press resolves to the stale
+  cursor position (the window center = the page area) and the toolbar
+  never sees it. A hover-time cursor-sync (XTEST warp on pointer move
+  over X11 surfaces) was built and moves the cursor correctly, but
+  chrome still ignored presses from that context — the residual
+  difference (fresh short-lived connection vs compositor-owned
+  long-lived connection) is unexplained.
+
+The experimental pipeline (hover cursor-sync via an `xinput-helper`
+child process + XTEST press/release, env-gated) was built and exercised
+this session but REVERTED from the tree pending a reliable design: it
+fixed nothing end-to-end in its final form. The DEFAULT path remains
+the proven wl_pointer delivery (page clicks + keyboard verified
+end-to-end). The helper's proven-working core (connect + translate +
+WarpPointer + 100ms/50ms-paced XTEST press/release) is small and fully
+described above for a future attempt.
+
+### The "black window" symptom: not reproduced
+
+On the current build chrome's omnibox dropdown renders correctly in
+BOTH modes (in-window Views on X11; a 1086x89 SUBSURFACE on Wayland —
+the #11 path). Menus render (the anchoring fix). The reported black
+window is consistent with the OLD behavior class (an OR popup mapped
+without a rendered buffer, mirror-placed) which the anchoring + this
+build's render path no longer produces. Re-test requested on the
+user's build (the startup stamp line identifies builds).

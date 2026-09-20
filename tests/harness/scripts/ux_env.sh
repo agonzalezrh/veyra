@@ -99,7 +99,10 @@ ux_focus_desktop() { # <veyra-log> — focus the winit window for XTEST keys
 ux_click() { # <log> <x> <y> [button]
     local log="$1" x="$2" y="$3" btn="${4:-1}"
     ux_focus_desktop "$log" > /dev/null 2>&1
-    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool mousemove "$x" "$y" click "$btn"
+    # 150ms between the move and the click: real pointers always take
+    # longer, and chromium routes presses by the X cursor position,
+    # which needs a beat to settle after a warp.
+    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool mousemove "$x" "$y" sleep 0.15 click "$btn"
 }
 
 ux_type() { # <log> <keys...>
@@ -346,7 +349,7 @@ PYEOF
 # ux_click2 <log> <x> <y> — a click that does NOT refocus the desktop
 # window first (used inside gestures where the X focus is already set).
 ux_click2() {
-    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool mousemove "$2" "$3" click 1
+    DISPLAY="$UX_DESKTOP_DISPLAY" xdotool mousemove "$2" "$3" sleep 0.15 click 1
 }
 
 # ux_desktop_window <log> → the veyra winit window id (geometry-derived)

@@ -66,7 +66,7 @@ def main():
     )
     body = {
         "model": model,
-        "max_tokens": 1000,
+        "max_tokens": 2500,
         "temperature": 0,
         "messages": [{
             "role": "user",
